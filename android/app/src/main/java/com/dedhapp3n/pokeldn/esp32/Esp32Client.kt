@@ -16,8 +16,8 @@ class Esp32Client(
         val started = System.nanoTime()
         diagnostics("HELLO test started")
         try {
-            drainPendingInput()
             val reader = Esp32FrameReader(diagnostics)
+            drainPendingInput(reader)
             val buffer = ByteArray(READ_BUFFER_SIZE)
             val unexpectedTypes = linkedSetOf<Int>()
 
@@ -61,11 +61,13 @@ class Esp32Client(
             val remainingMs = max(1, (deadline - System.nanoTime()) / NANOS_PER_MILLISECOND)
             val readTimeoutMs = min(READ_SLICE_MS, remainingMs.toInt())
             val count = serial.read(buffer, readTimeoutMs)
-            diagnostics("Serial read returned $count bytes (timeout ${readTimeoutMs} ms)")
+            logSerialRead("Serial read", buffer, count, readTimeoutMs)
             if (count <= 0) continue
             for (frame in reader.feed(buffer, count)) {
                 when (frame.type) {
-                    Esp32Protocol.MSG_CREDIT -> Unit
+                    Esp32Protocol.MSG_CREDIT -> diagnostics(
+                        "CREDIT received (${frame.payload.size} payload bytes)"
+                    )
                     Esp32Protocol.MSG_INFO -> {
                         diagnostics("INFO received (${frame.payload.size} payload bytes)")
                         return frame.payload
@@ -84,7 +86,15 @@ class Esp32Client(
         if (reader.hasIncompleteFrame) {
             return Esp32IncompleteResponseException("Timed out with an incomplete ESP32 frame")
         }
-        reader.lastError?.let { return it }
+        reader.lastSynchronizedError?.let { error ->
+            if (error is Esp32ChecksumException) return error
+            if (reader.synchronizedMalformedCount >= REPEATED_MALFORMED_THRESHOLD) {
+                return Esp32MalformedFrameException(
+                    "Received ${reader.synchronizedMalformedCount} malformed frames after stream synchronization: " +
+                        error.message
+                )
+            }
+        }
         if (unexpectedTypes.isNotEmpty()) {
             val types = unexpectedTypes.joinToString { "0x%02X".format(it) }
             return Esp32HelloTimeoutException("No INFO response; received $types")
@@ -92,7 +102,7 @@ class Esp32Client(
         return Esp32HelloTimeoutException("No INFO response from ESP32")
     }
 
-    private fun drainPendingInput() {
+    private fun drainPendingInput(reader: Esp32FrameReader) {
         diagnostics("Serial drain started")
         val started = System.nanoTime()
         val deadline = started + drainMaxMs * NANOS_PER_MILLISECOND
@@ -102,9 +112,10 @@ class Esp32Client(
             val remainingMs = max(1, (deadline - System.nanoTime()) / NANOS_PER_MILLISECOND)
             val readTimeoutMs = min(DRAIN_READ_TIMEOUT_MS, remainingMs.toInt())
             val count = serial.read(buffer, readTimeoutMs)
-            diagnostics("Serial drain read returned $count bytes (timeout ${readTimeoutMs} ms)")
+            logSerialRead("Serial drain read", buffer, count, readTimeoutMs)
             if (count <= 0) break
             drained += count
+            reader.feed(buffer, count)
         }
         diagnostics("Serial drain completed in ${elapsedMillis(started)} ms ($drained bytes discarded)")
     }
@@ -116,6 +127,37 @@ class Esp32Client(
         diagnostics("HELLO write completed: ${frame.size} bytes")
     }
 
+    private fun logSerialRead(label: String, buffer: ByteArray, count: Int, timeoutMs: Int) {
+        if (readResultsLogged >= MAX_LOGGED_READS) {
+            if (readResultsLogged == MAX_LOGGED_READS) {
+                diagnostics("Further serial read diagnostics suppressed")
+            }
+            readResultsLogged++
+            return
+        }
+        readResultsLogged++
+        if (count <= 0) {
+            diagnostics("$label returned $count bytes (timeout $timeoutMs ms)")
+            return
+        }
+        val shown = minOf(count, MAX_RAW_BYTES_PER_READ, MAX_RAW_BYTES_TOTAL - rawBytesLogged)
+        if (shown <= 0) {
+            diagnostics("$label returned $count bytes (timeout $timeoutMs ms; raw log limit reached)")
+            return
+        }
+        val raw = buffer.copyOfRange(0, shown).toHex()
+        val delimiters = (0 until shown).filter { buffer[it].toInt() == 0 }
+        val suffix = if (shown < count) "…" else ""
+        diagnostics(
+            "$label returned $count bytes (timeout $timeoutMs ms): $raw$suffix; " +
+                "0x00 at ${if (delimiters.isEmpty()) "none" else delimiters.joinToString()}"
+        )
+        rawBytesLogged += shown
+    }
+
+    private var readResultsLogged = 0
+    private var rawBytesLogged = 0
+
     companion object {
         const val HELLO_ATTEMPTS = 5
         const val HELLO_TIMEOUT_MS = 1_000
@@ -126,6 +168,10 @@ class Esp32Client(
         private const val DRAIN_READ_TIMEOUT_MS = 20
         private const val READ_BUFFER_SIZE = 4096
         private const val NANOS_PER_MILLISECOND = 1_000_000L
+        private const val REPEATED_MALFORMED_THRESHOLD = 2
+        private const val MAX_LOGGED_READS = 128
+        private const val MAX_RAW_BYTES_PER_READ = 128
+        private const val MAX_RAW_BYTES_TOTAL = 1_024
 
         private fun elapsedMillis(started: Long): Long =
             (System.nanoTime() - started) / NANOS_PER_MILLISECOND
@@ -134,11 +180,17 @@ class Esp32Client(
 
 internal class Esp32FrameReader(private val diagnostics: (String) -> Unit = {}) {
     private val encoded = ArrayList<Byte>()
-    var lastError: Esp32MalformedFrameException? = null
+    private var delimiterSeen = false
+    private var rejectedLogs = 0
+    var preSynchronizationRejected = 0
+        private set
+    var synchronizedMalformedCount = 0
+        private set
+    var lastSynchronizedError: Esp32MalformedFrameException? = null
         private set
 
     val hasIncompleteFrame: Boolean
-        get() = encoded.isNotEmpty()
+        get() = delimiterSeen && encoded.isNotEmpty()
 
     fun feed(data: ByteArray, length: Int = data.size): List<Esp32Frame> {
         require(length in 0..data.size)
@@ -149,17 +201,45 @@ internal class Esp32FrameReader(private val diagnostics: (String) -> Unit = {}) 
                 encoded.add(value)
                 continue
             }
+            val wasSynchronized = delimiterSeen
+            delimiterSeen = true
             if (encoded.isEmpty()) continue
+            val candidate = encoded.toByteArray()
             try {
-                val frame = Esp32Protocol.decodeFrame(encoded.toByteArray())
+                val frame = Esp32Protocol.decodeFrame(candidate)
                 diagnostics("Decoded frame type 0x%02X (${frame.payload.size} payload bytes)".format(frame.type))
                 frames.add(frame)
             } catch (error: Esp32MalformedFrameException) {
-                lastError = error
-                diagnostics("Rejected COBS/CRC frame: ${error.message}")
+                if (wasSynchronized) {
+                    synchronizedMalformedCount++
+                    lastSynchronizedError = error
+                } else {
+                    preSynchronizationRejected++
+                }
+                if (rejectedLogs < MAX_REJECTED_LOGS) {
+                    val phase = if (wasSynchronized) "synchronized" else "pre-sync"
+                    diagnostics(
+                        "Rejected $phase frame (${error.javaClass.simpleName}): ${error.message}; " +
+                            "encoded=${candidate.toHex(MAX_REJECTED_BYTES)}"
+                    )
+                } else if (rejectedLogs == MAX_REJECTED_LOGS) {
+                    diagnostics("Further rejected frame diagnostics suppressed")
+                }
+                rejectedLogs++
             }
             encoded.clear()
         }
         return frames
     }
+
+    companion object {
+        private const val MAX_REJECTED_LOGS = 16
+        private const val MAX_REJECTED_BYTES = 128
+    }
+}
+
+private fun ByteArray.toHex(limit: Int = size): String {
+    val shown = minOf(size, limit)
+    val text = copyOfRange(0, shown).joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+    return if (shown < size) "$text…" else text
 }

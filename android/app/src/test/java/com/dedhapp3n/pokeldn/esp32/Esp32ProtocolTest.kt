@@ -49,6 +49,90 @@ class Esp32ProtocolTest {
     }
 
     @Test
+    fun readerStartingInMiddleOfExistingFrameResynchronizesAtDelimiter() {
+        val reader = Esp32FrameReader()
+        val stream = INFO_FRAME.copyOfRange(12, INFO_FRAME.size) + CREDIT_ZERO_FRAME + INFO_FRAME
+        val frames = reader.feed(stream)
+
+        assertEquals(listOf(Esp32Protocol.MSG_CREDIT, Esp32Protocol.MSG_INFO), frames.map { it.type })
+        assertEquals(1, reader.preSynchronizationRejected)
+    }
+
+    @Test
+    fun partialCobsFrameThenDelimiterDoesNotHideCreditAndInfo() {
+        val reader = Esp32FrameReader()
+        val partial = byteArrayOf(5, 0x81.toByte(), 1, 0)
+        val frames = reader.feed(partial + CREDIT_ZERO_FRAME + INFO_FRAME)
+
+        assertEquals(listOf(Esp32Protocol.MSG_CREDIT, Esp32Protocol.MSG_INFO), frames.map { it.type })
+        assertEquals(1, reader.preSynchronizationRejected)
+    }
+
+    @Test
+    fun bootTextBeforeFramedTrafficIsDiscardedAtFirstDelimiter() {
+        val reader = Esp32FrameReader()
+        val frames = reader.feed("ets Jun  8 2016 rst:0x1\r\n".toByteArray() + byteArrayOf(0) + INFO_FRAME)
+
+        assertEquals(listOf(Esp32Protocol.MSG_INFO), frames.map { it.type })
+        assertEquals(1, reader.preSynchronizationRejected)
+    }
+
+    @Test
+    fun multipleCreditFramesBeforeInfoAreAccepted() {
+        val serial = ScriptedSerial { CREDIT_ZERO_FRAME + CREDIT_ZERO_FRAME + CREDIT_ZERO_FRAME + INFO_FRAME }
+        assertEquals(1, Esp32Client(serial).hello().protocolVersion)
+    }
+
+    @Test
+    fun framesSplitAcrossSingleByteUsbReadsAreReassembled() {
+        val serial = ScriptedSerial(maxReadSize = 1) { CREDIT_ZERO_FRAME + INFO_FRAME }
+        assertEquals("1.4.0", Esp32Client(serial).hello().firmwareVersion)
+    }
+
+    @Test
+    fun multipleFramesInOneUsbReadAreAllDecoded() {
+        val reader = Esp32FrameReader()
+        val frames = reader.feed(CREDIT_ZERO_FRAME + CREDIT_ZERO_FRAME + INFO_FRAME)
+        assertEquals(
+            listOf(Esp32Protocol.MSG_CREDIT, Esp32Protocol.MSG_CREDIT, Esp32Protocol.MSG_INFO),
+            frames.map { it.type },
+        )
+    }
+
+    @Test
+    fun malformedPreSyncDataDoesNotPoisonFollowingInfo() {
+        val reader = Esp32FrameReader()
+        val malformed = byteArrayOf(0x7F, 1, 2, 3, 0)
+        val frames = reader.feed(malformed + INFO_FRAME)
+
+        assertEquals(listOf(Esp32Protocol.MSG_INFO), frames.map { it.type })
+        assertEquals(1, reader.preSynchronizationRejected)
+        assertEquals(0, reader.synchronizedMalformedCount)
+    }
+
+    @Test
+    fun oneRejectedPreSyncCandidateDoesNotBecomeTheHelloFailure() {
+        val failure = assertThrows(Esp32HelloTimeoutException::class.java) {
+            Esp32Client(
+                ScriptedSerial { _ -> byteArrayOf(5, 1, 2, 0) },
+                helloAttempts = 1,
+                helloTimeoutMs = 2,
+            ).hello()
+        }
+        assertTrue(failure.message!!.contains("No INFO"))
+    }
+
+    @Test
+    fun drainAndHelloSharePartialFrameStateLikeUpstreamReader() {
+        val split = 4
+        val serial = ScriptedSerial(initial = CREDIT_ZERO_FRAME.copyOfRange(0, split)) { write ->
+            if (write == 1) CREDIT_ZERO_FRAME.copyOfRange(split, CREDIT_ZERO_FRAME.size) + INFO_FRAME
+            else INFO_FRAME
+        }
+        assertEquals("1.4.0", Esp32Client(serial).hello().firmwareVersion)
+    }
+
+    @Test
     fun synchronizationInfoIsNotParsedUntilFinalHello() {
         val serial = ScriptedSerial { write ->
             if (write == 1) Esp32Protocol.encodeFrame(Esp32Protocol.MSG_INFO, byteArrayOf()) else INFO_FRAME
@@ -58,7 +142,7 @@ class Esp32ProtocolTest {
 
     @Test
     fun incompleteResponseIsReported() {
-        val serial = ScriptedSerial { _ -> INFO_FRAME.copyOf(INFO_FRAME.size - 1) }
+        val serial = ScriptedSerial { _ -> byteArrayOf(0) + INFO_FRAME.copyOf(INFO_FRAME.size - 1) }
         assertThrows(Esp32IncompleteResponseException::class.java) {
             Esp32Client(serial, helloAttempts = 1, helloTimeoutMs = 2).hello()
         }
@@ -134,10 +218,27 @@ class Esp32ProtocolTest {
     @Test
     fun malformedResponseIsReported() {
         val corrupt = INFO_FRAME.copyOf().also { it[it.lastIndex - 1] = (it[it.lastIndex - 1].toInt() xor 0x40).toByte() }
-        val error = assertThrows(Esp32MalformedFrameException::class.java) {
-            Esp32Client(ScriptedSerial { _ -> corrupt }, helloAttempts = 1, helloTimeoutMs = 2).hello()
+        val error = assertThrows(Esp32ChecksumException::class.java) {
+            Esp32Client(
+                ScriptedSerial { _ -> CREDIT_ZERO_FRAME + corrupt },
+                helloAttempts = 1,
+                helloTimeoutMs = 2,
+            ).hello()
         }
         assertTrue(error.message!!.contains("checksum"))
+    }
+
+    @Test
+    fun repeatedMalformedTrafficAfterSynchronizationIsReported() {
+        val malformed = byteArrayOf(0, 5, 1, 2, 0, 5, 3, 4, 0)
+        val error = assertThrows(Esp32MalformedFrameException::class.java) {
+            Esp32Client(
+                ScriptedSerial { _ -> malformed },
+                helloAttempts = 1,
+                helloTimeoutMs = 2,
+            ).hello()
+        }
+        assertTrue(error.message!!.contains("2 malformed frames"))
     }
 
     @Test
@@ -166,13 +267,17 @@ class Esp32ProtocolTest {
         assertEquals("1.4.0", info.firmwareVersion)
     }
 
-    private class ScriptedSerial(private val response: (Int) -> ByteArray) : SerialIo {
+    private class ScriptedSerial(
+        private val maxReadSize: Int = Int.MAX_VALUE,
+        initial: ByteArray = byteArrayOf(),
+        private val response: (Int) -> ByteArray,
+    ) : SerialIo {
         val writes = mutableListOf<ByteArray>()
-        private var pending = byteArrayOf()
+        private var pending = initial
 
         override fun read(buffer: ByteArray, timeoutMillis: Int): Int {
             if (pending.isEmpty()) return 0
-            val count = minOf(buffer.size, pending.size)
+            val count = minOf(buffer.size, pending.size, maxReadSize)
             pending.copyInto(buffer, endIndex = count)
             pending = pending.copyOfRange(count, pending.size)
             return count

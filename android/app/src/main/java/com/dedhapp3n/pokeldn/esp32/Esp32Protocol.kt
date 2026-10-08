@@ -33,7 +33,7 @@ object Esp32Protocol {
             ((body[body.size - 2].toLong() and 0xFF) shl 16) or
             ((body[body.size - 1].toLong() and 0xFF) shl 24)
         val actual = CRC32().apply { update(content) }.value
-        if (actual != expected) throw Esp32MalformedFrameException("Frame checksum is invalid")
+        if (actual != expected) throw Esp32ChecksumException("Frame checksum is invalid")
         return Esp32Frame(content[0].toInt() and 0xFF, content.copyOfRange(1, content.size))
     }
 
@@ -83,12 +83,12 @@ object Esp32Protocol {
         var index = 0
         while (index < data.size) {
             val code = data[index].toInt() and 0xFF
-            if (code == 0 || index + code > data.size + 1) {
-                throw Esp32MalformedFrameException("Invalid COBS block")
+            if (code == 0 || index + code > data.size) {
+                throw Esp32CobsException("Invalid COBS block")
             }
             index++
             repeat(code - 1) {
-                if (index >= data.size) throw Esp32MalformedFrameException("Invalid COBS block")
+                if (index >= data.size) throw Esp32CobsException("Invalid COBS block")
                 output.add(data[index++])
             }
             if (code != 0xFF && index < data.size) output.add(0)
@@ -116,7 +116,9 @@ data class Esp32Info(
 fun ByteArray.formatMac(): String = joinToString(":") { "%02x".format(it.toInt() and 0xFF) }
 
 open class Esp32ProtocolException(message: String, cause: Throwable? = null) : Exception(message, cause)
-class Esp32MalformedFrameException(message: String) : Esp32ProtocolException(message)
+open class Esp32MalformedFrameException(message: String) : Esp32ProtocolException(message)
+class Esp32CobsException(message: String) : Esp32MalformedFrameException(message)
+class Esp32ChecksumException(message: String) : Esp32MalformedFrameException(message)
 class Esp32IncompleteResponseException(message: String) : Esp32ProtocolException(message)
 class Esp32IncompatibleProtocolException(val info: Esp32Info) : Esp32ProtocolException(
     "Board speaks protocol ${info.protocolVersion}; app speaks ${Esp32Protocol.PROTOCOL_VERSION}"
