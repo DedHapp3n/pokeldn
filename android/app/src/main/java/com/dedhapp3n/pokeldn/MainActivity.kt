@@ -10,6 +10,7 @@ import android.hardware.usb.UsbManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -49,12 +50,17 @@ import com.dedhapp3n.pokeldn.usb.devicePhase
 import com.dedhapp3n.pokeldn.usb.isCp210xBridge
 import com.dedhapp3n.pokeldn.usb.usbIdHex
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : ComponentActivity() {
     private val usbManager by lazy { getSystemService(UsbManager::class.java) }
     private val scanner by lazy { UsbDeviceScanner(this) }
     private val transport by lazy { UsbSerialTransport(usbManager) }
     private val serialWorker = Executors.newSingleThreadExecutor()
+    private val helloWorker = Executors.newCachedThreadPool()
+    private val helloWatchdog = Executors.newSingleThreadScheduledExecutor()
     private var scanResult by mutableStateOf<UsbScanResult?>(null)
     private var connectionState by mutableStateOf(SerialConnectionState())
     private var esp32State by mutableStateOf(Esp32HandshakeState())
@@ -62,6 +68,9 @@ class MainActivity : ComponentActivity() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var permissionTimeout: Runnable? = null
     private var operationId = 0
+    private var helloOperationId = 0
+    private var helloFuture: Future<*>? = null
+    private var helloTimeout: Future<*>? = null
 
     private val permissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -75,6 +84,7 @@ class MainActivity : ComponentActivity() {
             if (intent.action == UsbManager.ACTION_USB_DEVICE_DETACHED) {
                 if (connectionState.deviceName == device.deviceName) {
                     clearPendingPermission()
+                    cancelHello()
                     operationId++
                     esp32State = Esp32HandshakeState()
                     connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.DISCONNECTED)
@@ -122,9 +132,12 @@ class MainActivity : ComponentActivity() {
         unregisterReceiver(permissionReceiver)
         unregisterReceiver(detachReceiver)
         clearPendingPermission()
+        cancelHello()
         operationId++
         serialWorker.execute { transport.disconnectSafely() }
         serialWorker.shutdown()
+        helloWorker.shutdownNow()
+        helloWatchdog.shutdownNow()
         super.onDestroy()
     }
 
@@ -134,6 +147,7 @@ class MainActivity : ComponentActivity() {
         val device = (scanResult as? UsbScanResult.Devices)?.items?.firstOrNull { it.deviceName == name }
         if (device == null && connectionState.phase != SerialConnectionPhase.DISCONNECTED) {
             clearPendingPermission()
+            cancelHello()
             operationId++
             esp32State = Esp32HandshakeState()
             connectionState = SerialConnectionState(name, SerialConnectionPhase.DISCONNECTED)
@@ -232,6 +246,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openSerial(device: UsbDevice) {
+        cancelHello()
         val thisOperation = ++operationId
         connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.CONNECTING)
         serialWorker.execute {
@@ -258,6 +273,7 @@ class MainActivity : ComponentActivity() {
 
     private fun disconnectSerial() {
         val name = connectionState.deviceName ?: return
+        cancelHello()
         val thisOperation = ++operationId
         esp32State = Esp32HandshakeState()
         connectionState = SerialConnectionState(name, SerialConnectionPhase.DISCONNECTING)
@@ -278,10 +294,14 @@ class MainActivity : ComponentActivity() {
         if (connectionState.phase != SerialConnectionPhase.CONNECTED ||
             esp32State.phase == Esp32HandshakePhase.TESTING) return
         val thisOperation = operationId
+        val thisHello = ++helloOperationId
+        val started = System.nanoTime()
+        val finished = AtomicBoolean(false)
         esp32State = Esp32HandshakeState(Esp32HandshakePhase.TESTING)
-        serialWorker.execute {
+        val task = helloWorker.submit {
             val nextState = try {
-                Esp32HandshakeState(Esp32HandshakePhase.VERIFIED, info = Esp32Client(transport).hello())
+                val client = Esp32Client(transport, diagnostics = { Log.d(ESP32_LOG_TAG, it) })
+                Esp32HandshakeState(Esp32HandshakePhase.VERIFIED, info = client.hello())
             } catch (error: Exception) {
                 Esp32HandshakeState(
                     Esp32HandshakePhase.FAILED,
@@ -289,13 +309,50 @@ class MainActivity : ComponentActivity() {
                     detail = error.message ?: "ESP32 HELLO failed",
                 )
             }
+            if (!finished.compareAndSet(false, true)) return@submit
             runOnUiThread {
-                if (thisOperation != operationId || connectionState.phase != SerialConnectionPhase.CONNECTED) {
+                if (thisHello != helloOperationId || thisOperation != operationId ||
+                    connectionState.phase != SerialConnectionPhase.CONNECTED) {
                     return@runOnUiThread
                 }
+                helloTimeout?.cancel(false)
+                helloTimeout = null
+                helloFuture = null
                 esp32State = nextState
             }
         }
+        helloFuture = task
+        helloTimeout = helloWatchdog.schedule({
+            if (!finished.compareAndSet(false, true)) return@schedule
+            val elapsedMs = (System.nanoTime() - started) / 1_000_000
+            Log.e(ESP32_LOG_TAG, "HELLO hard timeout after $elapsedMs ms; closing serial transport")
+            task.cancel(true)
+            serialWorker.execute { transport.disconnectSafely() }
+            runOnUiThread {
+                if (thisHello != helloOperationId || thisOperation != operationId) return@runOnUiThread
+                helloOperationId++
+                operationId++
+                helloFuture = null
+                helloTimeout = null
+                esp32State = Esp32HandshakeState(
+                    Esp32HandshakePhase.FAILED,
+                    detail = "ESP32 HELLO exceeded ${HELLO_OPERATION_TIMEOUT_MS / 1_000} seconds.",
+                )
+                connectionState = SerialConnectionState(
+                    connectionState.deviceName,
+                    SerialConnectionPhase.CONNECTION_FAILED,
+                    "ESP32 HELLO timed out. The serial connection was closed; reconnect to retry.",
+                )
+            }
+        }, HELLO_OPERATION_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+    }
+
+    private fun cancelHello() {
+        helloOperationId++
+        helloTimeout?.cancel(false)
+        helloTimeout = null
+        helloFuture?.cancel(true)
+        helloFuture = null
     }
 
     @Suppress("DEPRECATION")
@@ -306,6 +363,8 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val ACTION_USB_PERMISSION = "com.dedhapp3n.pokeldn.USB_PERMISSION"
         private const val PERMISSION_TIMEOUT_MS = 30_000L
+        private const val HELLO_OPERATION_TIMEOUT_MS = 10_000L
+        private const val ESP32_LOG_TAG = "PokeLDN-ESP32"
     }
 }
 
@@ -416,6 +475,10 @@ private fun UsbDeviceCard(
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("ESP32 HELLO") }
                 } else {
+                    if (esp32State.phase == Esp32HandshakePhase.FAILED) {
+                        Text("Handshake: ${esp32State.phase.label}")
+                        esp32State.detail?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    }
                     Button(
                         onClick = onConnect,
                         enabled = canConnect && state.phase != SerialConnectionPhase.REQUESTING_PERMISSION &&

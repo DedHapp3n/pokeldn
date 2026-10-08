@@ -9,33 +9,45 @@ class Esp32Client(
     private val helloAttempts: Int = HELLO_ATTEMPTS,
     private val helloTimeoutMs: Int = HELLO_TIMEOUT_MS,
     private val verificationTimeoutMs: Int = VERIFICATION_TIMEOUT_MS,
+    private val drainMaxMs: Int = DRAIN_MAX_MS,
+    private val diagnostics: (String) -> Unit = {},
 ) {
     fun hello(): Esp32Info {
-        drainPendingInput()
-        val reader = Esp32FrameReader()
-        val buffer = ByteArray(READ_BUFFER_SIZE)
-        val unexpectedTypes = linkedSetOf<Int>()
+        val started = System.nanoTime()
+        diagnostics("HELLO test started")
+        try {
+            drainPendingInput()
+            val reader = Esp32FrameReader(diagnostics)
+            val buffer = ByteArray(READ_BUFFER_SIZE)
+            val unexpectedTypes = linkedSetOf<Int>()
 
-        var synchronized = false
-        for (attempt in 0 until helloAttempts) {
-            serial.write(Esp32Protocol.helloFrame, WRITE_TIMEOUT_MS)
-            if (readInfoPayload(reader, buffer, helloTimeoutMs, unexpectedTypes) != null) {
-                synchronized = true
-                break
+            var synchronized = false
+            for (attempt in 1..helloAttempts) {
+                writeHello("synchronization attempt $attempt/$helloAttempts")
+                if (readInfoPayload(reader, buffer, helloTimeoutMs, unexpectedTypes) != null) {
+                    synchronized = true
+                    break
+                }
+                diagnostics("Synchronization attempt $attempt timed out")
             }
-        }
-        if (!synchronized) throw responseFailure(reader, unexpectedTypes)
+            if (!synchronized) throw responseFailure(reader, unexpectedTypes)
 
-        // Upstream open_serial first synchronizes past a possible board reset, then hello() sends a
-        // fresh request whose INFO is parsed and checked for protocol compatibility.
-        serial.write(Esp32Protocol.helloFrame, WRITE_TIMEOUT_MS)
-        val payload = readInfoPayload(reader, buffer, verificationTimeoutMs, unexpectedTypes)
-            ?: throw responseFailure(reader, unexpectedTypes)
-        val info = Esp32Protocol.parseInfo(payload)
-        if (info.protocolVersion != Esp32Protocol.PROTOCOL_VERSION) {
-            throw Esp32IncompatibleProtocolException(info)
+            // Upstream open_serial first synchronizes past a possible board reset, then hello()
+            // sends a fresh request whose INFO is parsed and checked for protocol compatibility.
+            diagnostics("Starting final HELLO verification")
+            writeHello("final verification")
+            val payload = readInfoPayload(reader, buffer, verificationTimeoutMs, unexpectedTypes)
+                ?: throw responseFailure(reader, unexpectedTypes)
+            val info = Esp32Protocol.parseInfo(payload)
+            if (info.protocolVersion != Esp32Protocol.PROTOCOL_VERSION) {
+                throw Esp32IncompatibleProtocolException(info)
+            }
+            diagnostics("HELLO succeeded in ${elapsedMillis(started)} ms")
+            return info
+        } catch (error: Exception) {
+            diagnostics("HELLO failed in ${elapsedMillis(started)} ms: ${error.message ?: error.javaClass.simpleName}")
+            throw error
         }
-        return info
     }
 
     private fun readInfoPayload(
@@ -47,12 +59,17 @@ class Esp32Client(
         val deadline = System.nanoTime() + timeoutMs * NANOS_PER_MILLISECOND
         while (System.nanoTime() < deadline) {
             val remainingMs = max(1, (deadline - System.nanoTime()) / NANOS_PER_MILLISECOND)
-            val count = serial.read(buffer, min(READ_SLICE_MS, remainingMs.toInt()))
+            val readTimeoutMs = min(READ_SLICE_MS, remainingMs.toInt())
+            val count = serial.read(buffer, readTimeoutMs)
+            diagnostics("Serial read returned $count bytes (timeout ${readTimeoutMs} ms)")
             if (count <= 0) continue
             for (frame in reader.feed(buffer, count)) {
                 when (frame.type) {
                     Esp32Protocol.MSG_CREDIT -> Unit
-                    Esp32Protocol.MSG_INFO -> return frame.payload
+                    Esp32Protocol.MSG_INFO -> {
+                        diagnostics("INFO received (${frame.payload.size} payload bytes)")
+                        return frame.payload
+                    }
                     else -> unexpectedTypes.add(frame.type)
                 }
             }
@@ -76,25 +93,46 @@ class Esp32Client(
     }
 
     private fun drainPendingInput() {
+        diagnostics("Serial drain started")
+        val started = System.nanoTime()
+        val deadline = started + drainMaxMs * NANOS_PER_MILLISECOND
         val buffer = ByteArray(READ_BUFFER_SIZE)
-        while (serial.read(buffer, DRAIN_TIMEOUT_MS) > 0) {
-            // The upstream reader continuously consumes boot text and unsolicited startup INFO.
+        var drained = 0
+        while (System.nanoTime() < deadline) {
+            val remainingMs = max(1, (deadline - System.nanoTime()) / NANOS_PER_MILLISECOND)
+            val readTimeoutMs = min(DRAIN_READ_TIMEOUT_MS, remainingMs.toInt())
+            val count = serial.read(buffer, readTimeoutMs)
+            diagnostics("Serial drain read returned $count bytes (timeout ${readTimeoutMs} ms)")
+            if (count <= 0) break
+            drained += count
         }
+        diagnostics("Serial drain completed in ${elapsedMillis(started)} ms ($drained bytes discarded)")
+    }
+
+    private fun writeHello(stage: String) {
+        val frame = Esp32Protocol.helloFrame
+        diagnostics("HELLO write: $stage")
+        serial.write(frame, WRITE_TIMEOUT_MS)
+        diagnostics("HELLO write completed: ${frame.size} bytes")
     }
 
     companion object {
         const val HELLO_ATTEMPTS = 5
         const val HELLO_TIMEOUT_MS = 1_000
         const val VERIFICATION_TIMEOUT_MS = 3_000
+        const val DRAIN_MAX_MS = 200
         private const val WRITE_TIMEOUT_MS = 1_000
         private const val READ_SLICE_MS = 100
-        private const val DRAIN_TIMEOUT_MS = 20
+        private const val DRAIN_READ_TIMEOUT_MS = 20
         private const val READ_BUFFER_SIZE = 4096
         private const val NANOS_PER_MILLISECOND = 1_000_000L
+
+        private fun elapsedMillis(started: Long): Long =
+            (System.nanoTime() - started) / NANOS_PER_MILLISECOND
     }
 }
 
-internal class Esp32FrameReader {
+internal class Esp32FrameReader(private val diagnostics: (String) -> Unit = {}) {
     private val encoded = ArrayList<Byte>()
     var lastError: Esp32MalformedFrameException? = null
         private set
@@ -113,9 +151,12 @@ internal class Esp32FrameReader {
             }
             if (encoded.isEmpty()) continue
             try {
-                frames.add(Esp32Protocol.decodeFrame(encoded.toByteArray()))
+                val frame = Esp32Protocol.decodeFrame(encoded.toByteArray())
+                diagnostics("Decoded frame type 0x%02X (${frame.payload.size} payload bytes)".format(frame.type))
+                frames.add(frame)
             } catch (error: Esp32MalformedFrameException) {
                 lastError = error
+                diagnostics("Rejected COBS/CRC frame: ${error.message}")
             }
             encoded.clear()
         }

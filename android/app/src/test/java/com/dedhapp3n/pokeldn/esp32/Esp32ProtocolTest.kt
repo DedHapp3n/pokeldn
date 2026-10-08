@@ -6,6 +6,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class Esp32ProtocolTest {
     @Test
@@ -68,6 +71,64 @@ class Esp32ProtocolTest {
             Esp32Client(serial, helloAttempts = 2, helloTimeoutMs = 2).hello()
         }
         assertEquals(2, serial.writes.size)
+    }
+
+    @Test
+    fun silentSerialCannotLeaveHelloRunningIndefinitely() {
+        val worker = Executors.newSingleThreadExecutor()
+        try {
+            val future = worker.submit<Esp32Info> {
+                Esp32Client(
+                    ScriptedSerial { _ -> byteArrayOf() },
+                    helloAttempts = 2,
+                    helloTimeoutMs = 5,
+                    verificationTimeoutMs = 5,
+                    drainMaxMs = 5,
+                ).hello()
+            }
+            val failure = assertThrows(ExecutionException::class.java) {
+                future.get(1, TimeUnit.SECONDS)
+            }
+            assertTrue(failure.cause is Esp32HelloTimeoutException)
+        } finally {
+            worker.shutdownNow()
+        }
+    }
+
+    @Test
+    fun continuousDrainTrafficCannotKeepHelloRunningIndefinitely() {
+        val serial = object : SerialIo {
+            var writes = 0
+
+            override fun read(buffer: ByteArray, timeoutMillis: Int): Int {
+                if (writes > 0) return 0
+                CREDIT_ZERO_FRAME.copyInto(buffer)
+                return CREDIT_ZERO_FRAME.size
+            }
+
+            override fun write(bytes: ByteArray, timeoutMillis: Int) {
+                writes++
+            }
+        }
+        val worker = Executors.newSingleThreadExecutor()
+        try {
+            val future = worker.submit<Esp32Info> {
+                Esp32Client(
+                    serial,
+                    helloAttempts = 1,
+                    helloTimeoutMs = 5,
+                    verificationTimeoutMs = 5,
+                    drainMaxMs = 5,
+                ).hello()
+            }
+            val failure = assertThrows(ExecutionException::class.java) {
+                future.get(1, TimeUnit.SECONDS)
+            }
+            assertTrue(failure.cause is Esp32HelloTimeoutException)
+            assertEquals(1, serial.writes)
+        } finally {
+            worker.shutdownNow()
+        }
     }
 
     @Test

@@ -20,7 +20,9 @@ interface SerialTransport : SerialIo {
 
 class UsbSerialTransport(private val manager: UsbManager) : SerialTransport {
     private val prober = UsbSerialProber.getDefaultProber()
+    @Volatile
     private var connection: UsbDeviceConnection? = null
+    @Volatile
     private var port: UsbSerialPort? = null
 
     override fun connect(device: UsbDevice) {
