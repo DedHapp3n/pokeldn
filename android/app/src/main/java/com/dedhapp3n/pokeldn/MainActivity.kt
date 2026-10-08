@@ -8,6 +8,8 @@ import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -51,12 +53,13 @@ class MainActivity : ComponentActivity() {
     private var scanResult by mutableStateOf<UsbScanResult?>(null)
     private var connectionState by mutableStateOf(SerialConnectionState())
     private var pendingDeviceId: Int? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var permissionTimeout: Runnable? = null
     private var operationId = 0
 
     private val permissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            val device = intent.usbDevice() ?: return
-            if (intent.action == ACTION_USB_PERMISSION) handlePermissionResult(device, intent)
+            if (intent.action == ACTION_USB_PERMISSION) handlePermissionResult(intent)
         }
     }
 
@@ -65,7 +68,7 @@ class MainActivity : ComponentActivity() {
             val device = intent.usbDevice() ?: return
             if (intent.action == UsbManager.ACTION_USB_DEVICE_DETACHED) {
                 if (connectionState.deviceName == device.deviceName) {
-                    pendingDeviceId = null
+                    clearPendingPermission()
                     operationId++
                     connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.DISCONNECTED)
                     serialWorker.execute { transport.disconnectSafely() }
@@ -109,7 +112,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         unregisterReceiver(permissionReceiver)
         unregisterReceiver(detachReceiver)
-        pendingDeviceId = null
+        clearPendingPermission()
         operationId++
         serialWorker.execute { transport.disconnectSafely() }
         serialWorker.shutdown()
@@ -121,7 +124,7 @@ class MainActivity : ComponentActivity() {
         val name = connectionState.deviceName ?: return
         val device = (scanResult as? UsbScanResult.Devices)?.items?.firstOrNull { it.deviceName == name }
         if (device == null && connectionState.phase != SerialConnectionPhase.DISCONNECTED) {
-            pendingDeviceId = null
+            clearPendingPermission()
             operationId++
             connectionState = SerialConnectionState(name, SerialConnectionPhase.DISCONNECTED)
             serialWorker.execute { transport.disconnectSafely() }
@@ -130,6 +133,9 @@ class MainActivity : ComponentActivity() {
                 SerialConnectionPhase.DEVICE_DETECTED,
             )) {
             connectionState = SerialConnectionState(name, devicePhase(device))
+        } else if (device != null && connectionState.phase == SerialConnectionPhase.CONNECTION_FAILED &&
+            device.hasPermission) {
+            connectionState = SerialConnectionState(name, SerialConnectionPhase.READY)
         }
     }
 
@@ -152,32 +158,67 @@ class MainActivity : ComponentActivity() {
         } else {
             pendingDeviceId = device.deviceId
             connectionState = SerialConnectionState(name, SerialConnectionPhase.REQUESTING_PERMISSION)
-            val permissionIntent = PendingIntent.getBroadcast(
-                this, 0, Intent(ACTION_USB_PERMISSION).setPackage(packageName),
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-            )
             try {
+                // UsbManager adds EXTRA_DEVICE and EXTRA_PERMISSION_GRANTED to the result.
+                val permissionIntent = PendingIntent.getBroadcast(
+                    this, 0, Intent(ACTION_USB_PERMISSION).setPackage(packageName),
+                    PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                )
                 usbManager.requestPermission(device, permissionIntent)
+                schedulePermissionTimeout(device)
             } catch (error: Exception) {
-                pendingDeviceId = null
+                clearPendingPermission()
                 connectionState = SerialConnectionState(name, SerialConnectionPhase.CONNECTION_FAILED, error.message)
             }
         }
     }
 
-    private fun handlePermissionResult(device: UsbDevice, intent: Intent) {
-        if (pendingDeviceId != device.deviceId || connectionState.deviceName != device.deviceName) return
-        pendingDeviceId = null
-        if (!usbManager.deviceList.containsKey(device.deviceName)) {
-            connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.DISCONNECTED)
-        } else if (!intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false) ||
-            !usbManager.hasPermission(device)) {
-            connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.PERMISSION_DENIED)
-        } else {
-            connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.READY)
+    private fun handlePermissionResult(intent: Intent) {
+        val name = connectionState.deviceName ?: return
+        val id = pendingDeviceId ?: return
+        val reportedDevice = intent.usbDevice()
+        if (reportedDevice != null && (reportedDevice.deviceId != id || reportedDevice.deviceName != name)) return
+        clearPendingPermission()
+        val device = usbManager.deviceList[name]
+        if (device == null || device.deviceId != id) {
+            connectionState = SerialConnectionState(name, SerialConnectionPhase.DISCONNECTED)
+        } else if (usbManager.hasPermission(device)) {
+            connectionState = SerialConnectionState(name, SerialConnectionPhase.READY)
             openSerial(device)
+        } else if (intent.hasExtra(UsbManager.EXTRA_PERMISSION_GRANTED) &&
+            !intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
+            connectionState = SerialConnectionState(name, SerialConnectionPhase.PERMISSION_DENIED)
+        } else {
+            connectionState = SerialConnectionState(name, SerialConnectionPhase.CONNECTION_FAILED,
+                "USB permission response was incomplete. Tap Connect Serial to retry.")
         }
         scanResult = scanner.scan()
+    }
+
+    private fun schedulePermissionTimeout(device: UsbDevice) {
+        val timeout = Runnable {
+            if (pendingDeviceId != device.deviceId || connectionState.deviceName != device.deviceName) return@Runnable
+            clearPendingPermission()
+            val current = usbManager.deviceList[device.deviceName]
+            if (current == null || current.deviceId != device.deviceId) {
+                connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.DISCONNECTED)
+            } else if (usbManager.hasPermission(current)) {
+                connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.READY)
+                openSerial(current)
+            } else {
+                connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.CONNECTION_FAILED,
+                    "USB permission response timed out. Tap Connect Serial to retry.")
+            }
+            scanResult = scanner.scan()
+        }
+        permissionTimeout = timeout
+        mainHandler.postDelayed(timeout, PERMISSION_TIMEOUT_MS)
+    }
+
+    private fun clearPendingPermission() {
+        permissionTimeout?.let(mainHandler::removeCallbacks)
+        permissionTimeout = null
+        pendingDeviceId = null
     }
 
     private fun openSerial(device: UsbDevice) {
@@ -228,6 +269,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val ACTION_USB_PERMISSION = "com.dedhapp3n.pokeldn.USB_PERMISSION"
+        private const val PERMISSION_TIMEOUT_MS = 30_000L
     }
 }
 
