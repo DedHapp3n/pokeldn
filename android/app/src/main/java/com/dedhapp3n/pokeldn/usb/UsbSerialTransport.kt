@@ -8,11 +8,14 @@ import com.hoho.android.usbserial.driver.UsbSerialProber
 import java.io.IOException
 
 /** Synchronous serial boundary. Call its methods from a worker thread. */
-interface SerialTransport {
-    fun connect(device: UsbDevice)
-    fun disconnect()
+interface SerialIo {
     fun read(buffer: ByteArray, timeoutMillis: Int): Int
     fun write(bytes: ByteArray, timeoutMillis: Int)
+}
+
+interface SerialTransport : SerialIo {
+    fun connect(device: UsbDevice)
+    fun disconnect()
 }
 
 class UsbSerialTransport(private val manager: UsbManager) : SerialTransport {

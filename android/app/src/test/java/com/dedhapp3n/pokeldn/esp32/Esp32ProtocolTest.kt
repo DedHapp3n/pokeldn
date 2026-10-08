@@ -1,0 +1,137 @@
+package com.dedhapp3n.pokeldn.esp32
+
+import com.dedhapp3n.pokeldn.usb.SerialIo
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class Esp32ProtocolTest {
+    @Test
+    fun helloEncodingMatchesUpstreamVector() {
+        assertEquals("06011bdf05a500", Esp32Protocol.helloFrame.toHex())
+    }
+
+    @Test
+    fun cobsRoundTripsUpstreamBoundaryLengths() {
+        for (size in listOf(0, 1, 253, 254, 255, 256, 509, 1600)) {
+            for (input in listOf(ByteArray(size), ByteArray(size) { 1 }, ByteArray(size) { it.toByte() })) {
+                val encoded = Esp32Protocol.cobsEncode(input)
+                assertTrue(encoded.none { it.toInt() == 0 })
+                assertArrayEquals(input, Esp32Protocol.cobsDecode(encoded))
+            }
+        }
+    }
+
+    @Test
+    fun validUpstreamInfoResponseIsParsed() {
+        val serial = ScriptedSerial { INFO_FRAME }
+        val info = Esp32Client(serial).hello()
+
+        assertEquals(1, info.protocolVersion)
+        assertEquals("02:11:22:33:44:55", info.stationMac.formatMac())
+        assertEquals("02:66:77:88:99:aa", info.accessPointMac.formatMac())
+        assertEquals(3, info.chipRevision)
+        assertEquals("pokeldn-radio esp32 version=1.4.0 idf=v6.1", info.firmwareText)
+        assertEquals("1.4.0", info.firmwareVersion)
+        assertEquals(2, serial.writes.size)
+        serial.writes.forEach { assertArrayEquals(Esp32Protocol.helloFrame, it) }
+    }
+
+    @Test
+    fun creditBeforeInfoIsAccepted() {
+        val serial = ScriptedSerial { CREDIT_ZERO_FRAME + INFO_FRAME }
+        assertEquals(1, Esp32Client(serial).hello().protocolVersion)
+    }
+
+    @Test
+    fun synchronizationInfoIsNotParsedUntilFinalHello() {
+        val serial = ScriptedSerial { write ->
+            if (write == 1) Esp32Protocol.encodeFrame(Esp32Protocol.MSG_INFO, byteArrayOf()) else INFO_FRAME
+        }
+        assertEquals(1, Esp32Client(serial).hello().protocolVersion)
+    }
+
+    @Test
+    fun incompleteResponseIsReported() {
+        val serial = ScriptedSerial { _ -> INFO_FRAME.copyOf(INFO_FRAME.size - 1) }
+        assertThrows(Esp32IncompleteResponseException::class.java) {
+            Esp32Client(serial, helloAttempts = 1, helloTimeoutMs = 2).hello()
+        }
+    }
+
+    @Test
+    fun readTimeoutRetriesHelloThenReportsFailure() {
+        val serial = ScriptedSerial { _ -> byteArrayOf() }
+        assertThrows(Esp32HelloTimeoutException::class.java) {
+            Esp32Client(serial, helloAttempts = 2, helloTimeoutMs = 2).hello()
+        }
+        assertEquals(2, serial.writes.size)
+    }
+
+    @Test
+    fun malformedResponseIsReported() {
+        val corrupt = INFO_FRAME.copyOf().also { it[it.lastIndex - 1] = (it[it.lastIndex - 1].toInt() xor 0x40).toByte() }
+        val error = assertThrows(Esp32MalformedFrameException::class.java) {
+            Esp32Client(ScriptedSerial { _ -> corrupt }, helloAttempts = 1, helloTimeoutMs = 2).hello()
+        }
+        assertTrue(error.message!!.contains("checksum"))
+    }
+
+    @Test
+    fun shortInfoPayloadIsRejected() {
+        val shortInfo = Esp32Protocol.encodeFrame(Esp32Protocol.MSG_INFO, byteArrayOf(1, 2, 3))
+        assertThrows(Esp32IncompleteResponseException::class.java) {
+            Esp32Client(ScriptedSerial { _ -> shortInfo }).hello()
+        }
+    }
+
+    @Test
+    fun incompatibleProtocolVersionIsRejectedWithBoardInfo() {
+        val incompatible = INFO_PAYLOAD.copyOf().also { it[0] = 2 }
+        val error = assertThrows(Esp32IncompatibleProtocolException::class.java) {
+            Esp32Client(ScriptedSerial { _ -> Esp32Protocol.encodeFrame(Esp32Protocol.MSG_INFO, incompatible) }).hello()
+        }
+        assertEquals(2, error.info.protocolVersion)
+        assertEquals("1.4.0", error.info.firmwareVersion)
+    }
+
+    @Test
+    fun bootTextAndBadFrameAreSkippedBeforeValidInfo() {
+        val noise = "ets Jun  8 2016 rst:0x1\r\n\u0000".toByteArray()
+        val malformed = byteArrayOf(2, 1, 0)
+        val info = Esp32Client(ScriptedSerial { _ -> noise + malformed + INFO_FRAME }).hello()
+        assertEquals("1.4.0", info.firmwareVersion)
+    }
+
+    private class ScriptedSerial(private val response: (Int) -> ByteArray) : SerialIo {
+        val writes = mutableListOf<ByteArray>()
+        private var pending = byteArrayOf()
+
+        override fun read(buffer: ByteArray, timeoutMillis: Int): Int {
+            if (pending.isEmpty()) return 0
+            val count = minOf(buffer.size, pending.size)
+            pending.copyInto(buffer, endIndex = count)
+            pending = pending.copyOfRange(count, pending.size)
+            return count
+        }
+
+        override fun write(bytes: ByteArray, timeoutMillis: Int) {
+            writes.add(bytes.copyOf())
+            pending += response(writes.size)
+        }
+    }
+
+    companion object {
+        private val INFO_PAYLOAD = byteArrayOf(1) +
+            "0211223344550266778899aa03".hexToBytes() +
+            "pokeldn-radio esp32 version=1.4.0 idf=v6.1".toByteArray()
+        private val INFO_FRAME = "3e81010211223344550266778899aa03706f6b656c646e2d726164696f20657370333220".hexToBytes() +
+            "76657273696f6e3d312e342e30206964663d76362e31357fb9b400".hexToBytes()
+        private val CREDIT_ZERO_FRAME = "028b010101049e76140100".hexToBytes()
+    }
+}
+
+private fun String.hexToBytes(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it.toInt() and 0xFF) }

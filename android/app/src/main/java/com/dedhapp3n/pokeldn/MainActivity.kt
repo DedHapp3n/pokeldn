@@ -33,6 +33,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.dedhapp3n.pokeldn.esp32.Esp32Client
+import com.dedhapp3n.pokeldn.esp32.Esp32HandshakePhase
+import com.dedhapp3n.pokeldn.esp32.Esp32HandshakeState
+import com.dedhapp3n.pokeldn.esp32.Esp32IncompatibleProtocolException
+import com.dedhapp3n.pokeldn.esp32.formatMac
 import com.dedhapp3n.pokeldn.ui.theme.PokeLDNTheme
 import com.dedhapp3n.pokeldn.usb.UsbDeviceInfo
 import com.dedhapp3n.pokeldn.usb.UsbDeviceScanner
@@ -52,6 +57,7 @@ class MainActivity : ComponentActivity() {
     private val serialWorker = Executors.newSingleThreadExecutor()
     private var scanResult by mutableStateOf<UsbScanResult?>(null)
     private var connectionState by mutableStateOf(SerialConnectionState())
+    private var esp32State by mutableStateOf(Esp32HandshakeState())
     private var pendingDeviceId: Int? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var permissionTimeout: Runnable? = null
@@ -70,6 +76,7 @@ class MainActivity : ComponentActivity() {
                 if (connectionState.deviceName == device.deviceName) {
                     clearPendingPermission()
                     operationId++
+                    esp32State = Esp32HandshakeState()
                     connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.DISCONNECTED)
                     serialWorker.execute { transport.disconnectSafely() }
                 }
@@ -94,9 +101,11 @@ class MainActivity : ComponentActivity() {
                     UsbDevicesScreen(
                         result = scanResult,
                         connectionState = connectionState,
+                        esp32State = esp32State,
                         onScan = ::scanDevices,
                         onConnect = ::connectSerial,
                         onDisconnect = ::disconnectSerial,
+                        onTestEsp32 = ::testEsp32,
                         modifier = Modifier.padding(innerPadding),
                     )
                 }
@@ -126,6 +135,7 @@ class MainActivity : ComponentActivity() {
         if (device == null && connectionState.phase != SerialConnectionPhase.DISCONNECTED) {
             clearPendingPermission()
             operationId++
+            esp32State = Esp32HandshakeState()
             connectionState = SerialConnectionState(name, SerialConnectionPhase.DISCONNECTED)
             serialWorker.execute { transport.disconnectSafely() }
         } else if (device != null && connectionState.phase in setOf(
@@ -234,6 +244,7 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 if (thisOperation != operationId) return@runOnUiThread
                 connectionState = if (error == null && usbManager.deviceList.containsKey(device.deviceName)) {
+                    esp32State = Esp32HandshakeState()
                     SerialConnectionState(device.deviceName, SerialConnectionPhase.CONNECTED)
                 } else if (!usbManager.deviceList.containsKey(device.deviceName)) {
                     serialWorker.execute { transport.disconnectSafely() }
@@ -248,6 +259,7 @@ class MainActivity : ComponentActivity() {
     private fun disconnectSerial() {
         val name = connectionState.deviceName ?: return
         val thisOperation = ++operationId
+        esp32State = Esp32HandshakeState()
         connectionState = SerialConnectionState(name, SerialConnectionPhase.DISCONNECTING)
         serialWorker.execute {
             transport.disconnectSafely()
@@ -258,6 +270,30 @@ class MainActivity : ComponentActivity() {
                     if (usbManager.deviceList.containsKey(name)) SerialConnectionPhase.READY
                     else SerialConnectionPhase.DISCONNECTED,
                 )
+            }
+        }
+    }
+
+    private fun testEsp32() {
+        if (connectionState.phase != SerialConnectionPhase.CONNECTED ||
+            esp32State.phase == Esp32HandshakePhase.TESTING) return
+        val thisOperation = operationId
+        esp32State = Esp32HandshakeState(Esp32HandshakePhase.TESTING)
+        serialWorker.execute {
+            val nextState = try {
+                Esp32HandshakeState(Esp32HandshakePhase.VERIFIED, info = Esp32Client(transport).hello())
+            } catch (error: Exception) {
+                Esp32HandshakeState(
+                    Esp32HandshakePhase.FAILED,
+                    info = (error as? Esp32IncompatibleProtocolException)?.info,
+                    detail = error.message ?: "ESP32 HELLO failed",
+                )
+            }
+            runOnUiThread {
+                if (thisOperation != operationId || connectionState.phase != SerialConnectionPhase.CONNECTED) {
+                    return@runOnUiThread
+                }
+                esp32State = nextState
             }
         }
     }
@@ -281,9 +317,11 @@ private fun UsbSerialTransport.disconnectSafely() {
 private fun UsbDevicesScreen(
     result: UsbScanResult?,
     connectionState: SerialConnectionState,
+    esp32State: Esp32HandshakeState,
     onScan: () -> Unit,
     onConnect: (String) -> Unit,
     onDisconnect: () -> Unit,
+    onTestEsp32: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -323,8 +361,11 @@ private fun UsbDevicesScreen(
                         state = if (connectionState.deviceName == device.deviceName) connectionState
                             else SerialConnectionState(device.deviceName, devicePhase(device)),
                         canConnect = !busy,
+                        esp32State = if (connectionState.deviceName == device.deviceName) esp32State
+                            else Esp32HandshakeState(),
                         onConnect = { onConnect(device.deviceName) },
                         onDisconnect = onDisconnect,
+                        onTestEsp32 = onTestEsp32,
                     )
                 }
             }
@@ -337,8 +378,10 @@ private fun UsbDeviceCard(
     device: UsbDeviceInfo,
     state: SerialConnectionState,
     canConnect: Boolean,
+    esp32State: Esp32HandshakeState,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
+    onTestEsp32: () -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -356,6 +399,22 @@ private fun UsbDeviceCard(
                 Text("Serial settings: ${UsbSerialTransport.BAUD_RATE} baud, 8N1, no flow control")
                 if (state.phase == SerialConnectionPhase.CONNECTED) {
                     Button(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) { Text("Disconnect") }
+                    Text("ESP32 protocol", style = MaterialTheme.typography.titleMedium)
+                    Text("Handshake: ${esp32State.phase.label}")
+                    esp32State.detail?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    esp32State.info?.let { info ->
+                        Text("Protocol version: ${info.protocolVersion}")
+                        Text("Firmware: ${info.firmwareText}")
+                        if (info.firmwareVersion.isNotEmpty()) Text("Firmware version: ${info.firmwareVersion}")
+                        Text("Chip revision: ${info.chipRevision}")
+                        Text("Station MAC: ${info.stationMac.formatMac()}")
+                        Text("Access point MAC: ${info.accessPointMac.formatMac()}")
+                    }
+                    Button(
+                        onClick = onTestEsp32,
+                        enabled = esp32State.phase != Esp32HandshakePhase.TESTING,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("ESP32 HELLO") }
                 } else {
                     Button(
                         onClick = onConnect,
