@@ -27,10 +27,12 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -42,7 +44,6 @@ import com.dedhapp3n.pokeldn.esp32.Esp32Client
 import com.dedhapp3n.pokeldn.esp32.Esp32HandshakePhase
 import com.dedhapp3n.pokeldn.esp32.Esp32HandshakeState
 import com.dedhapp3n.pokeldn.esp32.Esp32IncompatibleProtocolException
-import com.dedhapp3n.pokeldn.esp32.RawCaptureMode
 import com.dedhapp3n.pokeldn.esp32.RawCapturePhase
 import com.dedhapp3n.pokeldn.esp32.RawCaptureState
 import com.dedhapp3n.pokeldn.esp32.RawSerialCapture
@@ -73,6 +74,8 @@ class MainActivity : ComponentActivity() {
     private var connectionState by mutableStateOf(SerialConnectionState())
     private var esp32State by mutableStateOf(Esp32HandshakeState())
     private var rawCaptureState by mutableStateOf(RawCaptureState())
+    private var connectedBaudRate by mutableIntStateOf(UsbSerialTransport.BAUD_RATE)
+    private var selectedDiagnosticBaud by mutableIntStateOf(UsbSerialTransport.BAUD_RATE)
     private var pendingDeviceId: Int? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var permissionTimeout: Runnable? = null
@@ -126,10 +129,13 @@ class MainActivity : ComponentActivity() {
                         connectionState = connectionState,
                         esp32State = esp32State,
                         rawCaptureState = rawCaptureState,
+                        connectedBaudRate = connectedBaudRate,
+                        selectedDiagnosticBaud = selectedDiagnosticBaud,
                         onScan = ::scanDevices,
                         onConnect = ::connectSerial,
                         onDisconnect = ::disconnectSerial,
                         onTestEsp32 = ::testEsp32,
+                        onDiagnosticBaudSelected = { selectedDiagnosticBaud = it },
                         onCaptureRaw = ::captureRawSerial,
                         modifier = Modifier.padding(innerPadding),
                     )
@@ -279,6 +285,7 @@ class MainActivity : ComponentActivity() {
                 if (thisOperation != operationId) return@runOnUiThread
                 connectionState = if (error == null && usbManager.deviceList.containsKey(device.deviceName)) {
                     esp32State = Esp32HandshakeState()
+                    connectedBaudRate = transport.configuredBaudRate ?: UsbSerialTransport.BAUD_RATE
                     SerialConnectionState(device.deviceName, SerialConnectionPhase.CONNECTED)
                 } else if (!usbManager.deviceList.containsKey(device.deviceName)) {
                     serialWorker.execute { transport.disconnectSafely() }
@@ -376,25 +383,39 @@ class MainActivity : ComponentActivity() {
         helloFuture = null
     }
 
-    private fun captureRawSerial(mode: RawCaptureMode) {
+    private fun captureRawSerial(baudRate: Int) {
         if (connectionState.phase != SerialConnectionPhase.CONNECTED ||
             esp32State.phase == Esp32HandshakePhase.TESTING ||
             rawCaptureState.phase == RawCapturePhase.CAPTURING) return
+        val name = connectionState.deviceName ?: return
+        val device = usbManager.deviceList[name] ?: run {
+            scanDevices()
+            return
+        }
         val thisOperation = operationId
         val thisCapture = ++rawCaptureOperationId
         val finished = AtomicBoolean(false)
-        rawCaptureState = RawCaptureState(RawCapturePhase.CAPTURING, detail = mode.label)
+        rawCaptureState = RawCaptureState(RawCapturePhase.CAPTURING, detail = "Reopening at $baudRate baud")
         val task = helloWorker.submit {
+            var reopened = false
             val nextState = try {
+                transport.disconnectSafely()
+                transport.connect(device, baudRate)
+                reopened = true
+                val configuredBaud = transport.configuredBaudRate
+                    ?: throw IllegalStateException("Serial driver did not report a configured baud rate")
                 val capture = RawSerialCapture(transport, diagnostics = { Log.d(ESP32_LOG_TAG, it) })
-                RawCaptureState(RawCapturePhase.COMPLETE, result = capture.capture(mode))
+                RawCaptureState(RawCapturePhase.COMPLETE, result = capture.capture(configuredBaud))
             } catch (error: Exception) {
                 RawCaptureState(
                     RawCapturePhase.FAILED,
                     detail = error.message ?: "Raw serial capture failed",
                 )
             }
-            if (!finished.compareAndSet(false, true)) return@submit
+            if (!finished.compareAndSet(false, true)) {
+                transport.disconnectSafely()
+                return@submit
+            }
             runOnUiThread {
                 if (thisCapture != rawCaptureOperationId || thisOperation != operationId ||
                     connectionState.phase != SerialConnectionPhase.CONNECTED) return@runOnUiThread
@@ -402,6 +423,16 @@ class MainActivity : ComponentActivity() {
                 rawCaptureTimeout = null
                 rawCaptureFuture = null
                 rawCaptureState = nextState
+                if (nextState.phase == RawCapturePhase.COMPLETE) {
+                    connectedBaudRate = nextState.result?.baudRate ?: baudRate
+                } else if (!reopened) {
+                    operationId++
+                    connectionState = SerialConnectionState(
+                        name,
+                        SerialConnectionPhase.CONNECTION_FAILED,
+                        "Could not reopen serial at $baudRate baud. Reconnect to retry.",
+                    )
+                }
             }
         }
         rawCaptureFuture = task
@@ -458,17 +489,22 @@ private fun UsbSerialTransport.disconnectSafely() {
     try { disconnect() } catch (_: Exception) { /* A detached device may already be closed. */ }
 }
 
+private val DIAGNOSTIC_BAUD_RATES = listOf(115200, 230400, 460800, 921600)
+
 @Composable
 private fun UsbDevicesScreen(
     result: UsbScanResult?,
     connectionState: SerialConnectionState,
     esp32State: Esp32HandshakeState,
     rawCaptureState: RawCaptureState,
+    connectedBaudRate: Int,
+    selectedDiagnosticBaud: Int,
     onScan: () -> Unit,
     onConnect: (String) -> Unit,
     onDisconnect: () -> Unit,
     onTestEsp32: () -> Unit,
-    onCaptureRaw: (RawCaptureMode) -> Unit,
+    onDiagnosticBaudSelected: (Int) -> Unit,
+    onCaptureRaw: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -512,9 +548,14 @@ private fun UsbDevicesScreen(
                             else Esp32HandshakeState(),
                         rawCaptureState = if (connectionState.deviceName == device.deviceName) rawCaptureState
                             else RawCaptureState(),
+                        connectedBaudRate = if (connectionState.deviceName == device.deviceName &&
+                            connectionState.phase == SerialConnectionPhase.CONNECTED) connectedBaudRate
+                            else UsbSerialTransport.BAUD_RATE,
+                        selectedDiagnosticBaud = selectedDiagnosticBaud,
                         onConnect = { onConnect(device.deviceName) },
                         onDisconnect = onDisconnect,
                         onTestEsp32 = onTestEsp32,
+                        onDiagnosticBaudSelected = onDiagnosticBaudSelected,
                         onCaptureRaw = onCaptureRaw,
                     )
                 }
@@ -530,10 +571,13 @@ private fun UsbDeviceCard(
     canConnect: Boolean,
     esp32State: Esp32HandshakeState,
     rawCaptureState: RawCaptureState,
+    connectedBaudRate: Int,
+    selectedDiagnosticBaud: Int,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onTestEsp32: () -> Unit,
-    onCaptureRaw: (RawCaptureMode) -> Unit,
+    onDiagnosticBaudSelected: (Int) -> Unit,
+    onCaptureRaw: (Int) -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -549,9 +593,14 @@ private fun UsbDeviceCard(
             if (device.serialSupported) {
                 Text("Status: ${state.phase.label}")
                 state.detail?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                Text("Serial settings: ${UsbSerialTransport.BAUD_RATE} baud, 8N1, no flow control")
+                Text("Serial settings: $connectedBaudRate baud, 8N1, no flow control")
                 if (state.phase == SerialConnectionPhase.CONNECTED) {
-                    Button(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) { Text("Disconnect") }
+                    Button(
+                        onClick = onDisconnect,
+                        enabled = esp32State.phase != Esp32HandshakePhase.TESTING &&
+                            rawCaptureState.phase != RawCapturePhase.CAPTURING,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Disconnect") }
                     Text("ESP32 protocol", style = MaterialTheme.typography.titleMedium)
                     Text("Handshake: ${esp32State.phase.label}")
                     esp32State.detail?.let { Text(it, color = MaterialTheme.colorScheme.error) }
@@ -569,19 +618,30 @@ private fun UsbDeviceCard(
                             rawCaptureState.phase != RawCapturePhase.CAPTURING,
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("ESP32 HELLO") }
-                    Text("Raw serial diagnostic", style = MaterialTheme.typography.titleMedium)
+                    Text("Raw Serial Diagnostics", style = MaterialTheme.typography.titleMedium)
+                    Text("Passive capture baud (no protocol data is sent)")
+                    DIAGNOSTIC_BAUD_RATES.forEach { baud ->
+                        val selectBaud = { onDiagnosticBaudSelected(baud) }
+                        if (baud == selectedDiagnosticBaud) {
+                            Button(
+                                onClick = selectBaud,
+                                enabled = rawCaptureState.phase != RawCapturePhase.CAPTURING,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text("$baud baud (selected)") }
+                        } else {
+                            OutlinedButton(
+                                onClick = selectBaud,
+                                enabled = rawCaptureState.phase != RawCapturePhase.CAPTURING,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text("$baud baud") }
+                        }
+                    }
                     Button(
-                        onClick = { onCaptureRaw(RawCaptureMode.IDLE) },
+                        onClick = { onCaptureRaw(selectedDiagnosticBaud) },
                         enabled = esp32State.phase != Esp32HandshakePhase.TESTING &&
                             rawCaptureState.phase != RawCapturePhase.CAPTURING,
                         modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Capture Raw Serial") }
-                    Button(
-                        onClick = { onCaptureRaw(RawCaptureMode.ONE_HELLO) },
-                        enabled = esp32State.phase != Esp32HandshakePhase.TESTING &&
-                            rawCaptureState.phase != RawCapturePhase.CAPTURING,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Capture After One HELLO") }
+                    ) { Text("Capture Passive") }
                 } else {
                     if (esp32State.phase == Esp32HandshakePhase.FAILED) {
                         Text("Handshake: ${esp32State.phase.label}")
