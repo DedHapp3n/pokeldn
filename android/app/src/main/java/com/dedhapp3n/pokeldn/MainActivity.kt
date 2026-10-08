@@ -46,6 +46,7 @@ import com.dedhapp3n.pokeldn.esp32.Esp32HandshakeState
 import com.dedhapp3n.pokeldn.esp32.Esp32IncompatibleProtocolException
 import com.dedhapp3n.pokeldn.esp32.RawCapturePhase
 import com.dedhapp3n.pokeldn.esp32.RawCaptureState
+import com.dedhapp3n.pokeldn.esp32.RawReadBufferMode
 import com.dedhapp3n.pokeldn.esp32.RawSerialCapture
 import com.dedhapp3n.pokeldn.esp32.formatMac
 import com.dedhapp3n.pokeldn.ui.theme.PokeLDNTheme
@@ -76,6 +77,7 @@ class MainActivity : ComponentActivity() {
     private var rawCaptureState by mutableStateOf(RawCaptureState())
     private var connectedBaudRate by mutableIntStateOf(UsbSerialTransport.BAUD_RATE)
     private var selectedDiagnosticBaud by mutableIntStateOf(UsbSerialTransport.BAUD_RATE)
+    private var selectedReadBufferMode by mutableStateOf(RawReadBufferMode.REUSED)
     private var pendingDeviceId: Int? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var permissionTimeout: Runnable? = null
@@ -131,11 +133,13 @@ class MainActivity : ComponentActivity() {
                         rawCaptureState = rawCaptureState,
                         connectedBaudRate = connectedBaudRate,
                         selectedDiagnosticBaud = selectedDiagnosticBaud,
+                        selectedReadBufferMode = selectedReadBufferMode,
                         onScan = ::scanDevices,
                         onConnect = ::connectSerial,
                         onDisconnect = ::disconnectSerial,
                         onTestEsp32 = ::testEsp32,
                         onDiagnosticBaudSelected = { selectedDiagnosticBaud = it },
+                        onReadBufferModeSelected = { selectedReadBufferMode = it },
                         onCaptureRaw = ::captureRawSerial,
                         modifier = Modifier.padding(innerPadding),
                     )
@@ -383,7 +387,7 @@ class MainActivity : ComponentActivity() {
         helloFuture = null
     }
 
-    private fun captureRawSerial(baudRate: Int) {
+    private fun captureRawSerial(baudRate: Int, bufferMode: RawReadBufferMode) {
         if (connectionState.phase != SerialConnectionPhase.CONNECTED ||
             esp32State.phase == Esp32HandshakePhase.TESTING ||
             rawCaptureState.phase == RawCapturePhase.CAPTURING) return
@@ -395,7 +399,10 @@ class MainActivity : ComponentActivity() {
         val thisOperation = operationId
         val thisCapture = ++rawCaptureOperationId
         val finished = AtomicBoolean(false)
-        rawCaptureState = RawCaptureState(RawCapturePhase.CAPTURING, detail = "Reopening at $baudRate baud")
+        rawCaptureState = RawCaptureState(
+            RawCapturePhase.CAPTURING,
+            detail = "Reopening at $baudRate baud; ${bufferMode.label}",
+        )
         val task = helloWorker.submit {
             var reopened = false
             val nextState = try {
@@ -404,8 +411,12 @@ class MainActivity : ComponentActivity() {
                 reopened = true
                 val configuredBaud = transport.configuredBaudRate
                     ?: throw IllegalStateException("Serial driver did not report a configured baud rate")
+                val usbDiagnostic = transport.openDiagnostic
                 val capture = RawSerialCapture(transport, diagnostics = { Log.d(ESP32_LOG_TAG, it) })
-                RawCaptureState(RawCapturePhase.COMPLETE, result = capture.capture(configuredBaud))
+                RawCaptureState(
+                    RawCapturePhase.COMPLETE,
+                    result = capture.capture(configuredBaud, bufferMode, usbDiagnostic),
+                )
             } catch (error: Exception) {
                 RawCaptureState(
                     RawCapturePhase.FAILED,
@@ -499,12 +510,14 @@ private fun UsbDevicesScreen(
     rawCaptureState: RawCaptureState,
     connectedBaudRate: Int,
     selectedDiagnosticBaud: Int,
+    selectedReadBufferMode: RawReadBufferMode,
     onScan: () -> Unit,
     onConnect: (String) -> Unit,
     onDisconnect: () -> Unit,
     onTestEsp32: () -> Unit,
     onDiagnosticBaudSelected: (Int) -> Unit,
-    onCaptureRaw: (Int) -> Unit,
+    onReadBufferModeSelected: (RawReadBufferMode) -> Unit,
+    onCaptureRaw: (Int, RawReadBufferMode) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -552,10 +565,12 @@ private fun UsbDevicesScreen(
                             connectionState.phase == SerialConnectionPhase.CONNECTED) connectedBaudRate
                             else UsbSerialTransport.BAUD_RATE,
                         selectedDiagnosticBaud = selectedDiagnosticBaud,
+                        selectedReadBufferMode = selectedReadBufferMode,
                         onConnect = { onConnect(device.deviceName) },
                         onDisconnect = onDisconnect,
                         onTestEsp32 = onTestEsp32,
                         onDiagnosticBaudSelected = onDiagnosticBaudSelected,
+                        onReadBufferModeSelected = onReadBufferModeSelected,
                         onCaptureRaw = onCaptureRaw,
                     )
                 }
@@ -573,11 +588,13 @@ private fun UsbDeviceCard(
     rawCaptureState: RawCaptureState,
     connectedBaudRate: Int,
     selectedDiagnosticBaud: Int,
+    selectedReadBufferMode: RawReadBufferMode,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onTestEsp32: () -> Unit,
     onDiagnosticBaudSelected: (Int) -> Unit,
-    onCaptureRaw: (Int) -> Unit,
+    onReadBufferModeSelected: (RawReadBufferMode) -> Unit,
+    onCaptureRaw: (Int, RawReadBufferMode) -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -636,8 +653,26 @@ private fun UsbDeviceCard(
                             ) { Text("$baud baud") }
                         }
                     }
+                    Text("Read buffer experiment")
+                    Text("Capture both modes at the same baud and compare their copied results.")
+                    RawReadBufferMode.entries.forEach { mode ->
+                        val selectMode = { onReadBufferModeSelected(mode) }
+                        if (mode == selectedReadBufferMode) {
+                            Button(
+                                onClick = selectMode,
+                                enabled = rawCaptureState.phase != RawCapturePhase.CAPTURING,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text("${mode.label} (selected)") }
+                        } else {
+                            OutlinedButton(
+                                onClick = selectMode,
+                                enabled = rawCaptureState.phase != RawCapturePhase.CAPTURING,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text(mode.label) }
+                        }
+                    }
                     Button(
-                        onClick = { onCaptureRaw(selectedDiagnosticBaud) },
+                        onClick = { onCaptureRaw(selectedDiagnosticBaud, selectedReadBufferMode) },
                         enabled = esp32State.phase != Esp32HandshakePhase.TESTING &&
                             rawCaptureState.phase != RawCapturePhase.CAPTURING,
                         modifier = Modifier.fillMaxWidth(),

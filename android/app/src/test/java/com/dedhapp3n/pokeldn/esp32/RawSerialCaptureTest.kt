@@ -3,6 +3,9 @@ package com.dedhapp3n.pokeldn.esp32
 import com.dedhapp3n.pokeldn.usb.SerialIo
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -93,7 +96,8 @@ class RawSerialCaptureTest {
     fun passiveCaptureSendsNothingAndKeepsRawBytesUnmodified() {
         val raw = creditFrame(0)
         val serial = CaptureSerial(raw)
-        val result = RawSerialCapture(serial, maxBytes = raw.size, captureDurationMs = 20).capture(460800)
+        val result = RawSerialCapture(serial, maxBytes = raw.size, captureDurationMs = 20)
+            .capture(460800, RawReadBufferMode.REUSED)
 
         assertEquals(0, serial.writes.size)
         assertArrayEquals(raw, result.bytes)
@@ -102,6 +106,49 @@ class RawSerialCaptureTest {
         assertTrue(result.limitReached)
         assertTrue(result.displayText().contains("Baud: 460800"))
         assertTrue(result.displayText().contains("Valid CRC32 frames: 1"))
+    }
+
+    @Test
+    fun reusedModeReusesOneBufferAndAppendsOnlyReportedBytes() {
+        val serial = ChunkedSerial(listOf(byteArrayOf(1, 2), byteArrayOf(3, 4)))
+        val result = RawSerialCapture(serial, maxBytes = 4, captureDurationMs = 20)
+            .capture(115200, RawReadBufferMode.REUSED)
+
+        assertArrayEquals(byteArrayOf(1, 2, 3, 4), result.bytes)
+        assertEquals(2, result.readDiagnostics.totalCalls)
+        assertEquals(4, result.readDiagnostics.totalBytesReported)
+        assertEquals(4, result.readDiagnostics.totalBytesAppended)
+        assertSame(serial.buffers[0], serial.buffers[1])
+    }
+
+    @Test
+    fun freshModeAllocatesPrefilledBuffersAndDetectsUntouchedReturnedRanges() {
+        val serial = UntouchedSerial(reads = 2, returnedBytes = 512)
+        val result = RawSerialCapture(serial, maxBytes = 1024, captureDurationMs = 20)
+            .capture(115200, RawReadBufferMode.FRESH_SENTINEL)
+
+        assertEquals(2, serial.buffers.size)
+        assertNotSame(serial.buffers[0], serial.buffers[1])
+        assertEquals(1024, result.readDiagnostics.sentinelMatchingPositions)
+        assertEquals(2, result.readDiagnostics.fullyUnchangedSentinelReads)
+        assertEquals(1, result.readDiagnostics.identicalConsecutiveReads)
+        val firstMismatch = result.bytes.indices.firstOrNull { index ->
+            result.bytes[index] != if (index % 2 == 0) 0xAA.toByte() else 0x55.toByte()
+        }
+        assertEquals(null, firstMismatch)
+    }
+
+    @Test
+    fun impossibleDriverByteCountIsRejectedInsteadOfCopyingPastTheBuffer() {
+        val serial = object : SerialIo {
+            override fun read(buffer: ByteArray, timeoutMillis: Int): Int = buffer.size + 1
+            override fun write(bytes: ByteArray, timeoutMillis: Int) = Unit
+        }
+
+        assertThrows(java.io.IOException::class.java) {
+            RawSerialCapture(serial, maxBytes = 1024, captureDurationMs = 20)
+                .capture(115200, RawReadBufferMode.REUSED)
+        }
     }
 
     private fun creditFrame(value: Int): ByteArray = Esp32Protocol.encodeFrame(
@@ -127,6 +174,34 @@ class RawSerialCaptureTest {
         override fun write(bytes: ByteArray, timeoutMillis: Int) {
             writes += bytes.copyOf()
         }
+    }
+
+    private class ChunkedSerial(private val chunks: List<ByteArray>) : SerialIo {
+        private var index = 0
+        val buffers = mutableListOf<ByteArray>()
+
+        override fun read(buffer: ByteArray, timeoutMillis: Int): Int {
+            buffers += buffer
+            val chunk = chunks[index++]
+            chunk.copyInto(buffer)
+            return chunk.size
+        }
+
+        override fun write(bytes: ByteArray, timeoutMillis: Int) = Unit
+    }
+
+    private class UntouchedSerial(private val reads: Int, private val returnedBytes: Int) : SerialIo {
+        private var count = 0
+        val buffers = mutableListOf<ByteArray>()
+
+        override fun read(buffer: ByteArray, timeoutMillis: Int): Int {
+            if (count >= reads) return 0
+            count++
+            buffers += buffer
+            return returnedBytes
+        }
+
+        override fun write(bytes: ByteArray, timeoutMillis: Int) = Unit
     }
 }
 
