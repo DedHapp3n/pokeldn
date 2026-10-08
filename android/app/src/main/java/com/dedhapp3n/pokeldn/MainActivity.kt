@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
@@ -33,11 +34,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.dedhapp3n.pokeldn.esp32.Esp32Client
 import com.dedhapp3n.pokeldn.esp32.Esp32HandshakePhase
 import com.dedhapp3n.pokeldn.esp32.Esp32HandshakeState
 import com.dedhapp3n.pokeldn.esp32.Esp32IncompatibleProtocolException
+import com.dedhapp3n.pokeldn.esp32.RawCaptureMode
+import com.dedhapp3n.pokeldn.esp32.RawCapturePhase
+import com.dedhapp3n.pokeldn.esp32.RawCaptureState
+import com.dedhapp3n.pokeldn.esp32.RawSerialCapture
 import com.dedhapp3n.pokeldn.esp32.formatMac
 import com.dedhapp3n.pokeldn.ui.theme.PokeLDNTheme
 import com.dedhapp3n.pokeldn.usb.UsbDeviceInfo
@@ -64,6 +72,7 @@ class MainActivity : ComponentActivity() {
     private var scanResult by mutableStateOf<UsbScanResult?>(null)
     private var connectionState by mutableStateOf(SerialConnectionState())
     private var esp32State by mutableStateOf(Esp32HandshakeState())
+    private var rawCaptureState by mutableStateOf(RawCaptureState())
     private var pendingDeviceId: Int? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var permissionTimeout: Runnable? = null
@@ -71,6 +80,9 @@ class MainActivity : ComponentActivity() {
     private var helloOperationId = 0
     private var helloFuture: Future<*>? = null
     private var helloTimeout: Future<*>? = null
+    private var rawCaptureOperationId = 0
+    private var rawCaptureFuture: Future<*>? = null
+    private var rawCaptureTimeout: Future<*>? = null
 
     private val permissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -85,6 +97,7 @@ class MainActivity : ComponentActivity() {
                 if (connectionState.deviceName == device.deviceName) {
                     clearPendingPermission()
                     cancelHello()
+                    cancelRawCapture()
                     operationId++
                     esp32State = Esp32HandshakeState()
                     connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.DISCONNECTED)
@@ -112,10 +125,12 @@ class MainActivity : ComponentActivity() {
                         result = scanResult,
                         connectionState = connectionState,
                         esp32State = esp32State,
+                        rawCaptureState = rawCaptureState,
                         onScan = ::scanDevices,
                         onConnect = ::connectSerial,
                         onDisconnect = ::disconnectSerial,
                         onTestEsp32 = ::testEsp32,
+                        onCaptureRaw = ::captureRawSerial,
                         modifier = Modifier.padding(innerPadding),
                     )
                 }
@@ -133,6 +148,7 @@ class MainActivity : ComponentActivity() {
         unregisterReceiver(detachReceiver)
         clearPendingPermission()
         cancelHello()
+        cancelRawCapture()
         operationId++
         serialWorker.execute { transport.disconnectSafely() }
         serialWorker.shutdown()
@@ -148,6 +164,7 @@ class MainActivity : ComponentActivity() {
         if (device == null && connectionState.phase != SerialConnectionPhase.DISCONNECTED) {
             clearPendingPermission()
             cancelHello()
+            cancelRawCapture()
             operationId++
             esp32State = Esp32HandshakeState()
             connectionState = SerialConnectionState(name, SerialConnectionPhase.DISCONNECTED)
@@ -247,6 +264,8 @@ class MainActivity : ComponentActivity() {
 
     private fun openSerial(device: UsbDevice) {
         cancelHello()
+        cancelRawCapture()
+        rawCaptureState = RawCaptureState()
         val thisOperation = ++operationId
         connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.CONNECTING)
         serialWorker.execute {
@@ -274,6 +293,7 @@ class MainActivity : ComponentActivity() {
     private fun disconnectSerial() {
         val name = connectionState.deviceName ?: return
         cancelHello()
+        cancelRawCapture()
         val thisOperation = ++operationId
         esp32State = Esp32HandshakeState()
         connectionState = SerialConnectionState(name, SerialConnectionPhase.DISCONNECTING)
@@ -292,7 +312,8 @@ class MainActivity : ComponentActivity() {
 
     private fun testEsp32() {
         if (connectionState.phase != SerialConnectionPhase.CONNECTED ||
-            esp32State.phase == Esp32HandshakePhase.TESTING) return
+            esp32State.phase == Esp32HandshakePhase.TESTING ||
+            rawCaptureState.phase == RawCapturePhase.CAPTURING) return
         val thisOperation = operationId
         val thisHello = ++helloOperationId
         val started = System.nanoTime()
@@ -355,6 +376,70 @@ class MainActivity : ComponentActivity() {
         helloFuture = null
     }
 
+    private fun captureRawSerial(mode: RawCaptureMode) {
+        if (connectionState.phase != SerialConnectionPhase.CONNECTED ||
+            esp32State.phase == Esp32HandshakePhase.TESTING ||
+            rawCaptureState.phase == RawCapturePhase.CAPTURING) return
+        val thisOperation = operationId
+        val thisCapture = ++rawCaptureOperationId
+        val finished = AtomicBoolean(false)
+        rawCaptureState = RawCaptureState(RawCapturePhase.CAPTURING, detail = mode.label)
+        val task = helloWorker.submit {
+            val nextState = try {
+                val capture = RawSerialCapture(transport, diagnostics = { Log.d(ESP32_LOG_TAG, it) })
+                RawCaptureState(RawCapturePhase.COMPLETE, result = capture.capture(mode))
+            } catch (error: Exception) {
+                RawCaptureState(
+                    RawCapturePhase.FAILED,
+                    detail = error.message ?: "Raw serial capture failed",
+                )
+            }
+            if (!finished.compareAndSet(false, true)) return@submit
+            runOnUiThread {
+                if (thisCapture != rawCaptureOperationId || thisOperation != operationId ||
+                    connectionState.phase != SerialConnectionPhase.CONNECTED) return@runOnUiThread
+                rawCaptureTimeout?.cancel(false)
+                rawCaptureTimeout = null
+                rawCaptureFuture = null
+                rawCaptureState = nextState
+            }
+        }
+        rawCaptureFuture = task
+        rawCaptureTimeout = helloWatchdog.schedule({
+            if (!finished.compareAndSet(false, true)) return@schedule
+            Log.e(ESP32_LOG_TAG, "Raw capture hard timeout; closing serial transport")
+            task.cancel(true)
+            serialWorker.execute { transport.disconnectSafely() }
+            runOnUiThread {
+                if (thisCapture != rawCaptureOperationId || thisOperation != operationId) return@runOnUiThread
+                rawCaptureOperationId++
+                operationId++
+                rawCaptureFuture = null
+                rawCaptureTimeout = null
+                rawCaptureState = RawCaptureState(
+                    RawCapturePhase.FAILED,
+                    detail = "Raw capture exceeded ${RAW_CAPTURE_OPERATION_TIMEOUT_MS / 1_000} seconds.",
+                )
+                connectionState = SerialConnectionState(
+                    connectionState.deviceName,
+                    SerialConnectionPhase.CONNECTION_FAILED,
+                    "Raw serial capture timed out. The serial connection was closed; reconnect to retry.",
+                )
+            }
+        }, RAW_CAPTURE_OPERATION_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+    }
+
+    private fun cancelRawCapture() {
+        rawCaptureOperationId++
+        rawCaptureTimeout?.cancel(false)
+        rawCaptureTimeout = null
+        rawCaptureFuture?.cancel(true)
+        rawCaptureFuture = null
+        if (rawCaptureState.phase == RawCapturePhase.CAPTURING) {
+            rawCaptureState = RawCaptureState(RawCapturePhase.FAILED, detail = "Raw capture canceled.")
+        }
+    }
+
     @Suppress("DEPRECATION")
     private fun Intent.usbDevice(): UsbDevice? =
         if (android.os.Build.VERSION.SDK_INT >= 33) getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
@@ -364,6 +449,7 @@ class MainActivity : ComponentActivity() {
         private const val ACTION_USB_PERMISSION = "com.dedhapp3n.pokeldn.USB_PERMISSION"
         private const val PERMISSION_TIMEOUT_MS = 30_000L
         private const val HELLO_OPERATION_TIMEOUT_MS = 10_000L
+        private const val RAW_CAPTURE_OPERATION_TIMEOUT_MS = 5_000L
         private const val ESP32_LOG_TAG = "PokeLDN-ESP32"
     }
 }
@@ -377,10 +463,12 @@ private fun UsbDevicesScreen(
     result: UsbScanResult?,
     connectionState: SerialConnectionState,
     esp32State: Esp32HandshakeState,
+    rawCaptureState: RawCaptureState,
     onScan: () -> Unit,
     onConnect: (String) -> Unit,
     onDisconnect: () -> Unit,
     onTestEsp32: () -> Unit,
+    onCaptureRaw: (RawCaptureMode) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -422,9 +510,12 @@ private fun UsbDevicesScreen(
                         canConnect = !busy,
                         esp32State = if (connectionState.deviceName == device.deviceName) esp32State
                             else Esp32HandshakeState(),
+                        rawCaptureState = if (connectionState.deviceName == device.deviceName) rawCaptureState
+                            else RawCaptureState(),
                         onConnect = { onConnect(device.deviceName) },
                         onDisconnect = onDisconnect,
                         onTestEsp32 = onTestEsp32,
+                        onCaptureRaw = onCaptureRaw,
                     )
                 }
             }
@@ -438,10 +529,13 @@ private fun UsbDeviceCard(
     state: SerialConnectionState,
     canConnect: Boolean,
     esp32State: Esp32HandshakeState,
+    rawCaptureState: RawCaptureState,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onTestEsp32: () -> Unit,
+    onCaptureRaw: (RawCaptureMode) -> Unit,
 ) {
+    val clipboard = LocalClipboardManager.current
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(device.productName ?: "USB device", style = MaterialTheme.typography.titleMedium)
@@ -471,9 +565,23 @@ private fun UsbDeviceCard(
                     }
                     Button(
                         onClick = onTestEsp32,
-                        enabled = esp32State.phase != Esp32HandshakePhase.TESTING,
+                        enabled = esp32State.phase != Esp32HandshakePhase.TESTING &&
+                            rawCaptureState.phase != RawCapturePhase.CAPTURING,
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("ESP32 HELLO") }
+                    Text("Raw serial diagnostic", style = MaterialTheme.typography.titleMedium)
+                    Button(
+                        onClick = { onCaptureRaw(RawCaptureMode.IDLE) },
+                        enabled = esp32State.phase != Esp32HandshakePhase.TESTING &&
+                            rawCaptureState.phase != RawCapturePhase.CAPTURING,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Capture Raw Serial") }
+                    Button(
+                        onClick = { onCaptureRaw(RawCaptureMode.ONE_HELLO) },
+                        enabled = esp32State.phase != Esp32HandshakePhase.TESTING &&
+                            rawCaptureState.phase != RawCapturePhase.CAPTURING,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Capture After One HELLO") }
                 } else {
                     if (esp32State.phase == Esp32HandshakePhase.FAILED) {
                         Text("Handshake: ${esp32State.phase.label}")
@@ -485,6 +593,24 @@ private fun UsbDeviceCard(
                             state.phase != SerialConnectionPhase.CONNECTING,
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("Connect Serial") }
+                }
+                when (rawCaptureState.phase) {
+                    RawCapturePhase.IDLE -> Unit
+                    RawCapturePhase.CAPTURING -> Text("Raw capture: ${rawCaptureState.detail ?: "capturing"}")
+                    RawCapturePhase.FAILED -> Text(
+                        "Raw capture failed: ${rawCaptureState.detail ?: "unknown error"}",
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    RawCapturePhase.COMPLETE -> rawCaptureState.result?.let { capture ->
+                        Text("Raw capture result (long press to select and copy)")
+                        Button(
+                            onClick = { clipboard.setText(AnnotatedString(capture.displayText())) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("Copy Raw Capture") }
+                        SelectionContainer {
+                            Text(capture.displayText(), fontFamily = FontFamily.Monospace)
+                        }
+                    }
                 }
             } else {
                 Text("No supported serial driver for this device")
