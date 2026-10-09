@@ -157,7 +157,8 @@ private fun DiagnosticDevicePanel(
     val ldnBusy = ldnApTestState.phase in setOf(
         LdnApTestPhase.PREPARING,
         LdnApTestPhase.STARTING_AP,
-        LdnApTestPhase.AP_ACTIVE,
+        LdnApTestPhase.ADVERTISING,
+        LdnApTestPhase.CONSOLE_ACTIVITY,
         LdnApTestPhase.STOPPING,
     )
     ShellPanel(device.productName ?: "USB device") {
@@ -252,11 +253,27 @@ private fun DiagnosticDevicePanel(
                             LdnApTestPhase.CLEANUP_REQUIRED,
                         )) ErrorText(it) else Text(it)
                 }
+                if (ldnApTestState.phase in setOf(
+                        LdnApTestPhase.ADVERTISING,
+                        LdnApTestPhase.CONSOLE_ACTIVITY,
+                    )) {
+                    DetailLine("AP", "Active")
+                    ldnApTestState.channel?.let { DetailLine("Channel", it.toString()) }
+                    DetailLine("Advertisements sent", ldnApTestState.advertisementsSent.toString())
+                    DetailLine("Discovery activity", ldnApTestState.discoveryActivityCount.toString())
+                    DetailLine(
+                        "Station",
+                        if (ldnApTestState.stationDetected) "Associated" else "Not detected",
+                    )
+                }
                 if (prodKeysState.phase != ProdKeysPhase.AVAILABLE) {
                     Text("Import your own prod.keys before starting the hardware lifecycle test.")
                     DeviceButton("Import prod.keys", onImportProdKeys, Modifier.fillMaxWidth())
                 }
-                if (ldnApTestState.phase == LdnApTestPhase.AP_ACTIVE) {
+                if (ldnApTestState.phase in setOf(
+                        LdnApTestPhase.ADVERTISING,
+                        LdnApTestPhase.CONSOLE_ACTIVITY,
+                    )) {
                     DeviceButton("Stop LDN AP", onStopLdnApTest, Modifier.fillMaxWidth())
                 } else {
                     DeviceButton(
@@ -399,7 +416,8 @@ private fun Esp32HandshakePhase.toStatusTone(): StatusTone = when (this) {
 }
 
 private fun LdnApTestPhase.toStatusTone(): StatusTone = when (this) {
-    LdnApTestPhase.READY, LdnApTestPhase.AP_ACTIVE -> StatusTone.POSITIVE
+    LdnApTestPhase.READY, LdnApTestPhase.ADVERTISING,
+    LdnApTestPhase.CONSOLE_ACTIVITY -> StatusTone.POSITIVE
     LdnApTestPhase.PREPARING, LdnApTestPhase.STARTING_AP,
     LdnApTestPhase.STOPPING -> StatusTone.WARNING
     LdnApTestPhase.FAILED, LdnApTestPhase.CLEANUP_REQUIRED -> StatusTone.ERROR

@@ -47,6 +47,22 @@ sealed interface Esp32RadioEvent {
     data class Credit(val consumedBytes: Long) : Esp32RadioEvent
     data class Link(val up: Boolean, val reason: Int, val mac: ByteArray) : Esp32RadioEvent
     data class Ethernet(val frame: ByteArray) : Esp32RadioEvent
+    data class LdnControlEthernet(
+        val target: ByteArray,
+        val source: ByteArray,
+        val payload: ByteArray,
+    ) : Esp32RadioEvent
+    data class ManagementFrame(
+        val channel: Int,
+        val rssi: Int,
+        val frameType: Int,
+        val subtype: Int,
+        val target: ByteArray,
+        val source: ByteArray,
+        val bssid: ByteArray,
+        val isLdnAction: Boolean,
+        val frame: ByteArray,
+    ) : Esp32RadioEvent
     data class TxDone(val payload: ByteArray) : Esp32RadioEvent
     data class StationJoined(
         val mac: ByteArray,
@@ -265,6 +281,14 @@ class Esp32RadioSession internal constructor(
             "Radio operation is not active"
         }
         return enqueue(Esp32Protocol.CMD_ETH_TX, frame, operation.generation, dropWhenFull = true)
+    }
+
+    fun sendRaw(operation: Esp32RadioOperation, frame: ByteArray): Boolean {
+        require(frame.size in 24..1500) { "Raw 802.11 frame must be 24..1500 bytes" }
+        check(state.phase == Esp32RadioPhase.RADIO_ACTIVE && activeGeneration == operation.generation) {
+            "Radio operation is not active"
+        }
+        return enqueue(Esp32Protocol.CMD_RAW_TX, frame, operation.generation, dropWhenFull = true)
     }
 
     fun stopAccessPoint(operation: Esp32RadioOperation) {
@@ -567,7 +591,8 @@ class Esp32RadioSession internal constructor(
                 frame.payload.copyOfRange(3, 9),
             )
         } else Esp32RadioEvent.Unknown(frame.type, frame.payload)
-        Esp32Protocol.MSG_RX_ETH -> Esp32RadioEvent.Ethernet(frame.payload)
+        Esp32Protocol.MSG_RX_MGMT -> parseManagementFrame(frame.payload)
+        Esp32Protocol.MSG_RX_ETH -> parseEthernetFrame(frame.payload)
         Esp32Protocol.MSG_TX_DONE -> Esp32RadioEvent.TxDone(frame.payload)
         Esp32Protocol.MSG_STA_JOINED -> if (frame.payload.size >= 9) {
             Esp32RadioEvent.StationJoined(
@@ -586,6 +611,47 @@ class Esp32RadioSession internal constructor(
             Esp32RadioEvent.Unknown(frame.type, frame.payload)
         }
         else -> Esp32RadioEvent.Unknown(frame.type, frame.payload)
+    }
+
+    private fun parseEthernetFrame(frame: ByteArray): Esp32RadioEvent {
+        if (frame.size >= ETHERNET_HEADER_SIZE && uint16BigEndian(frame, 12) == LDN_ETHERTYPE) {
+            return Esp32RadioEvent.LdnControlEthernet(
+                target = frame.copyOfRange(0, 6),
+                source = frame.copyOfRange(6, 12),
+                payload = frame.copyOfRange(ETHERNET_HEADER_SIZE, frame.size),
+            )
+        }
+        return Esp32RadioEvent.Ethernet(frame)
+    }
+
+    private fun parseManagementFrame(payload: ByteArray): Esp32RadioEvent {
+        if (payload.size < MANAGEMENT_PREFIX_SIZE) {
+            return Esp32RadioEvent.Unknown(Esp32Protocol.MSG_RX_MGMT, payload)
+        }
+        val frame = payload.copyOfRange(MANAGEMENT_PREFIX_SIZE, payload.size)
+        val frameControl = if (frame.size >= 2) uint16(frame, 0) else 0
+        val type = (frameControl ushr 2) and 0x03
+        val subtype = (frameControl ushr 4) and 0x0f
+        fun address(offset: Int): ByteArray = if (frame.size >= offset + 6) {
+            frame.copyOfRange(offset, offset + 6)
+        } else byteArrayOf()
+        val isLdnAction = type == IEEE80211_MANAGEMENT && subtype == IEEE80211_ACTION &&
+            frame.size >= IEEE80211_HEADER_SIZE + LDN_ACTION_PREFIX.size &&
+            frame.copyOfRange(
+                IEEE80211_HEADER_SIZE,
+                IEEE80211_HEADER_SIZE + LDN_ACTION_PREFIX.size,
+            ).contentEquals(LDN_ACTION_PREFIX)
+        return Esp32RadioEvent.ManagementFrame(
+            channel = payload[0].toInt() and 0xff,
+            rssi = payload[1].toInt(),
+            frameType = type,
+            subtype = subtype,
+            target = address(4),
+            source = address(10),
+            bssid = address(16),
+            isLdnAction = isLdnAction,
+            frame = frame,
+        )
     }
 
     private fun publishEvent(event: Esp32RadioEvent) {
@@ -675,6 +741,13 @@ class Esp32RadioSession internal constructor(
         private const val VERIFICATION_TIMEOUT_MS = 3_000
         private const val FLOW_WAIT_MS = 50L
         private const val NANOS_PER_MILLISECOND = 1_000_000L
+        private const val ETHERNET_HEADER_SIZE = 14
+        private const val LDN_ETHERTYPE = 0x88B7
+        private const val MANAGEMENT_PREFIX_SIZE = 2
+        private const val IEEE80211_HEADER_SIZE = 24
+        private const val IEEE80211_MANAGEMENT = 0
+        private const val IEEE80211_ACTION = 13
+        private val LDN_ACTION_PREFIX = byteArrayOf(0x7f, 0x00, 0x22, 0xaa.toByte())
         private const val FLOW_STALL_NS = 300_000_000L
         private const val FLOW_BLIND_NS = 5_000_000_000L
 
@@ -683,6 +756,9 @@ class Esp32RadioSession internal constructor(
 
         private fun uint16(bytes: ByteArray, offset: Int): Int =
             (bytes[offset].toInt() and 0xff) or ((bytes[offset + 1].toInt() and 0xff) shl 8)
+
+        private fun uint16BigEndian(bytes: ByteArray, offset: Int): Int =
+            ((bytes[offset].toInt() and 0xff) shl 8) or (bytes[offset + 1].toInt() and 0xff)
 
         internal fun supportsAlive(version: String): Boolean {
             val match = Regex("^(\\d+)\\.(\\d+)\\.(\\d+)").find(version) ?: return false

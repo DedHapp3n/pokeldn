@@ -10,10 +10,12 @@ object Esp32Protocol {
     const val CMD_STOP = 0x05
     const val CMD_AP_START = 0x06
     const val CMD_ETH_TX = 0x08
+    const val CMD_RAW_TX = 0x09
     const val CMD_STATUS = 0x0B
     const val CMD_ALIVE = 0x0F
     const val MSG_INFO = 0x81
     const val MSG_RESULT = 0x82
+    const val MSG_RX_MGMT = 0x84
     const val MSG_RX_ETH = 0x85
     const val MSG_LINK = 0x86
     const val MSG_STA_JOINED = 0x87

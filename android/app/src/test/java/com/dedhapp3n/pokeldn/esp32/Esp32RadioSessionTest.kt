@@ -73,6 +73,25 @@ class Esp32RadioSessionTest {
     }
 
     @Test
+    fun rawAdvertisementUsesRawTxAndIsOwnedByTheOperation() {
+        val serial = FakeSerial()
+        session(serial).use { runtime ->
+            runtime.verifyAndPrepare()
+            val operation = runtime.startAccessPoint(config())
+            val advertisement = ByteArray(24) { it.toByte() }
+
+            assertTrue(runtime.sendRaw(operation, advertisement))
+            await { serial.commandCount(Esp32Protocol.CMD_RAW_TX) == 1 }
+            assertArrayEquals(advertisement, serial.lastCommand(Esp32Protocol.CMD_RAW_TX).payload)
+
+            runtime.stopAccessPoint(operation)
+            assertThrows(IllegalStateException::class.java) {
+                runtime.sendRaw(operation, advertisement)
+            }
+        }
+    }
+
+    @Test
     fun unsolicitedEventDoesNotConsumeStatusReply() {
         val serial = FakeSerial().apply { eventBeforeStatus = linkFrame(up = true) }
         session(serial).use { runtime ->
@@ -260,6 +279,38 @@ class Esp32RadioSessionTest {
             assertTrue(events.any { it is Esp32RadioEvent.StationJoined })
             assertTrue(events.any { it is Esp32RadioEvent.StationLeft })
             assertTrue(events.any { it is Esp32RadioEvent.Unknown })
+        }
+    }
+
+    @Test
+    fun managementAndLdnControlFramesAreParsedForDiscovery() {
+        val serial = FakeSerial()
+        session(serial).use { runtime ->
+            runtime.verifyAndPrepare()
+            val events = mutableListOf<Esp32RadioEvent>()
+            runtime.addEventListener { events += it }
+            val source = "021122334455".hex()
+            val action = byteArrayOf(0xd0.toByte(), 0, 0, 0) + ByteArray(6) { 0xff.toByte() } +
+                source + ByteArray(6) { 0xff.toByte() } + byteArrayOf(0, 0) +
+                "7f0022aa04000101".hex()
+            serial.emit(Esp32Protocol.MSG_RX_MGMT, byteArrayOf(6, -42) + action)
+            val ethernet = ByteArray(6) { 0xff.toByte() } + source +
+                byteArrayOf(0x88.toByte(), 0xb7.toByte(), 1, 2, 3)
+            serial.emit(Esp32Protocol.MSG_RX_ETH, ethernet)
+            await {
+                events.any { it is Esp32RadioEvent.ManagementFrame } &&
+                    events.any { it is Esp32RadioEvent.LdnControlEthernet }
+            }
+
+            val management = events.filterIsInstance<Esp32RadioEvent.ManagementFrame>().single()
+            assertEquals(6, management.channel)
+            assertEquals(-42, management.rssi)
+            assertEquals(13, management.subtype)
+            assertTrue(management.isLdnAction)
+            assertArrayEquals(source, management.source)
+            val control = events.filterIsInstance<Esp32RadioEvent.LdnControlEthernet>().single()
+            assertArrayEquals(source, control.source)
+            assertArrayEquals(byteArrayOf(1, 2, 3), control.payload)
         }
     }
 

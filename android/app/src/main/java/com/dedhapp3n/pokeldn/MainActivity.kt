@@ -35,9 +35,11 @@ import com.dedhapp3n.pokeldn.esp32.RawSerialCapture
 import com.dedhapp3n.pokeldn.frlg.ProdKeysState
 import com.dedhapp3n.pokeldn.frlg.ProdKeysStore
 import com.dedhapp3n.pokeldn.frlg.ProdKeysPhase
-import com.dedhapp3n.pokeldn.ldn.LdnAccessPointBuilder
+import com.dedhapp3n.pokeldn.ldn.LdnAdvertisementBuilder
 import com.dedhapp3n.pokeldn.ldn.LdnApTestPhase
 import com.dedhapp3n.pokeldn.ldn.LdnApTestState
+import com.dedhapp3n.pokeldn.ldn.LdnDiscoveryController
+import com.dedhapp3n.pokeldn.ldn.LdnDiscoverySnapshot
 import com.dedhapp3n.pokeldn.ldn.toEsp32AccessPointConfig
 import com.dedhapp3n.pokeldn.ui.PokeLdnApp
 import com.dedhapp3n.pokeldn.ui.theme.PokeLDNTheme
@@ -90,6 +92,7 @@ class MainActivity : ComponentActivity() {
     private data class ActiveLdnTest(
         val session: Esp32RadioSession,
         val operation: Esp32RadioOperation,
+        val discovery: LdnDiscoveryController,
     )
 
     private val prodKeysPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -581,7 +584,8 @@ class MainActivity : ComponentActivity() {
         if (ldnApTestState.phase in setOf(
                 LdnApTestPhase.PREPARING,
                 LdnApTestPhase.STARTING_AP,
-                LdnApTestPhase.AP_ACTIVE,
+                LdnApTestPhase.ADVERTISING,
+                LdnApTestPhase.CONSOLE_ACTIVITY,
                 LdnApTestPhase.STOPPING,
             )) return
         val testId = synchronized(ldnTestLock) {
@@ -590,33 +594,67 @@ class MainActivity : ComponentActivity() {
         }
         ldnApTestState = LdnApTestState(LdnApTestPhase.PREPARING)
         ldnOperationWorker.execute {
+            var operation: Esp32RadioOperation? = null
+            var discovery: LdnDiscoveryController? = null
             try {
                 val keys = prodKeysStore.loadLdnKeys()
-                val config = LdnAccessPointBuilder().buildDiagnosticsNetwork(keys).toEsp32AccessPointConfig()
+                val network = LdnAdvertisementBuilder().buildDiscoveryNetwork(keys)
+                val config = network.accessPoint.toEsp32AccessPointConfig()
                 runOnUiThread {
-                    if (testId == ldnTestId) ldnApTestState = LdnApTestState(LdnApTestPhase.STARTING_AP)
+                    if (testId == ldnTestId) {
+                        ldnApTestState = LdnApTestState(
+                            LdnApTestPhase.STARTING_AP,
+                            channel = config.channel,
+                        )
+                    }
                 }
-                val operation = session.startAccessPoint(config)
+                val activeOperation = session.startAccessPoint(config)
+                operation = activeOperation
+                lateinit var controller: LdnDiscoveryController
+                controller = LdnDiscoveryController(
+                    session = session,
+                    operation = activeOperation,
+                    advertisementFrame = network.advertisementFrame,
+                    onSnapshot = { snapshot ->
+                        runOnUiThread {
+                            val current = synchronized(ldnTestLock) {
+                                testId == ldnTestId && activeLdnTest?.discovery === controller
+                            }
+                            if (current) {
+                                ldnApTestState = discoveryState(config.channel, snapshot)
+                            }
+                        }
+                    },
+                    onFailure = { error ->
+                        handleLdnDiscoveryFailure(testId, session, activeOperation, controller, error)
+                    },
+                )
+                discovery = controller
                 val accepted = synchronized(ldnTestLock) {
                     if (testId == ldnTestId && radioSession === session) {
-                        activeLdnTest = ActiveLdnTest(session, operation)
+                        activeLdnTest = ActiveLdnTest(session, activeOperation, controller)
                         true
                     } else false
                 }
                 if (!accepted) {
-                    try { session.stopAccessPoint(operation) } catch (_: Exception) { /* Session is already closing. */ }
+                    controller.stop()
+                    try { session.stopAccessPoint(activeOperation) } catch (_: Exception) { /* Session is already closing. */ }
                     return@execute
                 }
+                val initial = controller.start()
                 runOnUiThread {
-                    if (testId == ldnTestId) {
-                        ldnApTestState = LdnApTestState(
-                            LdnApTestPhase.AP_ACTIVE,
-                            "Nintendo LDN AP is active on channel ${config.channel}",
-                        )
-                    }
+                    if (testId == ldnTestId) ldnApTestState = discoveryState(config.channel, initial)
                 }
             } catch (error: Exception) {
-                synchronized(ldnTestLock) { activeLdnTest = null }
+                discovery?.stop()
+                operation?.let {
+                    if (session.state.phase in setOf(Esp32RadioPhase.STARTING_RADIO, Esp32RadioPhase.RADIO_ACTIVE)) {
+                        try { session.stopAccessPoint(it) } catch (_: Exception) { /* Reported by session state below. */ }
+                    }
+                }
+                synchronized(ldnTestLock) {
+                    if (activeLdnTest?.discovery === discovery) activeLdnTest = null
+                }
                 runOnUiThread {
                     if (testId != ldnTestId) return@runOnUiThread
                     val cleanupRequired = session.state.phase == Esp32RadioPhase.CLEANUP_REQUIRED
@@ -639,6 +677,7 @@ class MainActivity : ComponentActivity() {
         ldnApTestState = LdnApTestState(LdnApTestPhase.STOPPING)
         ldnOperationWorker.execute {
             val error = try {
+                active.discovery.stop()
                 active.session.stopAccessPoint(active.operation)
                 null
             } catch (failure: Exception) {
@@ -663,11 +702,74 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun invalidateLdnApTest() {
-        synchronized(ldnTestLock) {
+        val active = synchronized(ldnTestLock) {
             ldnTestId++
-            activeLdnTest = null
+            activeLdnTest.also { activeLdnTest = null }
         }
+        active?.discovery?.stop()
         ldnApTestState = LdnApTestState(LdnApTestPhase.DISCONNECTED)
+    }
+
+    private fun discoveryState(channel: Int, snapshot: LdnDiscoverySnapshot): LdnApTestState =
+        LdnApTestState(
+            phase = if (snapshot.discoveryActivityCount > 0) {
+                LdnApTestPhase.CONSOLE_ACTIVITY
+            } else {
+                LdnApTestPhase.ADVERTISING
+            },
+            detail = snapshot.latestActivity ?: "Waiting for console discovery activity",
+            channel = channel,
+            advertisementsSent = snapshot.advertisementsSent,
+            discoveryActivityCount = snapshot.discoveryActivityCount,
+            stationDetected = snapshot.stationDetected,
+            latestActivity = snapshot.latestActivity,
+        )
+
+    private fun handleLdnDiscoveryFailure(
+        testId: Int,
+        session: Esp32RadioSession,
+        operation: Esp32RadioOperation,
+        discovery: LdnDiscoveryController,
+        failure: Throwable,
+    ) {
+        val accepted = synchronized(ldnTestLock) {
+            val active = activeLdnTest
+            if (testId == ldnTestId && active?.discovery === discovery) {
+                activeLdnTest = null
+                true
+            } else false
+        }
+        if (!accepted) return
+        runOnUiThread {
+            if (testId == ldnTestId) {
+                ldnApTestState = LdnApTestState(
+                    LdnApTestPhase.STOPPING,
+                    "Advertisement failed; returning the adapter to Ready",
+                )
+            }
+        }
+        ldnOperationWorker.execute {
+            discovery.stop()
+            val cleanupError = try {
+                session.stopAccessPoint(operation)
+                null
+            } catch (error: Exception) {
+                error
+            }
+            runOnUiThread {
+                if (testId != ldnTestId) return@runOnUiThread
+                val cleanupRequired = cleanupError != null ||
+                    session.state.phase == Esp32RadioPhase.CLEANUP_REQUIRED
+                ldnApTestState = LdnApTestState(
+                    if (cleanupRequired) LdnApTestPhase.CLEANUP_REQUIRED else LdnApTestPhase.FAILED,
+                    buildString {
+                        append(failure.message ?: "LDN advertisement failed")
+                        if (cleanupError == null) append("; STOP and STATUS mode=0 succeeded")
+                        else append("; cleanup failed: ${cleanupError.message}")
+                    },
+                )
+            }
+        }
     }
 
     private fun installRadioSession(session: Esp32RadioSession) {

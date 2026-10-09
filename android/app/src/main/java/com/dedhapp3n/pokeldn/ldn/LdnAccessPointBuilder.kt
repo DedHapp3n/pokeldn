@@ -18,7 +18,7 @@ internal fun interface LdnRandomSource {
     fun nextBytes(size: Int): ByteArray
 }
 
-private class SecureLdnRandomSource : LdnRandomSource {
+internal class SecureLdnRandomSource : LdnRandomSource {
     private val random = SecureRandom()
     override fun nextBytes(size: Int): ByteArray = ByteArray(size).also(random::nextBytes)
 }
@@ -84,6 +84,9 @@ internal class LdnKeyDerivation(
     fun deriveDataKey(serverRandom: ByteArray, password: ByteArray): ByteArray =
         deriveKey(serverRandom + password, AUTHENTICATION_SOURCE)
 
+    fun deriveAdvertiseKey(networkId: ByteArray): ByteArray =
+        deriveKey(networkId, ADVERTISEMENT_SOURCE)
+
     private fun deriveKey(data: ByteArray, source: ByteArray): ByteArray {
         var key = when (protocol) {
             1 -> keys.value("master_key_00")
@@ -106,6 +109,7 @@ internal class LdnKeyDerivation(
     companion object {
         private const val BLOCK_SIZE = 16
         private val AUTHENTICATION_SOURCE = "f1e7018419a84f711da714c2cf919c9c".hexToBytes()
+        private val ADVERTISEMENT_SOURCE = "191884743e24c77d87c69e4207d0c438".hexToBytes()
 
         private fun String.hexToBytes(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
     }
