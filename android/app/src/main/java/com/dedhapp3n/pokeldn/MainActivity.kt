@@ -15,31 +15,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.content.ContextCompat
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.unit.dp
 import com.dedhapp3n.pokeldn.esp32.Esp32Client
 import com.dedhapp3n.pokeldn.esp32.Esp32HandshakePhase
 import com.dedhapp3n.pokeldn.esp32.Esp32HandshakeState
@@ -48,17 +29,14 @@ import com.dedhapp3n.pokeldn.esp32.RawCapturePhase
 import com.dedhapp3n.pokeldn.esp32.RawCaptureState
 import com.dedhapp3n.pokeldn.esp32.RawReadBufferMode
 import com.dedhapp3n.pokeldn.esp32.RawSerialCapture
-import com.dedhapp3n.pokeldn.esp32.formatMac
+import com.dedhapp3n.pokeldn.ui.PokeLdnApp
 import com.dedhapp3n.pokeldn.ui.theme.PokeLDNTheme
-import com.dedhapp3n.pokeldn.usb.UsbDeviceInfo
 import com.dedhapp3n.pokeldn.usb.UsbDeviceScanner
 import com.dedhapp3n.pokeldn.usb.UsbScanResult
 import com.dedhapp3n.pokeldn.usb.SerialConnectionPhase
 import com.dedhapp3n.pokeldn.usb.SerialConnectionState
 import com.dedhapp3n.pokeldn.usb.UsbSerialTransport
 import com.dedhapp3n.pokeldn.usb.devicePhase
-import com.dedhapp3n.pokeldn.usb.isCp210xBridge
-import com.dedhapp3n.pokeldn.usb.usbIdHex
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
@@ -125,25 +103,23 @@ class MainActivity : ComponentActivity() {
         )
         setContent {
             PokeLDNTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    UsbDevicesScreen(
-                        result = scanResult,
-                        connectionState = connectionState,
-                        esp32State = esp32State,
-                        rawCaptureState = rawCaptureState,
-                        connectedBaudRate = connectedBaudRate,
-                        selectedDiagnosticBaud = selectedDiagnosticBaud,
-                        selectedReadBufferMode = selectedReadBufferMode,
-                        onScan = ::scanDevices,
-                        onConnect = ::connectSerial,
-                        onDisconnect = ::disconnectSerial,
-                        onTestEsp32 = ::testEsp32,
-                        onDiagnosticBaudSelected = { selectedDiagnosticBaud = it },
-                        onReadBufferModeSelected = { selectedReadBufferMode = it },
-                        onCaptureRaw = ::captureRawSerial,
-                        modifier = Modifier.padding(innerPadding),
-                    )
-                }
+                PokeLdnApp(
+                    result = scanResult,
+                    connectionState = connectionState,
+                    esp32State = esp32State,
+                    rawCaptureState = rawCaptureState,
+                    connectedBaudRate = connectedBaudRate,
+                    selectedDiagnosticBaud = selectedDiagnosticBaud,
+                    selectedReadBufferMode = selectedReadBufferMode,
+                    onScan = ::scanDevices,
+                    onConnect = ::connectSerial,
+                    onDisconnect = ::disconnectSerial,
+                    onTestEsp32 = ::testEsp32,
+                    onDiagnosticBaudSelected = { selectedDiagnosticBaud = it },
+                    onReadBufferModeSelected = { selectedReadBufferMode = it },
+                    onCaptureRaw = ::captureRawSerial,
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
         }
     }
@@ -498,218 +474,4 @@ class MainActivity : ComponentActivity() {
 
 private fun UsbSerialTransport.disconnectSafely() {
     try { disconnect() } catch (_: Exception) { /* A detached device may already be closed. */ }
-}
-
-private val DIAGNOSTIC_BAUD_RATES = listOf(115200, 230400, 460800, 921600)
-
-@Composable
-private fun UsbDevicesScreen(
-    result: UsbScanResult?,
-    connectionState: SerialConnectionState,
-    esp32State: Esp32HandshakeState,
-    rawCaptureState: RawCaptureState,
-    connectedBaudRate: Int,
-    selectedDiagnosticBaud: Int,
-    selectedReadBufferMode: RawReadBufferMode,
-    onScan: () -> Unit,
-    onConnect: (String) -> Unit,
-    onDisconnect: () -> Unit,
-    onTestEsp32: () -> Unit,
-    onDiagnosticBaudSelected: (Int) -> Unit,
-    onReadBufferModeSelected: (RawReadBufferMode) -> Unit,
-    onCaptureRaw: (Int, RawReadBufferMode) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Column(modifier = modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("USB devices", style = MaterialTheme.typography.headlineMedium)
-        Text("Connect your ESP32 through USB OTG, then scan for devices visible to Android.")
-        Button(onClick = onScan, modifier = Modifier.fillMaxWidth()) {
-            Text("Scan USB Devices")
-        }
-
-        val status = when (result) {
-            null -> "Checking USB devices…"
-            UsbScanResult.HostUnavailable -> "USB Host is unavailable on this device."
-            UsbScanResult.ScanFailed -> "Could not scan USB devices. Try again."
-            is UsbScanResult.Devices -> if (result.items.isEmpty()) {
-                "No USB devices found. Check the cable and USB OTG connection."
-            } else {
-                "${result.items.size} USB device${if (result.items.size == 1) "" else "s"} found."
-            }
-        }
-        Text(status, style = MaterialTheme.typography.titleMedium)
-        if (connectionState.deviceName != null && connectionState.phase == SerialConnectionPhase.DISCONNECTED) {
-            Text(SerialConnectionPhase.DISCONNECTED.label, color = MaterialTheme.colorScheme.error)
-        }
-
-        if (result is UsbScanResult.Devices && result.items.isNotEmpty()) {
-            val busy = connectionState.phase in setOf(
-                SerialConnectionPhase.REQUESTING_PERMISSION, SerialConnectionPhase.CONNECTING,
-                SerialConnectionPhase.CONNECTED, SerialConnectionPhase.DISCONNECTING,
-            )
-            LazyColumn(
-                contentPadding = PaddingValues(bottom = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                items(result.items, key = { it.deviceName }) { device ->
-                    UsbDeviceCard(
-                        device = device,
-                        state = if (connectionState.deviceName == device.deviceName) connectionState
-                            else SerialConnectionState(device.deviceName, devicePhase(device)),
-                        canConnect = !busy,
-                        esp32State = if (connectionState.deviceName == device.deviceName) esp32State
-                            else Esp32HandshakeState(),
-                        rawCaptureState = if (connectionState.deviceName == device.deviceName) rawCaptureState
-                            else RawCaptureState(),
-                        connectedBaudRate = if (connectionState.deviceName == device.deviceName &&
-                            connectionState.phase == SerialConnectionPhase.CONNECTED) connectedBaudRate
-                            else UsbSerialTransport.BAUD_RATE,
-                        selectedDiagnosticBaud = selectedDiagnosticBaud,
-                        selectedReadBufferMode = selectedReadBufferMode,
-                        onConnect = { onConnect(device.deviceName) },
-                        onDisconnect = onDisconnect,
-                        onTestEsp32 = onTestEsp32,
-                        onDiagnosticBaudSelected = onDiagnosticBaudSelected,
-                        onReadBufferModeSelected = onReadBufferModeSelected,
-                        onCaptureRaw = onCaptureRaw,
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun UsbDeviceCard(
-    device: UsbDeviceInfo,
-    state: SerialConnectionState,
-    canConnect: Boolean,
-    esp32State: Esp32HandshakeState,
-    rawCaptureState: RawCaptureState,
-    connectedBaudRate: Int,
-    selectedDiagnosticBaud: Int,
-    selectedReadBufferMode: RawReadBufferMode,
-    onConnect: () -> Unit,
-    onDisconnect: () -> Unit,
-    onTestEsp32: () -> Unit,
-    onDiagnosticBaudSelected: (Int) -> Unit,
-    onReadBufferModeSelected: (RawReadBufferMode) -> Unit,
-    onCaptureRaw: (Int, RawReadBufferMode) -> Unit,
-) {
-    val clipboard = LocalClipboardManager.current
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(device.productName ?: "USB device", style = MaterialTheme.typography.titleMedium)
-            if (isCp210xBridge(device.vendorId, device.productId)) {
-                Text("Silicon Labs CP210x USB serial bridge")
-            }
-            Text("Device name: ${device.deviceName}")
-            Text("VID: ${usbIdHex(device.vendorId)}  PID: ${usbIdHex(device.productId)}")
-            device.manufacturer?.let { Text("Manufacturer: $it") }
-            device.productName?.let { Text("Product: $it") }
-            if (device.serialSupported) {
-                Text("Status: ${state.phase.label}")
-                state.detail?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                Text("Serial settings: $connectedBaudRate baud, 8N1, no flow control")
-                if (state.phase == SerialConnectionPhase.CONNECTED) {
-                    Button(
-                        onClick = onDisconnect,
-                        enabled = esp32State.phase != Esp32HandshakePhase.TESTING &&
-                            rawCaptureState.phase != RawCapturePhase.CAPTURING,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Disconnect") }
-                    Text("ESP32 protocol", style = MaterialTheme.typography.titleMedium)
-                    Text("Handshake: ${esp32State.phase.label}")
-                    esp32State.detail?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                    esp32State.info?.let { info ->
-                        Text("Protocol version: ${info.protocolVersion}")
-                        Text("Firmware: ${info.firmwareText}")
-                        if (info.firmwareVersion.isNotEmpty()) Text("Firmware version: ${info.firmwareVersion}")
-                        Text("Chip revision: ${info.chipRevision}")
-                        Text("Station MAC: ${info.stationMac.formatMac()}")
-                        Text("Access point MAC: ${info.accessPointMac.formatMac()}")
-                    }
-                    Button(
-                        onClick = onTestEsp32,
-                        enabled = esp32State.phase != Esp32HandshakePhase.TESTING &&
-                            rawCaptureState.phase != RawCapturePhase.CAPTURING,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("ESP32 HELLO") }
-                    Text("Raw Serial Diagnostics", style = MaterialTheme.typography.titleMedium)
-                    Text("Passive capture baud (no protocol data is sent)")
-                    DIAGNOSTIC_BAUD_RATES.forEach { baud ->
-                        val selectBaud = { onDiagnosticBaudSelected(baud) }
-                        if (baud == selectedDiagnosticBaud) {
-                            Button(
-                                onClick = selectBaud,
-                                enabled = rawCaptureState.phase != RawCapturePhase.CAPTURING,
-                                modifier = Modifier.fillMaxWidth(),
-                            ) { Text("$baud baud (selected)") }
-                        } else {
-                            OutlinedButton(
-                                onClick = selectBaud,
-                                enabled = rawCaptureState.phase != RawCapturePhase.CAPTURING,
-                                modifier = Modifier.fillMaxWidth(),
-                            ) { Text("$baud baud") }
-                        }
-                    }
-                    Text("Read buffer experiment")
-                    Text("Capture both modes at the same baud and compare their copied results.")
-                    RawReadBufferMode.entries.forEach { mode ->
-                        val selectMode = { onReadBufferModeSelected(mode) }
-                        if (mode == selectedReadBufferMode) {
-                            Button(
-                                onClick = selectMode,
-                                enabled = rawCaptureState.phase != RawCapturePhase.CAPTURING,
-                                modifier = Modifier.fillMaxWidth(),
-                            ) { Text("${mode.label} (selected)") }
-                        } else {
-                            OutlinedButton(
-                                onClick = selectMode,
-                                enabled = rawCaptureState.phase != RawCapturePhase.CAPTURING,
-                                modifier = Modifier.fillMaxWidth(),
-                            ) { Text(mode.label) }
-                        }
-                    }
-                    Button(
-                        onClick = { onCaptureRaw(selectedDiagnosticBaud, selectedReadBufferMode) },
-                        enabled = esp32State.phase != Esp32HandshakePhase.TESTING &&
-                            rawCaptureState.phase != RawCapturePhase.CAPTURING,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Capture Passive") }
-                } else {
-                    if (esp32State.phase == Esp32HandshakePhase.FAILED) {
-                        Text("Handshake: ${esp32State.phase.label}")
-                        esp32State.detail?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                    }
-                    Button(
-                        onClick = onConnect,
-                        enabled = canConnect && state.phase != SerialConnectionPhase.REQUESTING_PERMISSION &&
-                            state.phase != SerialConnectionPhase.CONNECTING,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Connect Serial") }
-                }
-                when (rawCaptureState.phase) {
-                    RawCapturePhase.IDLE -> Unit
-                    RawCapturePhase.CAPTURING -> Text("Raw capture: ${rawCaptureState.detail ?: "capturing"}")
-                    RawCapturePhase.FAILED -> Text(
-                        "Raw capture failed: ${rawCaptureState.detail ?: "unknown error"}",
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                    RawCapturePhase.COMPLETE -> rawCaptureState.result?.let { capture ->
-                        Text("Raw capture result (long press to select and copy)")
-                        Button(
-                            onClick = { clipboard.setText(AnnotatedString(capture.displayText())) },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text("Copy Raw Capture") }
-                        SelectionContainer {
-                            Text(capture.displayText(), fontFamily = FontFamily.Monospace)
-                        }
-                    }
-                }
-            } else {
-                Text("No supported serial driver for this device")
-            }
-        }
-    }
 }
