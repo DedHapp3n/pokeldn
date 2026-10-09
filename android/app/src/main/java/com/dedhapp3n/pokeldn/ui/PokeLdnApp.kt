@@ -37,6 +37,10 @@ import com.dedhapp3n.pokeldn.esp32.Esp32HandshakePhase
 import com.dedhapp3n.pokeldn.esp32.Esp32HandshakeState
 import com.dedhapp3n.pokeldn.esp32.RawCaptureState
 import com.dedhapp3n.pokeldn.esp32.RawReadBufferMode
+import com.dedhapp3n.pokeldn.frlg.FrlgOperationState
+import com.dedhapp3n.pokeldn.frlg.ProdKeysPhase
+import com.dedhapp3n.pokeldn.frlg.ProdKeysState
+import com.dedhapp3n.pokeldn.frlg.WalkThroughWallsPreset
 import com.dedhapp3n.pokeldn.ui.theme.CreamPanel
 import com.dedhapp3n.pokeldn.ui.theme.CreamPanelDark
 import com.dedhapp3n.pokeldn.ui.theme.DeviceAmber
@@ -94,9 +98,13 @@ fun PokeLdnApp(
     onDiagnosticBaudSelected: (Int) -> Unit,
     onReadBufferModeSelected: (RawReadBufferMode) -> Unit,
     onCaptureRaw: (Int, RawReadBufferMode) -> Unit,
+    prodKeysState: ProdKeysState,
+    onImportProdKeys: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var destination by rememberSaveable { mutableStateOf(AppDestination.HOME) }
+    var selectedGame by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedOperation by rememberSaveable { mutableStateOf<String?>(null) }
     Scaffold(
         modifier = modifier,
         containerColor = ShellRed,
@@ -113,7 +121,26 @@ fun PokeLdnApp(
                 onOpenDiagnostics = { destination = AppDestination.DIAGNOSTICS },
                 modifier = Modifier.padding(innerPadding),
             )
-            AppDestination.GAMES -> GamesScreen(modifier = Modifier.padding(innerPadding))
+            AppDestination.GAMES -> when {
+                selectedOperation == WalkThroughWallsPreset.BOOST_ID -> WalkThroughWallsScreen(
+                    connectionState = connectionState,
+                    esp32State = esp32State,
+                    keysState = prodKeysState,
+                    operationState = FrlgOperationState(),
+                    onImportKeys = onImportProdKeys,
+                    onBack = { selectedOperation = null },
+                    modifier = Modifier.padding(innerPadding),
+                )
+                selectedGame == "frlg" -> FrlgOperationsScreen(
+                    onOpenWalkThroughWalls = { selectedOperation = WalkThroughWallsPreset.BOOST_ID },
+                    onBack = { selectedGame = null },
+                    modifier = Modifier.padding(innerPadding),
+                )
+                else -> GamesScreen(
+                    onOpenFrlg = { selectedGame = "frlg" },
+                    modifier = Modifier.padding(innerPadding),
+                )
+            }
             AppDestination.DIAGNOSTICS -> DiagnosticsScreen(
                 result = result,
                 connectionState = connectionState,
@@ -358,7 +385,7 @@ private fun MainAdapterDisplay(
 }
 
 @Composable
-private fun GamesScreen(modifier: Modifier = Modifier) {
+private fun GamesScreen(onOpenFrlg: () -> Unit, modifier: Modifier = Modifier) {
     CenteredDeviceList(modifier) {
         item {
             DeviceScreenTitle("Catalog 02 / Games", "Game modules", "FireRed and LeafGreen are the first Android focus")
@@ -379,7 +406,9 @@ private fun GamesScreen(modifier: Modifier = Modifier) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     gameModules.chunked(columns).forEach { rowModules ->
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                            rowModules.forEach { module -> GameModulePanel(module, Modifier.weight(1f)) }
+                            rowModules.forEach { module ->
+                                GameModulePanel(module, if (module.primary) onOpenFrlg else null, Modifier.weight(1f))
+                            }
                             if (rowModules.size < columns) {
                                 repeat(columns - rowModules.size) { Box(Modifier.weight(1f)) }
                             }
@@ -392,7 +421,7 @@ private fun GamesScreen(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun GameModulePanel(module: GameModule, modifier: Modifier = Modifier) {
+private fun GameModulePanel(module: GameModule, onOpen: (() -> Unit)?, modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier,
         color = if (module.primary) DeviceAmber else CreamPanel,
@@ -409,11 +438,153 @@ private fun GameModulePanel(module: GameModule, modifier: Modifier = Modifier) {
             Text(module.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
             Text(module.detail, style = MaterialTheme.typography.bodyMedium)
             DeviceButton(
-                if (module.primary) "In development" else "Coming later",
-                onClick = {},
+                if (module.primary) "Open module" else "Coming later",
+                onClick = onOpen ?: {},
                 modifier = Modifier.fillMaxWidth(),
-                enabled = false,
+                enabled = onOpen != null,
             )
+        }
+    }
+}
+
+@Composable
+private fun FrlgOperationsScreen(
+    onOpenWalkThroughWalls: () -> Unit,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    CenteredDeviceList(modifier) {
+        item { DeviceScreenTitle("Games / FRLG", "FireRed / LeafGreen", "Choose an operation") }
+        item { DeviceButton("Back to games", onBack, Modifier.fillMaxWidth()) }
+        item {
+            OperationCategory("Game Boosts") {
+                OperationRow(
+                    "Walk Through Walls",
+                    "Hold R to pass through walls, trees, and water.",
+                    "First port target",
+                    StatusTone.WARNING,
+                    onOpenWalkThroughWalls,
+                )
+                PlannedOperation("Speed Up", "Planned")
+                PlannedOperation("No Wild Encounters", "Planned")
+                PlannedOperation("Shiny Countdown", "Planned")
+                PlannedOperation("Lead IV Display", "Planned")
+                PlannedOperation("Pokémon Follower", "Planned")
+            }
+        }
+        item {
+            OperationCategory("Mystery Gift") {
+                PlannedOperation("Wonder News", "Planned")
+                PlannedOperation("Pokémon Gift", "Planned")
+                PlannedOperation("Wonder Card", "Planned")
+            }
+        }
+        item {
+            OperationCategory("Link") {
+                PlannedOperation("Direct Corner Trade", "Planned")
+                PlannedOperation("Union Room", "Planned")
+            }
+        }
+        item {
+            OperationCategory("Save tools") {
+                PlannedOperation("Save Backup", "Planned")
+                PlannedOperation("Save Restore", "Experimental")
+            }
+        }
+    }
+}
+
+@Composable
+private fun WalkThroughWallsScreen(
+    connectionState: SerialConnectionState,
+    esp32State: Esp32HandshakeState,
+    keysState: ProdKeysState,
+    operationState: FrlgOperationState,
+    onImportKeys: () -> Unit,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val adapterReady = connectionState.phase == SerialConnectionPhase.CONNECTED &&
+        esp32State.phase == Esp32HandshakePhase.VERIFIED
+    CenteredDeviceList(modifier) {
+        item { DeviceScreenTitle("FRLG / Game Boost", "Walk Through Walls", "Existing upstream noclip resident hook") }
+        item { DeviceButton("Back to operations", onBack, Modifier.fillMaxWidth()) }
+        item {
+            BezelDisplay("Operation status") {
+                DisplayStatus(operationState.phase.label, if (operationState.running) StatusTone.WARNING else StatusTone.NEUTRAL)
+                Text("Game: FireRed / LeafGreen", color = ScreenMuted)
+                Text("Activation: hold ${WalkThroughWallsPreset.ACTIVATION_BUTTON}", color = ScreenMuted)
+                DisplayStatus(if (adapterReady) "ESP32 ready" else "ESP32 not ready", if (adapterReady) StatusTone.POSITIVE else StatusTone.ERROR)
+                DisplayStatus(
+                    when (keysState.phase) {
+                        ProdKeysPhase.AVAILABLE -> "Keys available"
+                        ProdKeysPhase.INVALID -> "Keys invalid"
+                        ProdKeysPhase.MISSING -> "Keys missing"
+                    },
+                    when (keysState.phase) {
+                        ProdKeysPhase.AVAILABLE -> StatusTone.POSITIVE
+                        ProdKeysPhase.INVALID -> StatusTone.ERROR
+                        ProdKeysPhase.MISSING -> StatusTone.WARNING
+                    },
+                )
+                keysState.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = ScreenMuted) }
+            }
+        }
+        item {
+            ShellPanel("Requirements") {
+                Text("Import your own prod.keys. The app stores the validated file only in private app storage.")
+                DeviceButton("Import prod.keys", onImportKeys, Modifier.fillMaxWidth())
+                Text(
+                    "Wireless delivery is not enabled in this build: the Android LDN, PIA, RFU, and Mystery Gift layers still need to be ported. Start remains disabled so the app cannot claim a boost was sent.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = DeviceInk.copy(alpha = 0.72f),
+                )
+                DeviceButton("Start", {}, Modifier.fillMaxWidth(), enabled = false, style = DeviceButtonStyle.SECONDARY)
+            }
+        }
+    }
+}
+
+@Composable
+private fun OperationCategory(title: String, content: @Composable () -> Unit) {
+    ShellPanel(title) { content() }
+}
+
+@Composable
+private fun OperationRow(
+    title: String,
+    detail: String,
+    badge: String,
+    tone: StatusTone,
+    onClick: () -> Unit,
+) {
+    Surface(
+        color = CreamPanelDark,
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(2.dp, DeviceBezel),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+    ) {
+        Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Text(title, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f))
+                StatusBadge(badge, tone)
+            }
+            Text(detail, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun PlannedOperation(title: String, status: String) {
+    Surface(
+        color = CreamPanelDark.copy(alpha = 0.72f),
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, DeviceBezel),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(Modifier.padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(title, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            StatusBadge(status, StatusTone.NEUTRAL)
         }
     }
 }

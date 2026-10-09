@@ -14,6 +14,7 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.getValue
@@ -29,6 +30,9 @@ import com.dedhapp3n.pokeldn.esp32.RawCapturePhase
 import com.dedhapp3n.pokeldn.esp32.RawCaptureState
 import com.dedhapp3n.pokeldn.esp32.RawReadBufferMode
 import com.dedhapp3n.pokeldn.esp32.RawSerialCapture
+import com.dedhapp3n.pokeldn.frlg.ProdKeysState
+import com.dedhapp3n.pokeldn.frlg.ProdKeysStore
+import com.dedhapp3n.pokeldn.frlg.ProdKeysPhase
 import com.dedhapp3n.pokeldn.ui.PokeLdnApp
 import com.dedhapp3n.pokeldn.ui.theme.PokeLDNTheme
 import com.dedhapp3n.pokeldn.usb.UsbDeviceScanner
@@ -46,6 +50,7 @@ class MainActivity : ComponentActivity() {
     private val usbManager by lazy { getSystemService(UsbManager::class.java) }
     private val scanner by lazy { UsbDeviceScanner(this) }
     private val transport by lazy { UsbSerialTransport(usbManager) }
+    private val prodKeysStore by lazy { ProdKeysStore(this) }
     private val serialWorker = Executors.newSingleThreadExecutor()
     private val helloWorker = Executors.newCachedThreadPool()
     private val helloWatchdog = Executors.newSingleThreadScheduledExecutor()
@@ -56,6 +61,7 @@ class MainActivity : ComponentActivity() {
     private var connectedBaudRate by mutableIntStateOf(UsbSerialTransport.BAUD_RATE)
     private var selectedDiagnosticBaud by mutableIntStateOf(UsbSerialTransport.BAUD_RATE)
     private var selectedReadBufferMode by mutableStateOf(RawReadBufferMode.REUSED)
+    private var prodKeysState by mutableStateOf(ProdKeysState())
     private var pendingDeviceId: Int? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var permissionTimeout: Runnable? = null
@@ -67,6 +73,19 @@ class MainActivity : ComponentActivity() {
     private var rawCaptureOperationId = 0
     private var rawCaptureFuture: Future<*>? = null
     private var rawCaptureTimeout: Future<*>? = null
+
+    private val prodKeysPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@registerForActivityResult
+        helloWorker.submit {
+            val next = try {
+                contentResolver.openInputStream(uri)?.let(prodKeysStore::importKeys)
+                    ?: ProdKeysState(ProdKeysPhase.INVALID, "Could not open the selected file")
+            } catch (error: Exception) {
+                ProdKeysState(ProdKeysPhase.INVALID, error.message ?: "Could not import prod.keys")
+            }
+            runOnUiThread { prodKeysState = next }
+        }
+    }
 
     private val permissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -95,6 +114,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        prodKeysState = prodKeysStore.state()
         enableEdgeToEdge()
         ContextCompat.registerReceiver(
             this, permissionReceiver, IntentFilter(ACTION_USB_PERMISSION), ContextCompat.RECEIVER_NOT_EXPORTED,
@@ -124,6 +144,8 @@ class MainActivity : ComponentActivity() {
                     onDiagnosticBaudSelected = { selectedDiagnosticBaud = it },
                     onReadBufferModeSelected = { selectedReadBufferMode = it },
                     onCaptureRaw = ::captureRawSerial,
+                    prodKeysState = prodKeysState,
+                    onImportProdKeys = { prodKeysPicker.launch(arrayOf("text/plain", "application/octet-stream")) },
                     modifier = Modifier.fillMaxSize(),
                 )
             }

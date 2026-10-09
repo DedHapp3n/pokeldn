@@ -17,6 +17,7 @@ interface SerialIo {
 
 interface SerialTransport : SerialIo {
     fun connect(device: UsbDevice, baudRate: Int)
+    fun setBaudRate(baudRate: Int)
     fun disconnect()
 }
 
@@ -144,6 +145,17 @@ class UsbSerialTransport(private val manager: UsbManager) : SerialTransport {
         } finally {
             openedConnection?.close()
         }
+    }
+
+    override fun setBaudRate(baudRate: Int) {
+        require(baudRate > 0) { "Baud rate must be positive" }
+        requirePort().setParameters(
+            baudRate,
+            UsbSerialPort.DATABITS_8,
+            UsbSerialPort.STOPBITS_1,
+            UsbSerialPort.PARITY_NONE,
+        )
+        configuredBaudRate = baudRate
     }
 
     override fun read(buffer: ByteArray, timeoutMillis: Int): Int =

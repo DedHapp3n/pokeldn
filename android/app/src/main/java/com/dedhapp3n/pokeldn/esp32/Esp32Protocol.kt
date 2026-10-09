@@ -5,8 +5,20 @@ import java.util.zip.CRC32
 object Esp32Protocol {
     const val PROTOCOL_VERSION = 1
     const val CMD_HELLO = 0x01
+    const val CMD_BAUD = 0x02
+    const val CMD_CHANNEL = 0x03
+    const val CMD_STOP = 0x05
+    const val CMD_AP_START = 0x06
+    const val CMD_ETH_TX = 0x08
+    const val CMD_STATUS = 0x0B
+    const val CMD_ALIVE = 0x0F
     const val MSG_INFO = 0x81
+    const val MSG_RESULT = 0x82
+    const val MSG_RX_ETH = 0x85
+    const val MSG_LINK = 0x86
+    const val MSG_STATUS = 0x89
     const val MSG_CREDIT = 0x8B
+    const val MSG_TX_DONE = 0x8D
 
     val helloFrame: ByteArray
         get() = encodeFrame(CMD_HELLO)
