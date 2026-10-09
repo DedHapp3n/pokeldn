@@ -6,6 +6,7 @@ import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbManager
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
+import com.hoho.android.usbserial.util.SerialInputOutputManager
 import java.io.IOException
 
 /** Synchronous serial boundary. Call its methods from a worker thread. */
@@ -47,6 +48,10 @@ class UsbSerialTransport(private val manager: UsbManager) : SerialTransport {
     @Volatile
     private var port: UsbSerialPort? = null
     @Volatile
+    private var ioManager: SerialInputOutputManager? = null
+    @Volatile
+    private var readQueue: SerialReadQueue? = null
+    @Volatile
     var configuredBaudRate: Int? = null
         private set
     @Volatile
@@ -60,6 +65,8 @@ class UsbSerialTransport(private val manager: UsbManager) : SerialTransport {
         check(port == null) { "Serial port already open" }
         val driver = prober.probeDevice(device) ?: throw IOException("No serial driver for this device")
         val openedConnection = manager.openDevice(device) ?: throw IOException("Could not open USB device")
+        var openedIoManager: SerialInputOutputManager? = null
+        var openedReadQueue: SerialReadQueue? = null
         try {
             val ports = driver.ports
             val openedPort = ports.firstOrNull() ?: throw IOException("No serial port found")
@@ -69,8 +76,27 @@ class UsbSerialTransport(private val manager: UsbManager) : SerialTransport {
             val lines = openedPort.supportedControlLines
             if (UsbSerialPort.ControlLine.DTR in lines) openedPort.dtr = false
             if (UsbSerialPort.ControlLine.RTS in lines) openedPort.rts = false
+
+            val receiveQueue = SerialReadQueue()
+            openedReadQueue = receiveQueue
+            val receiveManager = SerialInputOutputManager(
+                openedPort,
+                object : SerialInputOutputManager.Listener {
+                    override fun onNewData(data: ByteArray) {
+                        receiveQueue.offer(data)
+                    }
+
+                    override fun onRunError(error: Exception) {
+                        receiveQueue.fail(error)
+                    }
+                },
+            )
+            openedIoManager = receiveManager
             connection = openedConnection
             port = openedPort
+            readQueue = receiveQueue
+            ioManager = receiveManager
+            receiveManager.start()
             configuredBaudRate = baudRate
             openDiagnostic = UsbSerialOpenDiagnostic(
                 vendorId = device.vendorId,
@@ -84,6 +110,12 @@ class UsbSerialTransport(private val manager: UsbManager) : SerialTransport {
                 endpoints = device.endpointDiagnostics(),
             )
         } catch (error: Exception) {
+            ioManager = null
+            readQueue = null
+            port = null
+            connection = null
+            openedReadQueue?.close()
+            openedIoManager?.stop()
             try {
                 driver.ports.firstOrNull()?.takeIf { it.isOpen }?.close()
             } catch (_: Exception) {
@@ -95,12 +127,18 @@ class UsbSerialTransport(private val manager: UsbManager) : SerialTransport {
     }
 
     override fun disconnect() {
+        val openedIoManager = ioManager
+        val openedReadQueue = readQueue
         val openedPort = port
         val openedConnection = connection
+        ioManager = null
+        readQueue = null
         port = null
         connection = null
         configuredBaudRate = null
         openDiagnostic = null
+        openedReadQueue?.close()
+        openedIoManager?.stop()
         try {
             openedPort?.close()
         } finally {
@@ -109,13 +147,16 @@ class UsbSerialTransport(private val manager: UsbManager) : SerialTransport {
     }
 
     override fun read(buffer: ByteArray, timeoutMillis: Int): Int =
-        requirePort().read(buffer, timeoutMillis)
+        requireReadQueue().read(buffer, timeoutMillis)
 
     override fun write(bytes: ByteArray, timeoutMillis: Int) {
         requirePort().write(bytes, timeoutMillis)
     }
 
     private fun requirePort(): UsbSerialPort = port ?: throw IOException("Serial port is not connected")
+
+    private fun requireReadQueue(): SerialReadQueue =
+        readQueue ?: throw IOException("Serial port is not connected")
 
     companion object {
         const val BAUD_RATE = 115200
