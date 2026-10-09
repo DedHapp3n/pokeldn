@@ -188,6 +188,18 @@ class Esp32RadioSessionTest {
     }
 
     @Test
+    fun failedApStartResultStopsAndConfirmsIdle() {
+        val serial = FakeSerial().apply { apStartResultCode = 0x102 }
+        session(serial).use { runtime ->
+            runtime.verifyAndPrepare()
+
+            assertThrows(Esp32ProtocolException::class.java) { runtime.startAccessPoint(config()) }
+            assertEquals(1, serial.commandCount(Esp32Protocol.CMD_STOP))
+            assertEquals(Esp32RadioPhase.READY, runtime.state.phase)
+        }
+    }
+
+    @Test
     fun operationFailureStillStopsAndConfirmsIdle() {
         val serial = FakeSerial()
         session(serial).use { runtime ->
@@ -306,6 +318,7 @@ class Esp32RadioSessionTest {
         var overrideResultCommand: Int? = null
         var respondToStatus = true
         var respondToStop = true
+        var apStartResultCode = 0
         var eventBeforeStatus: ByteArray? = null
         var connectCalls = 0
         val baudChanges = mutableListOf<Int>()
@@ -351,8 +364,8 @@ class Esp32RadioSessionTest {
                 }
                 Esp32Protocol.CMD_AP_START -> {
                     mode = 3
-                    emitResult(overrideResultCommand ?: frame.type)
-                    emitBytes(linkFrame(up = true))
+                    emitResult(overrideResultCommand ?: frame.type, apStartResultCode)
+                    if (apStartResultCode == 0) emitBytes(linkFrame(up = true))
                 }
                 Esp32Protocol.CMD_STOP -> if (respondToStop) {
                     mode = 0
@@ -375,9 +388,9 @@ class Esp32RadioSessionTest {
 
         fun emit(type: Int, payload: ByteArray) = emitBytes(Esp32Protocol.encodeFrame(type, payload))
 
-        private fun emitResult(command: Int) {
+        private fun emitResult(command: Int, code: Int = 0) {
             val payload = byteArrayOf(command.toByte()) +
-                ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(0).array()
+                ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(code).array()
             emit(Esp32Protocol.MSG_RESULT, payload)
         }
 

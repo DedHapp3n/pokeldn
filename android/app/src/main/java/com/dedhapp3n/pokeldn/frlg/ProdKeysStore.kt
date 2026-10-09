@@ -1,6 +1,9 @@
 package com.dedhapp3n.pokeldn.frlg
 
 import android.content.Context
+import com.dedhapp3n.pokeldn.ldn.LdnKeyException
+import com.dedhapp3n.pokeldn.ldn.LdnProdKeys
+import com.dedhapp3n.pokeldn.ldn.LdnProdKeysParser
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 
@@ -33,6 +36,11 @@ class ProdKeysStore(private val context: Context) {
         return state
     }
 
+    fun loadLdnKeys(): LdnProdKeys {
+        if (!file.isFile) throw LdnKeyException("prod.keys has not been imported")
+        return LdnProdKeysParser.parse(file.readBytes())
+    }
+
     private fun validate(bytes: ByteArray): ProdKeysState = ProdKeysValidator.validate(bytes)
 
     companion object {
@@ -43,26 +51,13 @@ class ProdKeysStore(private val context: Context) {
 
 internal object ProdKeysValidator {
     fun validate(bytes: ByteArray): ProdKeysState {
-        val text = bytes.toString(Charsets.UTF_8)
-        val values = text.lineSequence().mapNotNull { line ->
-            val clean = line.substringBefore('#').trim()
-            val parts = clean.split('=', limit = 2).map { it.trim() }
-            if (parts.size == 2) parts[0] to parts[1] else null
-        }.toMap()
-        val missing = requiredKeys.filter { name ->
-            values[name]?.matches(Regex("[0-9a-fA-F]{32}")) != true
-        }
-        return if (missing.isEmpty()) {
+        return try {
+            LdnProdKeysParser.parse(bytes)
             ProdKeysState(ProdKeysPhase.AVAILABLE, "Required LDN keys are available")
-        } else {
-            ProdKeysState(ProdKeysPhase.INVALID, "Missing or invalid: ${missing.joinToString()}")
+        } catch (error: LdnKeyException) {
+            ProdKeysState(ProdKeysPhase.INVALID, error.message)
         }
     }
 
-    internal val requiredKeys = setOf(
-            "aes_kek_generation_source",
-            "aes_key_generation_source",
-            "master_key_00",
-            "master_key_12",
-    )
+    internal val requiredKeys = LdnProdKeysParser.requiredKeyNames
 }

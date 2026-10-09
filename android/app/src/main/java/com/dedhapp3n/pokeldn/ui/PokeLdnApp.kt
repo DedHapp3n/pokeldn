@@ -41,6 +41,7 @@ import com.dedhapp3n.pokeldn.frlg.FrlgOperationState
 import com.dedhapp3n.pokeldn.frlg.ProdKeysPhase
 import com.dedhapp3n.pokeldn.frlg.ProdKeysState
 import com.dedhapp3n.pokeldn.frlg.WalkThroughWallsPreset
+import com.dedhapp3n.pokeldn.ldn.LdnApTestState
 import com.dedhapp3n.pokeldn.ui.theme.CreamPanel
 import com.dedhapp3n.pokeldn.ui.theme.CreamPanelDark
 import com.dedhapp3n.pokeldn.ui.theme.DeviceAmber
@@ -100,6 +101,9 @@ fun PokeLdnApp(
     onCaptureRaw: (Int, RawReadBufferMode) -> Unit,
     prodKeysState: ProdKeysState,
     onImportProdKeys: () -> Unit,
+    ldnApTestState: LdnApTestState,
+    onStartLdnApTest: () -> Unit,
+    onStopLdnApTest: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var destination by rememberSaveable { mutableStateOf(AppDestination.HOME) }
@@ -156,6 +160,11 @@ fun PokeLdnApp(
                 onDiagnosticBaudSelected = onDiagnosticBaudSelected,
                 onReadBufferModeSelected = onReadBufferModeSelected,
                 onCaptureRaw = onCaptureRaw,
+                prodKeysState = prodKeysState,
+                onImportProdKeys = onImportProdKeys,
+                ldnApTestState = ldnApTestState,
+                onStartLdnApTest = onStartLdnApTest,
+                onStopLdnApTest = onStopLdnApTest,
                 modifier = Modifier.padding(innerPadding),
             )
         }

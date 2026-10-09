@@ -25,6 +25,8 @@ import androidx.compose.ui.Modifier
 import com.dedhapp3n.pokeldn.esp32.Esp32HandshakePhase
 import com.dedhapp3n.pokeldn.esp32.Esp32HandshakeState
 import com.dedhapp3n.pokeldn.esp32.Esp32IncompatibleProtocolException
+import com.dedhapp3n.pokeldn.esp32.Esp32RadioOperation
+import com.dedhapp3n.pokeldn.esp32.Esp32RadioPhase
 import com.dedhapp3n.pokeldn.esp32.Esp32RadioSession
 import com.dedhapp3n.pokeldn.esp32.RawCapturePhase
 import com.dedhapp3n.pokeldn.esp32.RawCaptureState
@@ -33,6 +35,10 @@ import com.dedhapp3n.pokeldn.esp32.RawSerialCapture
 import com.dedhapp3n.pokeldn.frlg.ProdKeysState
 import com.dedhapp3n.pokeldn.frlg.ProdKeysStore
 import com.dedhapp3n.pokeldn.frlg.ProdKeysPhase
+import com.dedhapp3n.pokeldn.ldn.LdnAccessPointBuilder
+import com.dedhapp3n.pokeldn.ldn.LdnApTestPhase
+import com.dedhapp3n.pokeldn.ldn.LdnApTestState
+import com.dedhapp3n.pokeldn.ldn.toEsp32AccessPointConfig
 import com.dedhapp3n.pokeldn.ui.PokeLdnApp
 import com.dedhapp3n.pokeldn.ui.theme.PokeLDNTheme
 import com.dedhapp3n.pokeldn.usb.UsbDeviceScanner
@@ -53,6 +59,7 @@ class MainActivity : ComponentActivity() {
     private val prodKeysStore by lazy { ProdKeysStore(this) }
     private val serialWorker = Executors.newSingleThreadExecutor()
     private val helloWorker = Executors.newCachedThreadPool()
+    private val ldnOperationWorker = Executors.newSingleThreadExecutor()
     private val helloWatchdog = Executors.newSingleThreadScheduledExecutor()
     private var scanResult by mutableStateOf<UsbScanResult?>(null)
     private var connectionState by mutableStateOf(SerialConnectionState())
@@ -62,6 +69,7 @@ class MainActivity : ComponentActivity() {
     private var selectedDiagnosticBaud by mutableIntStateOf(UsbSerialTransport.BAUD_RATE)
     private var selectedReadBufferMode by mutableStateOf(RawReadBufferMode.REUSED)
     private var prodKeysState by mutableStateOf(ProdKeysState())
+    private var ldnApTestState by mutableStateOf(LdnApTestState())
     private var pendingDeviceId: Int? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var permissionTimeout: Runnable? = null
@@ -75,6 +83,14 @@ class MainActivity : ComponentActivity() {
     private var rawCaptureTimeout: Future<*>? = null
     private val radioSessionLock = Any()
     @Volatile private var radioSession: Esp32RadioSession? = null
+    private val ldnTestLock = Any()
+    @Volatile private var activeLdnTest: ActiveLdnTest? = null
+    @Volatile private var ldnTestId = 0
+
+    private data class ActiveLdnTest(
+        val session: Esp32RadioSession,
+        val operation: Esp32RadioOperation,
+    )
 
     private val prodKeysPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@registerForActivityResult
@@ -106,6 +122,7 @@ class MainActivity : ComponentActivity() {
                     cancelRawCapture()
                     operationId++
                     esp32State = Esp32HandshakeState()
+                    invalidateLdnApTest()
                     connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.DISCONNECTED)
                     serialWorker.execute { closeRadioAndTransport() }
                 }
@@ -148,6 +165,9 @@ class MainActivity : ComponentActivity() {
                     onCaptureRaw = ::captureRawSerial,
                     prodKeysState = prodKeysState,
                     onImportProdKeys = { prodKeysPicker.launch(arrayOf("text/plain", "application/octet-stream")) },
+                    ldnApTestState = ldnApTestState,
+                    onStartLdnApTest = ::startLdnApTest,
+                    onStopLdnApTest = ::stopLdnApTest,
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -165,10 +185,12 @@ class MainActivity : ComponentActivity() {
         clearPendingPermission()
         cancelHello()
         cancelRawCapture()
+        invalidateLdnApTest()
         operationId++
         serialWorker.execute { closeRadioAndTransport() }
         serialWorker.shutdown()
         helloWorker.shutdownNow()
+        ldnOperationWorker.shutdownNow()
         helloWatchdog.shutdownNow()
         super.onDestroy()
     }
@@ -184,6 +206,7 @@ class MainActivity : ComponentActivity() {
             cancelRawCapture()
             operationId++
             esp32State = Esp32HandshakeState()
+            invalidateLdnApTest()
             connectionState = SerialConnectionState(name, SerialConnectionPhase.DISCONNECTED)
             serialWorker.execute { closeRadioAndTransport() }
         } else if (device != null && connectionState.phase in setOf(
@@ -327,6 +350,7 @@ class MainActivity : ComponentActivity() {
                 if (thisOperation != operationId) return@runOnUiThread
                 if (error == null && usbManager.deviceList.containsKey(device.deviceName)) {
                     esp32State = Esp32HandshakeState()
+                    invalidateLdnApTest()
                     connectedBaudRate = transport.configuredBaudRate ?: UsbSerialTransport.BAUD_RATE
                     connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.CONNECTED)
                     val shouldVerify = verifyAfterSerialConnect
@@ -353,6 +377,7 @@ class MainActivity : ComponentActivity() {
         cancelRawCapture()
         val thisOperation = ++operationId
         esp32State = Esp32HandshakeState()
+        invalidateLdnApTest()
         connectionState = SerialConnectionState(name, SerialConnectionPhase.DISCONNECTING)
         serialWorker.execute {
             closeRadioAndTransport()
@@ -403,6 +428,9 @@ class MainActivity : ComponentActivity() {
                 helloFuture = null
                 if (nextState.phase == Esp32HandshakePhase.VERIFIED) {
                     connectedBaudRate = transport.configuredBaudRate ?: UsbSerialTransport.BAUD_RATE
+                    ldnApTestState = LdnApTestState(LdnApTestPhase.READY)
+                } else {
+                    ldnApTestState = LdnApTestState(LdnApTestPhase.DISCONNECTED)
                 }
                 esp32State = nextState
             }
@@ -429,6 +457,7 @@ class MainActivity : ComponentActivity() {
                     SerialConnectionPhase.CONNECTION_FAILED,
                     "ESP32 HELLO timed out. The serial connection was closed; reconnect to retry.",
                 )
+                invalidateLdnApTest()
             }
         }, HELLO_OPERATION_TIMEOUT_MS, TimeUnit.MILLISECONDS)
     }
@@ -458,6 +487,7 @@ class MainActivity : ComponentActivity() {
             detail = "Reopening at $baudRate baud; ${bufferMode.label}",
         )
         esp32State = Esp32HandshakeState()
+        invalidateLdnApTest()
         val task = helloWorker.submit {
             var reopened = false
             val nextState = try {
@@ -535,6 +565,109 @@ class MainActivity : ComponentActivity() {
         if (rawCaptureState.phase == RawCapturePhase.CAPTURING) {
             rawCaptureState = RawCaptureState(RawCapturePhase.FAILED, detail = "Raw capture canceled.")
         }
+    }
+
+    private fun startLdnApTest() {
+        if (prodKeysState.phase != ProdKeysPhase.AVAILABLE) {
+            ldnApTestState = LdnApTestState(LdnApTestPhase.FAILED, "Valid prod.keys are required")
+            return
+        }
+        val session = radioSession
+        if (esp32State.phase != Esp32HandshakePhase.VERIFIED ||
+            session?.state?.phase != Esp32RadioPhase.READY) {
+            ldnApTestState = LdnApTestState(LdnApTestPhase.FAILED, "ESP32 radio is not Ready")
+            return
+        }
+        if (ldnApTestState.phase in setOf(
+                LdnApTestPhase.PREPARING,
+                LdnApTestPhase.STARTING_AP,
+                LdnApTestPhase.AP_ACTIVE,
+                LdnApTestPhase.STOPPING,
+            )) return
+        val testId = synchronized(ldnTestLock) {
+            activeLdnTest = null
+            ++ldnTestId
+        }
+        ldnApTestState = LdnApTestState(LdnApTestPhase.PREPARING)
+        ldnOperationWorker.execute {
+            try {
+                val keys = prodKeysStore.loadLdnKeys()
+                val config = LdnAccessPointBuilder().buildDiagnosticsNetwork(keys).toEsp32AccessPointConfig()
+                runOnUiThread {
+                    if (testId == ldnTestId) ldnApTestState = LdnApTestState(LdnApTestPhase.STARTING_AP)
+                }
+                val operation = session.startAccessPoint(config)
+                val accepted = synchronized(ldnTestLock) {
+                    if (testId == ldnTestId && radioSession === session) {
+                        activeLdnTest = ActiveLdnTest(session, operation)
+                        true
+                    } else false
+                }
+                if (!accepted) {
+                    try { session.stopAccessPoint(operation) } catch (_: Exception) { /* Session is already closing. */ }
+                    return@execute
+                }
+                runOnUiThread {
+                    if (testId == ldnTestId) {
+                        ldnApTestState = LdnApTestState(
+                            LdnApTestPhase.AP_ACTIVE,
+                            "Nintendo LDN AP is active on channel ${config.channel}",
+                        )
+                    }
+                }
+            } catch (error: Exception) {
+                synchronized(ldnTestLock) { activeLdnTest = null }
+                runOnUiThread {
+                    if (testId != ldnTestId) return@runOnUiThread
+                    val cleanupRequired = session.state.phase == Esp32RadioPhase.CLEANUP_REQUIRED
+                    ldnApTestState = LdnApTestState(
+                        if (cleanupRequired) LdnApTestPhase.CLEANUP_REQUIRED else LdnApTestPhase.FAILED,
+                        error.message ?: "LDN AP start failed",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun stopLdnApTest() {
+        val active: ActiveLdnTest
+        val testId = synchronized(ldnTestLock) {
+            active = activeLdnTest ?: return
+            activeLdnTest = null
+            ++ldnTestId
+        }
+        ldnApTestState = LdnApTestState(LdnApTestPhase.STOPPING)
+        ldnOperationWorker.execute {
+            val error = try {
+                active.session.stopAccessPoint(active.operation)
+                null
+            } catch (failure: Exception) {
+                failure
+            }
+            runOnUiThread {
+                if (testId != ldnTestId) return@runOnUiThread
+                if (error == null) {
+                    ldnApTestState = LdnApTestState(
+                        LdnApTestPhase.READY,
+                        "STOP succeeded and STATUS confirmed mode=0",
+                    )
+                } else {
+                    val cleanupRequired = active.session.state.phase == Esp32RadioPhase.CLEANUP_REQUIRED
+                    ldnApTestState = LdnApTestState(
+                        if (cleanupRequired) LdnApTestPhase.CLEANUP_REQUIRED else LdnApTestPhase.FAILED,
+                        error.message ?: "LDN AP stop failed",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun invalidateLdnApTest() {
+        synchronized(ldnTestLock) {
+            ldnTestId++
+            activeLdnTest = null
+        }
+        ldnApTestState = LdnApTestState(LdnApTestPhase.DISCONNECTED)
     }
 
     private fun installRadioSession(session: Esp32RadioSession) {

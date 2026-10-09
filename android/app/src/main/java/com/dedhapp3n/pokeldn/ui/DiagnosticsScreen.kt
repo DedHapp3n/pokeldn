@@ -28,6 +28,10 @@ import com.dedhapp3n.pokeldn.esp32.RawCapturePhase
 import com.dedhapp3n.pokeldn.esp32.RawCaptureState
 import com.dedhapp3n.pokeldn.esp32.RawReadBufferMode
 import com.dedhapp3n.pokeldn.esp32.formatMac
+import com.dedhapp3n.pokeldn.frlg.ProdKeysPhase
+import com.dedhapp3n.pokeldn.frlg.ProdKeysState
+import com.dedhapp3n.pokeldn.ldn.LdnApTestPhase
+import com.dedhapp3n.pokeldn.ldn.LdnApTestState
 import com.dedhapp3n.pokeldn.ui.theme.CreamPanel
 import com.dedhapp3n.pokeldn.ui.theme.DeviceBezel
 import com.dedhapp3n.pokeldn.ui.theme.DeviceInk
@@ -61,6 +65,11 @@ internal fun DiagnosticsScreen(
     onDiagnosticBaudSelected: (Int) -> Unit,
     onReadBufferModeSelected: (RawReadBufferMode) -> Unit,
     onCaptureRaw: (Int, RawReadBufferMode) -> Unit,
+    prodKeysState: ProdKeysState,
+    onImportProdKeys: () -> Unit,
+    ldnApTestState: LdnApTestState,
+    onStartLdnApTest: () -> Unit,
+    onStopLdnApTest: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val devices = (result as? UsbScanResult.Devices)?.items.orEmpty()
@@ -110,6 +119,12 @@ internal fun DiagnosticsScreen(
                 onDiagnosticBaudSelected = onDiagnosticBaudSelected,
                 onReadBufferModeSelected = onReadBufferModeSelected,
                 onCaptureRaw = onCaptureRaw,
+                prodKeysState = prodKeysState,
+                onImportProdKeys = onImportProdKeys,
+                ldnApTestState = if (connectionState.deviceName == device.deviceName) ldnApTestState
+                    else LdnApTestState(),
+                onStartLdnApTest = onStartLdnApTest,
+                onStopLdnApTest = onStopLdnApTest,
             )
         }
     }
@@ -132,8 +147,19 @@ private fun DiagnosticDevicePanel(
     onDiagnosticBaudSelected: (Int) -> Unit,
     onReadBufferModeSelected: (RawReadBufferMode) -> Unit,
     onCaptureRaw: (Int, RawReadBufferMode) -> Unit,
+    prodKeysState: ProdKeysState,
+    onImportProdKeys: () -> Unit,
+    ldnApTestState: LdnApTestState,
+    onStartLdnApTest: () -> Unit,
+    onStopLdnApTest: () -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
+    val ldnBusy = ldnApTestState.phase in setOf(
+        LdnApTestPhase.PREPARING,
+        LdnApTestPhase.STARTING_AP,
+        LdnApTestPhase.AP_ACTIVE,
+        LdnApTestPhase.STOPPING,
+    )
     ShellPanel(device.productName ?: "USB device") {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.weight(1f)) {
@@ -173,6 +199,7 @@ private fun DiagnosticDevicePanel(
                     onDisconnect,
                     Modifier.fillMaxWidth(),
                     enabled = esp32State.phase != Esp32HandshakePhase.TESTING &&
+                        !ldnBusy &&
                         rawCaptureState.phase != RawCapturePhase.CAPTURING,
                 )
             } else {
@@ -213,7 +240,41 @@ private fun DiagnosticDevicePanel(
                 )
             }
 
-            DiagnosticSection("04", "Raw capture") {
+            DiagnosticSection("04", "Nintendo LDN AP") {
+                StatusBadge(
+                    if (prodKeysState.phase == ProdKeysPhase.AVAILABLE) "Keys valid" else "Keys missing",
+                    if (prodKeysState.phase == ProdKeysPhase.AVAILABLE) StatusTone.POSITIVE else StatusTone.WARNING,
+                )
+                StatusBadge(ldnApTestState.phase.label, ldnApTestState.phase.toStatusTone())
+                ldnApTestState.detail?.let {
+                    if (ldnApTestState.phase in setOf(
+                            LdnApTestPhase.FAILED,
+                            LdnApTestPhase.CLEANUP_REQUIRED,
+                        )) ErrorText(it) else Text(it)
+                }
+                if (prodKeysState.phase != ProdKeysPhase.AVAILABLE) {
+                    Text("Import your own prod.keys before starting the hardware lifecycle test.")
+                    DeviceButton("Import prod.keys", onImportProdKeys, Modifier.fillMaxWidth())
+                }
+                if (ldnApTestState.phase == LdnApTestPhase.AP_ACTIVE) {
+                    DeviceButton("Stop LDN AP", onStopLdnApTest, Modifier.fillMaxWidth())
+                } else {
+                    DeviceButton(
+                        "Test LDN AP",
+                        onStartLdnApTest,
+                        Modifier.fillMaxWidth(),
+                        enabled = esp32State.phase == Esp32HandshakePhase.VERIFIED &&
+                            prodKeysState.phase == ProdKeysPhase.AVAILABLE &&
+                            ldnApTestState.phase in setOf(
+                                LdnApTestPhase.READY,
+                                LdnApTestPhase.FAILED,
+                            ),
+                        style = DeviceButtonStyle.SECONDARY,
+                    )
+                }
+            }
+
+            DiagnosticSection("05", "Raw capture") {
                 Text("Passive capture only. No protocol data is sent.")
                 Text("BAUD RATE", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Black)
                 diagnosticBaudRates.chunked(2).forEach { baudRow ->
@@ -245,6 +306,7 @@ private fun DiagnosticDevicePanel(
                     { onCaptureRaw(selectedDiagnosticBaud, selectedReadBufferMode) },
                     Modifier.fillMaxWidth(),
                     enabled = esp32State.phase != Esp32HandshakePhase.TESTING &&
+                        !ldnBusy &&
                         rawCaptureState.phase != RawCapturePhase.CAPTURING,
                     style = DeviceButtonStyle.SECONDARY,
                 )
@@ -334,4 +396,12 @@ private fun Esp32HandshakePhase.toStatusTone(): StatusTone = when (this) {
     Esp32HandshakePhase.TESTING -> StatusTone.WARNING
     Esp32HandshakePhase.FAILED -> StatusTone.ERROR
     Esp32HandshakePhase.IDLE -> StatusTone.NEUTRAL
+}
+
+private fun LdnApTestPhase.toStatusTone(): StatusTone = when (this) {
+    LdnApTestPhase.READY, LdnApTestPhase.AP_ACTIVE -> StatusTone.POSITIVE
+    LdnApTestPhase.PREPARING, LdnApTestPhase.STARTING_AP,
+    LdnApTestPhase.STOPPING -> StatusTone.WARNING
+    LdnApTestPhase.FAILED, LdnApTestPhase.CLEANUP_REQUIRED -> StatusTone.ERROR
+    LdnApTestPhase.DISCONNECTED -> StatusTone.NEUTRAL
 }
