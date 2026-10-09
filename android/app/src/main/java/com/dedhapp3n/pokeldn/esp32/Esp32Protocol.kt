@@ -16,6 +16,8 @@ object Esp32Protocol {
     const val MSG_RESULT = 0x82
     const val MSG_RX_ETH = 0x85
     const val MSG_LINK = 0x86
+    const val MSG_STA_JOINED = 0x87
+    const val MSG_STA_LEFT = 0x88
     const val MSG_STATUS = 0x89
     const val MSG_CREDIT = 0x8B
     const val MSG_TX_DONE = 0x8D

@@ -22,10 +22,10 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import com.dedhapp3n.pokeldn.esp32.Esp32Client
 import com.dedhapp3n.pokeldn.esp32.Esp32HandshakePhase
 import com.dedhapp3n.pokeldn.esp32.Esp32HandshakeState
 import com.dedhapp3n.pokeldn.esp32.Esp32IncompatibleProtocolException
+import com.dedhapp3n.pokeldn.esp32.Esp32RadioSession
 import com.dedhapp3n.pokeldn.esp32.RawCapturePhase
 import com.dedhapp3n.pokeldn.esp32.RawCaptureState
 import com.dedhapp3n.pokeldn.esp32.RawReadBufferMode
@@ -73,6 +73,8 @@ class MainActivity : ComponentActivity() {
     private var rawCaptureOperationId = 0
     private var rawCaptureFuture: Future<*>? = null
     private var rawCaptureTimeout: Future<*>? = null
+    private val radioSessionLock = Any()
+    @Volatile private var radioSession: Esp32RadioSession? = null
 
     private val prodKeysPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@registerForActivityResult
@@ -105,7 +107,7 @@ class MainActivity : ComponentActivity() {
                     operationId++
                     esp32State = Esp32HandshakeState()
                     connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.DISCONNECTED)
-                    serialWorker.execute { transport.disconnectSafely() }
+                    serialWorker.execute { closeRadioAndTransport() }
                 }
             }
             scanDevices()
@@ -164,7 +166,7 @@ class MainActivity : ComponentActivity() {
         cancelHello()
         cancelRawCapture()
         operationId++
-        serialWorker.execute { transport.disconnectSafely() }
+        serialWorker.execute { closeRadioAndTransport() }
         serialWorker.shutdown()
         helloWorker.shutdownNow()
         helloWatchdog.shutdownNow()
@@ -183,7 +185,7 @@ class MainActivity : ComponentActivity() {
             operationId++
             esp32State = Esp32HandshakeState()
             connectionState = SerialConnectionState(name, SerialConnectionPhase.DISCONNECTED)
-            serialWorker.execute { transport.disconnectSafely() }
+            serialWorker.execute { closeRadioAndTransport() }
         } else if (device != null && connectionState.phase in setOf(
                 SerialConnectionPhase.READY, SerialConnectionPhase.PERMISSION_REQUIRED,
                 SerialConnectionPhase.DEVICE_DETECTED,
@@ -332,7 +334,7 @@ class MainActivity : ComponentActivity() {
                     if (shouldVerify) testEsp32()
                 } else if (!usbManager.deviceList.containsKey(device.deviceName)) {
                     verifyAfterSerialConnect = false
-                    serialWorker.execute { transport.disconnectSafely() }
+                    serialWorker.execute { closeRadioAndTransport() }
                     connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.DISCONNECTED)
                 } else {
                     verifyAfterSerialConnect = false
@@ -353,7 +355,7 @@ class MainActivity : ComponentActivity() {
         esp32State = Esp32HandshakeState()
         connectionState = SerialConnectionState(name, SerialConnectionPhase.DISCONNECTING)
         serialWorker.execute {
-            transport.disconnectSafely()
+            closeRadioAndTransport()
             runOnUiThread {
                 if (thisOperation != operationId) return@runOnUiThread
                 connectionState = SerialConnectionState(
@@ -368,6 +370,7 @@ class MainActivity : ComponentActivity() {
     private fun testEsp32() {
         if (connectionState.phase != SerialConnectionPhase.CONNECTED ||
             esp32State.phase == Esp32HandshakePhase.TESTING ||
+            (esp32State.phase == Esp32HandshakePhase.VERIFIED && radioSession != null) ||
             rawCaptureState.phase == RawCapturePhase.CAPTURING) return
         val thisOperation = operationId
         val thisHello = ++helloOperationId
@@ -375,10 +378,14 @@ class MainActivity : ComponentActivity() {
         val finished = AtomicBoolean(false)
         esp32State = Esp32HandshakeState(Esp32HandshakePhase.TESTING)
         val task = helloWorker.submit {
+            closeRadioSession()
+            val session = Esp32RadioSession(transport, diagnostics = { Log.d(ESP32_LOG_TAG, it) })
+            installRadioSession(session)
             val nextState = try {
-                val client = Esp32Client(transport, diagnostics = { Log.d(ESP32_LOG_TAG, it) })
-                Esp32HandshakeState(Esp32HandshakePhase.VERIFIED, info = client.hello())
+                val info = session.verifyAndPrepare()
+                Esp32HandshakeState(Esp32HandshakePhase.VERIFIED, info = info)
             } catch (error: Exception) {
+                closeRadioSession(session)
                 Esp32HandshakeState(
                     Esp32HandshakePhase.FAILED,
                     info = (error as? Esp32IncompatibleProtocolException)?.info,
@@ -394,6 +401,9 @@ class MainActivity : ComponentActivity() {
                 helloTimeout?.cancel(false)
                 helloTimeout = null
                 helloFuture = null
+                if (nextState.phase == Esp32HandshakePhase.VERIFIED) {
+                    connectedBaudRate = transport.configuredBaudRate ?: UsbSerialTransport.BAUD_RATE
+                }
                 esp32State = nextState
             }
         }
@@ -403,7 +413,7 @@ class MainActivity : ComponentActivity() {
             val elapsedMs = (System.nanoTime() - started) / 1_000_000
             Log.e(ESP32_LOG_TAG, "HELLO hard timeout after $elapsedMs ms; closing serial transport")
             task.cancel(true)
-            serialWorker.execute { transport.disconnectSafely() }
+            serialWorker.execute { closeRadioAndTransport() }
             runOnUiThread {
                 if (thisHello != helloOperationId || thisOperation != operationId) return@runOnUiThread
                 helloOperationId++
@@ -447,10 +457,11 @@ class MainActivity : ComponentActivity() {
             RawCapturePhase.CAPTURING,
             detail = "Reopening at $baudRate baud; ${bufferMode.label}",
         )
+        esp32State = Esp32HandshakeState()
         val task = helloWorker.submit {
             var reopened = false
             val nextState = try {
-                transport.disconnectSafely()
+                closeRadioAndTransport()
                 transport.connect(device, baudRate)
                 reopened = true
                 val configuredBaud = transport.configuredBaudRate
@@ -468,7 +479,7 @@ class MainActivity : ComponentActivity() {
                 )
             }
             if (!finished.compareAndSet(false, true)) {
-                transport.disconnectSafely()
+                closeRadioAndTransport()
                 return@submit
             }
             runOnUiThread {
@@ -495,7 +506,7 @@ class MainActivity : ComponentActivity() {
             if (!finished.compareAndSet(false, true)) return@schedule
             Log.e(ESP32_LOG_TAG, "Raw capture hard timeout; closing serial transport")
             task.cancel(true)
-            serialWorker.execute { transport.disconnectSafely() }
+            serialWorker.execute { closeRadioAndTransport() }
             runOnUiThread {
                 if (thisCapture != rawCaptureOperationId || thisOperation != operationId) return@runOnUiThread
                 rawCaptureOperationId++
@@ -526,6 +537,31 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun installRadioSession(session: Esp32RadioSession) {
+        val previous = synchronized(radioSessionLock) {
+            val current = radioSession
+            radioSession = session
+            current
+        }
+        if (previous !== session) {
+            try { previous?.close() } catch (_: Exception) { /* The USB device may already be detached. */ }
+        }
+    }
+
+    private fun closeRadioSession(expected: Esp32RadioSession? = null) {
+        val session = synchronized(radioSessionLock) {
+            val current = radioSession
+            if (expected != null && current !== expected) null
+            else current.also { radioSession = null }
+        }
+        try { session?.close() } catch (_: Exception) { /* The USB device may already be detached. */ }
+    }
+
+    private fun closeRadioAndTransport() {
+        closeRadioSession()
+        transport.disconnectSafely()
+    }
+
     @Suppress("DEPRECATION")
     private fun Intent.usbDevice(): UsbDevice? =
         if (android.os.Build.VERSION.SDK_INT >= 33) getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
@@ -534,7 +570,7 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val ACTION_USB_PERMISSION = "com.dedhapp3n.pokeldn.USB_PERMISSION"
         private const val PERMISSION_TIMEOUT_MS = 30_000L
-        private const val HELLO_OPERATION_TIMEOUT_MS = 10_000L
+        private const val HELLO_OPERATION_TIMEOUT_MS = 20_000L
         private const val RAW_CAPTURE_OPERATION_TIMEOUT_MS = 5_000L
         private const val ESP32_LOG_TAG = "PokeLDN-ESP32"
     }

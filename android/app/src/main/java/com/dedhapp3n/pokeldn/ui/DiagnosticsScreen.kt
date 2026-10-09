@@ -204,7 +204,10 @@ private fun DiagnosticDevicePanel(
                     "ESP32 HELLO",
                     onTestEsp32,
                     Modifier.fillMaxWidth(),
-                    enabled = esp32State.phase != Esp32HandshakePhase.TESTING &&
+                    enabled = esp32State.phase !in setOf(
+                        Esp32HandshakePhase.TESTING,
+                        Esp32HandshakePhase.VERIFIED,
+                    ) &&
                         rawCaptureState.phase != RawCapturePhase.CAPTURING,
                     style = DeviceButtonStyle.SECONDARY,
                 )

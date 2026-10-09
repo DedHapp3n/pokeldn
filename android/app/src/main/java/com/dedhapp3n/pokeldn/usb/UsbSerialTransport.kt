@@ -16,6 +16,7 @@ interface SerialIo {
 }
 
 interface SerialTransport : SerialIo {
+    val configuredBaudRate: Int?
     fun connect(device: UsbDevice, baudRate: Int)
     fun setBaudRate(baudRate: Int)
     fun disconnect()
@@ -53,7 +54,7 @@ class UsbSerialTransport(private val manager: UsbManager) : SerialTransport {
     @Volatile
     private var readQueue: SerialReadQueue? = null
     @Volatile
-    var configuredBaudRate: Int? = null
+    override var configuredBaudRate: Int? = null
         private set
     @Volatile
     var openDiagnostic: UsbSerialOpenDiagnostic? = null
