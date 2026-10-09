@@ -59,10 +59,11 @@ import com.dedhapp3n.pokeldn.usb.SerialConnectionState
 import com.dedhapp3n.pokeldn.usb.UsbDeviceInfo
 import com.dedhapp3n.pokeldn.usb.UsbScanResult
 
-private enum class AppDestination(val label: String, val code: String) {
-    HOME("Home", "01"),
-    GAMES("Games", "02"),
-    DIAGNOSTICS("Diagnostics", "03"),
+private enum class AppDestination(val label: String) {
+    HOME("Home"),
+    GAMES("Games"),
+    OPTIONS("Optionen"),
+    DIAGNOSTICS("Diagnostics"),
 }
 
 private data class GameModule(
@@ -145,6 +146,11 @@ fun PokeLdnApp(
                     modifier = Modifier.padding(innerPadding),
                 )
             }
+            AppDestination.OPTIONS -> OptionsScreen(
+                prodKeysState = prodKeysState,
+                onImportProdKeys = onImportProdKeys,
+                modifier = Modifier.padding(innerPadding),
+            )
             AppDestination.DIAGNOSTICS -> DiagnosticsScreen(
                 result = result,
                 connectionState = connectionState,
@@ -247,11 +253,9 @@ private fun DeviceModeBar(selected: AppDestination, onSelected: (AppDestination)
                         horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(destination.code, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Black)
                         Text(
-                            destination.label.uppercase(),
-                            modifier = Modifier.padding(start = 6.dp),
-                            style = MaterialTheme.typography.labelMedium,
+                            destination.label,
+                            style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Black,
                             maxLines = 1,
                         )
@@ -397,7 +401,7 @@ private fun MainAdapterDisplay(
 private fun GamesScreen(onOpenFrlg: () -> Unit, modifier: Modifier = Modifier) {
     CenteredDeviceList(modifier) {
         item {
-            DeviceScreenTitle("Catalog 02 / Games", "Game modules", "FireRed and LeafGreen are the first Android focus")
+            DeviceScreenTitle(null, "Game modules", "FireRed and LeafGreen are the first Android focus")
         }
         item {
             BezelDisplay("Selected development target") {
@@ -424,6 +428,53 @@ private fun GamesScreen(onOpenFrlg: () -> Unit, modifier: Modifier = Modifier) {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OptionsScreen(
+    prodKeysState: ProdKeysState,
+    onImportProdKeys: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    CenteredDeviceList(modifier) {
+        item { DeviceScreenTitle(null, "Optionen", "App settings and local data") }
+        item {
+            ShellPanel("Trainer") {
+                Text("Trainer settings will be available in a later milestone.")
+            }
+        }
+        item {
+            ShellPanel("Switch Keys") {
+                StatusBadge(
+                    when (prodKeysState.phase) {
+                        ProdKeysPhase.AVAILABLE -> "Keys valid"
+                        ProdKeysPhase.INVALID -> "Keys invalid"
+                        ProdKeysPhase.MISSING -> "Keys missing"
+                    },
+                    when (prodKeysState.phase) {
+                        ProdKeysPhase.AVAILABLE -> StatusTone.POSITIVE
+                        ProdKeysPhase.INVALID -> StatusTone.ERROR
+                        ProdKeysPhase.MISSING -> StatusTone.WARNING
+                    },
+                )
+                prodKeysState.detail?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall)
+                }
+                Text("Your imported prod.keys file is stored in private app storage.")
+                DeviceButton("Import prod.keys", onImportProdKeys, Modifier.fillMaxWidth())
+            }
+        }
+        item {
+            ShellPanel("Storage") {
+                Text("Local file and backup settings will be added as storage workflows become available.")
+            }
+        }
+        item {
+            ShellPanel("Device / Firmware") {
+                Text("Device information is available in Diagnostics. Firmware updates are not available yet.")
             }
         }
     }

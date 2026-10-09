@@ -149,7 +149,6 @@ internal fun ShellPanel(
 
 @Composable
 internal fun DiagnosticSection(
-    number: String,
     title: String,
     content: @Composable ColumnScope.() -> Unit,
 ) {
@@ -162,17 +161,8 @@ internal fun DiagnosticSection(
     ) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Surface(color = ShellRedDark, shape = RoundedCornerShape(6.dp)) {
-                    Text(
-                        number,
-                        color = CreamPanel,
-                        fontWeight = FontWeight.Black,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                    )
-                }
                 Text(
                     title.uppercase(),
-                    modifier = Modifier.padding(start = 9.dp),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Black,
                 )

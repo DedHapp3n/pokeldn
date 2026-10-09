@@ -81,7 +81,7 @@ internal fun DiagnosticsScreen(
     )
     CenteredDeviceList(modifier) {
         item {
-            DeviceScreenTitle("Service 03 / Diagnostics", "Device service", "USB, serial, protocol, and capture controls")
+            DeviceScreenTitle(null, "Diagnostics", "USB, serial, protocol, and capture controls")
         }
         item {
             ShellPanel("USB scanner") {
@@ -176,7 +176,7 @@ private fun DiagnosticDevicePanel(
             )
         }
 
-        DiagnosticSection("01", "USB") {
+        DiagnosticSection("USB") {
             DetailLine("Device name", device.deviceName)
             DetailLine("VID / PID", "${usbIdHex(device.vendorId)} / ${usbIdHex(device.productId)}")
             device.manufacturer?.let { DetailLine("Manufacturer", it) }
@@ -189,7 +189,7 @@ private fun DiagnosticDevicePanel(
             return@ShellPanel
         }
 
-        DiagnosticSection("02", "Serial") {
+        DiagnosticSection("Serial") {
             StatusBadge(state.phase.label, state.phase.toStatusTone())
             state.detail?.let { ErrorText(it) }
             DetailLine("Settings", "$connectedBaudRate baud / 8N1 / no flow control")
@@ -216,7 +216,7 @@ private fun DiagnosticDevicePanel(
         }
 
         if (state.phase == SerialConnectionPhase.CONNECTED) {
-            DiagnosticSection("03", "ESP32 protocol") {
+            DiagnosticSection("ESP32 protocol") {
                 StatusBadge(esp32State.phase.label, esp32State.phase.toStatusTone())
                 esp32State.detail?.let { ErrorText(it) }
                 esp32State.info?.let { info ->
@@ -240,7 +240,7 @@ private fun DiagnosticDevicePanel(
                 )
             }
 
-            DiagnosticSection("04", "Nintendo LDN AP") {
+            DiagnosticSection("Nintendo LDN AP") {
                 StatusBadge(
                     if (prodKeysState.phase == ProdKeysPhase.AVAILABLE) "Keys valid" else "Keys missing",
                     if (prodKeysState.phase == ProdKeysPhase.AVAILABLE) StatusTone.POSITIVE else StatusTone.WARNING,
@@ -274,7 +274,7 @@ private fun DiagnosticDevicePanel(
                 }
             }
 
-            DiagnosticSection("05", "Raw capture") {
+            DiagnosticSection("Raw capture") {
                 Text("Passive capture only. No protocol data is sent.")
                 Text("BAUD RATE", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Black)
                 diagnosticBaudRates.chunked(2).forEach { baudRow ->
