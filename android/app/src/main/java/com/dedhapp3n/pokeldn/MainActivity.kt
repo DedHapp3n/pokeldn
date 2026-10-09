@@ -59,6 +59,7 @@ class MainActivity : ComponentActivity() {
     private var pendingDeviceId: Int? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var permissionTimeout: Runnable? = null
+    private var verifyAfterSerialConnect = false
     private var operationId = 0
     private var helloOperationId = 0
     private var helloFuture: Future<*>? = null
@@ -73,11 +74,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private val detachReceiver = object : BroadcastReceiver() {
+    private val usbDeviceReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val device = intent.usbDevice() ?: return
             if (intent.action == UsbManager.ACTION_USB_DEVICE_DETACHED) {
                 if (connectionState.deviceName == device.deviceName) {
+                    verifyAfterSerialConnect = false
                     clearPendingPermission()
                     cancelHello()
                     cancelRawCapture()
@@ -86,8 +88,8 @@ class MainActivity : ComponentActivity() {
                     connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.DISCONNECTED)
                     serialWorker.execute { transport.disconnectSafely() }
                 }
-                scanDevices()
             }
+            scanDevices()
         }
     }
 
@@ -98,7 +100,10 @@ class MainActivity : ComponentActivity() {
             this, permissionReceiver, IntentFilter(ACTION_USB_PERMISSION), ContextCompat.RECEIVER_NOT_EXPORTED,
         )
         ContextCompat.registerReceiver(
-            this, detachReceiver, IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED),
+            this, usbDeviceReceiver, IntentFilter().apply {
+                addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+                addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+            },
             ContextCompat.RECEIVER_EXPORTED,
         )
         setContent {
@@ -112,6 +117,7 @@ class MainActivity : ComponentActivity() {
                     selectedDiagnosticBaud = selectedDiagnosticBaud,
                     selectedReadBufferMode = selectedReadBufferMode,
                     onScan = ::scanDevices,
+                    onConnectEsp32 = ::connectAndVerifyEsp32,
                     onConnect = ::connectSerial,
                     onDisconnect = ::disconnectSerial,
                     onTestEsp32 = ::testEsp32,
@@ -131,7 +137,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         unregisterReceiver(permissionReceiver)
-        unregisterReceiver(detachReceiver)
+        unregisterReceiver(usbDeviceReceiver)
         clearPendingPermission()
         cancelHello()
         cancelRawCapture()
@@ -148,6 +154,7 @@ class MainActivity : ComponentActivity() {
         val name = connectionState.deviceName ?: return
         val device = (scanResult as? UsbScanResult.Devices)?.items?.firstOrNull { it.deviceName == name }
         if (device == null && connectionState.phase != SerialConnectionPhase.DISCONNECTED) {
+            verifyAfterSerialConnect = false
             clearPendingPermission()
             cancelHello()
             cancelRawCapture()
@@ -166,15 +173,40 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun connectAndVerifyEsp32(name: String) {
+        if (connectionState.deviceName == name &&
+            connectionState.phase == SerialConnectionPhase.CONNECTED) {
+            testEsp32()
+            return
+        }
+        val visible = (scanResult as? UsbScanResult.Devices)?.items
+            ?.firstOrNull { it.deviceName == name && it.serialSupported }
+            ?: return
+        if (connectionState.phase in setOf(
+                SerialConnectionPhase.REQUESTING_PERMISSION,
+                SerialConnectionPhase.CONNECTING,
+                SerialConnectionPhase.DISCONNECTING,
+            )) return
+        verifyAfterSerialConnect = true
+        connectSerial(visible.deviceName)
+    }
+
     private fun connectSerial(name: String) {
         val visible = (scanResult as? UsbScanResult.Devices)?.items?.firstOrNull { it.deviceName == name }
-            ?: return
+            ?: run {
+                verifyAfterSerialConnect = false
+                return
+            }
         if (!visible.serialSupported || connectionState.phase in setOf(
                 SerialConnectionPhase.REQUESTING_PERMISSION, SerialConnectionPhase.CONNECTING,
                 SerialConnectionPhase.CONNECTED, SerialConnectionPhase.DISCONNECTING,
-            )) return
+            )) {
+            verifyAfterSerialConnect = false
+            return
+        }
 
         val device = usbManager.deviceList[name] ?: run {
+            verifyAfterSerialConnect = false
             scanDevices()
             return
         }
@@ -194,6 +226,7 @@ class MainActivity : ComponentActivity() {
                 usbManager.requestPermission(device, permissionIntent)
                 schedulePermissionTimeout(device)
             } catch (error: Exception) {
+                verifyAfterSerialConnect = false
                 clearPendingPermission()
                 connectionState = SerialConnectionState(name, SerialConnectionPhase.CONNECTION_FAILED, error.message)
             }
@@ -208,16 +241,19 @@ class MainActivity : ComponentActivity() {
         clearPendingPermission()
         val device = usbManager.deviceList[name]
         if (device == null || device.deviceId != id) {
+            verifyAfterSerialConnect = false
             connectionState = SerialConnectionState(name, SerialConnectionPhase.DISCONNECTED)
         } else if (usbManager.hasPermission(device)) {
             connectionState = SerialConnectionState(name, SerialConnectionPhase.READY)
             openSerial(device)
         } else if (intent.hasExtra(UsbManager.EXTRA_PERMISSION_GRANTED) &&
             !intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
+            verifyAfterSerialConnect = false
             connectionState = SerialConnectionState(name, SerialConnectionPhase.PERMISSION_DENIED)
         } else {
+            verifyAfterSerialConnect = false
             connectionState = SerialConnectionState(name, SerialConnectionPhase.CONNECTION_FAILED,
-                "USB permission response was incomplete. Tap Connect Serial to retry.")
+                "USB permission response was incomplete. Try connecting again.")
         }
         scanResult = scanner.scan()
     }
@@ -228,13 +264,15 @@ class MainActivity : ComponentActivity() {
             clearPendingPermission()
             val current = usbManager.deviceList[device.deviceName]
             if (current == null || current.deviceId != device.deviceId) {
+                verifyAfterSerialConnect = false
                 connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.DISCONNECTED)
             } else if (usbManager.hasPermission(current)) {
                 connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.READY)
                 openSerial(current)
             } else {
+                verifyAfterSerialConnect = false
                 connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.CONNECTION_FAILED,
-                    "USB permission response timed out. Tap Connect Serial to retry.")
+                    "USB permission response timed out. Try connecting again.")
             }
             scanResult = scanner.scan()
         }
@@ -263,15 +301,22 @@ class MainActivity : ComponentActivity() {
             }
             runOnUiThread {
                 if (thisOperation != operationId) return@runOnUiThread
-                connectionState = if (error == null && usbManager.deviceList.containsKey(device.deviceName)) {
+                if (error == null && usbManager.deviceList.containsKey(device.deviceName)) {
                     esp32State = Esp32HandshakeState()
                     connectedBaudRate = transport.configuredBaudRate ?: UsbSerialTransport.BAUD_RATE
-                    SerialConnectionState(device.deviceName, SerialConnectionPhase.CONNECTED)
+                    connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.CONNECTED)
+                    val shouldVerify = verifyAfterSerialConnect
+                    verifyAfterSerialConnect = false
+                    if (shouldVerify) testEsp32()
                 } else if (!usbManager.deviceList.containsKey(device.deviceName)) {
+                    verifyAfterSerialConnect = false
                     serialWorker.execute { transport.disconnectSafely() }
-                    SerialConnectionState(device.deviceName, SerialConnectionPhase.DISCONNECTED)
+                    connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.DISCONNECTED)
                 } else {
-                    SerialConnectionState(device.deviceName, SerialConnectionPhase.CONNECTION_FAILED, error?.message)
+                    verifyAfterSerialConnect = false
+                    connectionState = SerialConnectionState(
+                        device.deviceName, SerialConnectionPhase.CONNECTION_FAILED, error?.message,
+                    )
                 }
             }
         }
@@ -279,6 +324,7 @@ class MainActivity : ComponentActivity() {
 
     private fun disconnectSerial() {
         val name = connectionState.deviceName ?: return
+        verifyAfterSerialConnect = false
         cancelHello()
         cancelRawCapture()
         val thisOperation = ++operationId

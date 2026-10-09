@@ -60,11 +60,13 @@ internal fun CenteredDeviceList(modifier: Modifier, content: LazyListScope.() ->
 }
 
 @Composable
-internal fun DeviceScreenTitle(code: String, title: String, subtitle: String) {
+internal fun DeviceScreenTitle(code: String?, title: String, subtitle: String?) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(code.uppercase(), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = CreamPanelDark)
+        code?.let {
+            Text(it.uppercase(), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = CreamPanelDark)
+        }
         Text(title, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Black, color = CreamPanel)
-        Text(subtitle, style = MaterialTheme.typography.bodyLarge, color = CreamPanelDark)
+        subtitle?.let { Text(it, style = MaterialTheme.typography.bodyLarge, color = CreamPanelDark) }
     }
 }
 

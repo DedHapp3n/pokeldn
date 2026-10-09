@@ -10,7 +10,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -44,7 +46,6 @@ import com.dedhapp3n.pokeldn.ui.theme.IndicatorCyan
 import com.dedhapp3n.pokeldn.ui.theme.IndicatorGreen
 import com.dedhapp3n.pokeldn.ui.theme.IndicatorRed
 import com.dedhapp3n.pokeldn.ui.theme.ScreenMuted
-import com.dedhapp3n.pokeldn.ui.theme.ScreenText
 import com.dedhapp3n.pokeldn.ui.theme.ShellRed
 import com.dedhapp3n.pokeldn.ui.theme.ShellRedBright
 import com.dedhapp3n.pokeldn.ui.theme.ShellRedDark
@@ -86,6 +87,7 @@ fun PokeLdnApp(
     selectedDiagnosticBaud: Int,
     selectedReadBufferMode: RawReadBufferMode,
     onScan: () -> Unit,
+    onConnectEsp32: (String) -> Unit,
     onConnect: (String) -> Unit,
     onDisconnect: () -> Unit,
     onTestEsp32: () -> Unit,
@@ -106,10 +108,7 @@ fun PokeLdnApp(
                 result = result,
                 connectionState = connectionState,
                 esp32State = esp32State,
-                onScan = onScan,
-                onConnect = onConnect,
-                onDisconnect = onDisconnect,
-                onTestEsp32 = onTestEsp32,
+                onConnectEsp32 = onConnectEsp32,
                 onOpenGames = { destination = AppDestination.GAMES },
                 onOpenDiagnostics = { destination = AppDestination.DIAGNOSTICS },
                 modifier = Modifier.padding(innerPadding),
@@ -138,7 +137,12 @@ fun PokeLdnApp(
 
 @Composable
 private fun DeviceHeader() {
-    Surface(color = ShellRedBright, contentColor = CreamPanel, shadowElevation = 8.dp) {
+    Surface(
+        color = ShellRedBright,
+        contentColor = CreamPanel,
+        shadowElevation = 8.dp,
+        modifier = Modifier.statusBarsPadding(),
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -177,7 +181,12 @@ private fun DeviceHeader() {
 
 @Composable
 private fun DeviceModeBar(selected: AppDestination, onSelected: (AppDestination) -> Unit) {
-    Surface(color = ShellRedDark, contentColor = CreamPanel, shadowElevation = 10.dp) {
+    Surface(
+        color = ShellRedDark,
+        contentColor = CreamPanel,
+        shadowElevation = 10.dp,
+        modifier = Modifier.navigationBarsPadding(),
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -222,10 +231,7 @@ private fun HomeScreen(
     result: UsbScanResult?,
     connectionState: SerialConnectionState,
     esp32State: Esp32HandshakeState,
-    onScan: () -> Unit,
-    onConnect: (String) -> Unit,
-    onDisconnect: () -> Unit,
-    onTestEsp32: () -> Unit,
+    onConnectEsp32: (String) -> Unit,
     onOpenGames: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     modifier: Modifier = Modifier,
@@ -234,16 +240,13 @@ private fun HomeScreen(
     val serialDevice = devices.firstOrNull { it.deviceName == connectionState.deviceName }
         ?: devices.firstOrNull { it.serialSupported }
     CenteredDeviceList(modifier) {
-        item { DeviceScreenTitle("System 01 / Main", "Link console", "Adapter control and game access") }
+        item { DeviceScreenTitle(null, "Link console", null) }
         item {
             MainAdapterDisplay(
                 device = serialDevice,
                 connectionState = connectionState,
                 esp32State = esp32State,
-                onScan = onScan,
-                onConnect = onConnect,
-                onDisconnect = onDisconnect,
-                onTestEsp32 = onTestEsp32,
+                onConnectEsp32 = onConnectEsp32,
             )
         }
         item {
@@ -284,13 +287,12 @@ private fun MainAdapterDisplay(
     device: UsbDeviceInfo?,
     connectionState: SerialConnectionState,
     esp32State: Esp32HandshakeState,
-    onScan: () -> Unit,
-    onConnect: (String) -> Unit,
-    onDisconnect: () -> Unit,
-    onTestEsp32: () -> Unit,
+    onConnectEsp32: (String) -> Unit,
 ) {
     val serialConnected = connectionState.phase == SerialConnectionPhase.CONNECTED
     val verified = serialConnected && esp32State.phase == Esp32HandshakePhase.VERIFIED && esp32State.info != null
+    val failed = connectionState.phase == SerialConnectionPhase.CONNECTION_FAILED ||
+        esp32State.phase == Esp32HandshakePhase.FAILED
     val busy = connectionState.phase in setOf(
         SerialConnectionPhase.REQUESTING_PERMISSION,
         SerialConnectionPhase.CONNECTING,
@@ -301,65 +303,55 @@ private fun MainAdapterDisplay(
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 DisplayStatus(
                     when {
-                        verified -> "Adapter ready"
+                        verified -> "ESP32 ready"
                         esp32State.phase == Esp32HandshakePhase.TESTING -> "Verifying link"
+                        connectionState.phase == SerialConnectionPhase.PERMISSION_DENIED -> "Permission denied"
+                        failed -> "Connection failed"
                         serialConnected -> "Serial link online"
                         busy -> "Link in progress"
-                        device != null -> "Adapter detected"
-                        else -> "No adapter ready"
+                        device != null -> "ESP32 detected"
+                        else -> "No ESP32 detected"
                     },
                     when {
                         verified -> StatusTone.POSITIVE
                         busy -> StatusTone.WARNING
-                        esp32State.phase == Esp32HandshakePhase.FAILED -> StatusTone.ERROR
+                        failed || connectionState.phase == SerialConnectionPhase.PERMISSION_DENIED -> StatusTone.ERROR
                         else -> StatusTone.NEUTRAL
                     },
                 )
                 Text(
                     when {
                         verified -> "PokeLDN radio verified. Choose a game to continue."
-                        serialConnected -> "Run verification to identify the connected ESP32."
-                        device != null -> "USB serial hardware found. Connect it to continue."
-                        else -> "Attach the ESP32 through USB OTG, then scan again."
+                        connectionState.phase == SerialConnectionPhase.PERMISSION_DENIED ->
+                            "USB permission is required. Tap Connect ESP32 to ask again."
+                        esp32State.phase == Esp32HandshakePhase.FAILED ->
+                            "The ESP32 did not verify. You can try the connection again."
+                        serialConnected -> "Finishing ESP32 verification."
+                        device != null -> "ESP32 USB adapter found. Connect it when you are ready."
+                        else -> "Connect the ESP32 through USB OTG. It will appear here automatically."
                     },
                     color = ScreenMuted,
                 )
             }
             if (busy) CircularProgressIndicator(Modifier.size(30.dp), color = IndicatorCyan, strokeWidth = 3.dp)
         }
-        if (verified) {
-            val info = checkNotNull(esp32State.info)
-            Surface(
-                color = ScreenText.copy(alpha = 0.08f),
-                shape = RoundedCornerShape(8.dp),
-                border = BorderStroke(1.dp, ScreenMuted.copy(alpha = 0.5f)),
-            ) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                    DetailLine("Firmware", info.firmwareVersion.ifBlank { "Verified" }, dark = true)
-                    DetailLine("Protocol", info.protocolVersion.toString(), dark = true)
-                    DetailLine("ESP32 revision", info.chipRevision.toString(), dark = true)
-                }
-            }
-            DeviceButton("Disconnect adapter", onDisconnect, Modifier.fillMaxWidth(), style = DeviceButtonStyle.DISPLAY)
-        } else if (serialConnected) {
+        if (!verified && serialConnected) {
             esp32State.detail?.let { Text(it, color = IndicatorRed) }
             DeviceButton(
-                if (esp32State.phase == Esp32HandshakePhase.FAILED) "Retry verification" else "Verify ESP32",
-                onTestEsp32,
+                if (esp32State.phase == Esp32HandshakePhase.FAILED) "Retry connection" else "Connect ESP32",
+                { device?.let { onConnectEsp32(it.deviceName) } },
                 Modifier.fillMaxWidth(),
-                enabled = !busy,
+                enabled = !busy && device != null,
                 style = DeviceButtonStyle.DISPLAY,
             )
-        } else if (device != null) {
+        } else if (!verified && device != null) {
             DeviceButton(
-                "Connect adapter",
-                { onConnect(device.deviceName) },
+                "Connect ESP32",
+                { onConnectEsp32(device.deviceName) },
                 Modifier.fillMaxWidth(),
                 enabled = !busy && device.serialSupported,
                 style = DeviceButtonStyle.DISPLAY,
             )
-        } else {
-            DeviceButton("Scan for adapter", onScan, Modifier.fillMaxWidth(), style = DeviceButtonStyle.DISPLAY)
         }
         connectionState.detail?.let { Text(it, color = IndicatorRed) }
     }
