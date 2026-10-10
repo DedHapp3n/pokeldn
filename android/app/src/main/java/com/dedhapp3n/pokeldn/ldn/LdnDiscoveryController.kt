@@ -34,6 +34,9 @@ data class LdnDiscoverySnapshot(
     val ethernetFramesAccepted: Long = 0,
     val ethernetCommandsWritten: Long = 0,
     val ethernetTxCompleted: Long = 0,
+    val ethernetTxAcknowledged: Long = 0,
+    val ethernetTxUnacknowledged: Long = 0,
+    val firstEthernetTxAcknowledged: Boolean? = null,
     val reliableEstablished: Boolean = false,
     val reliableFramesReceived: Long = 0,
     val reliableFramesSent: Long = 0,
@@ -218,9 +221,14 @@ class LdnDiscoveryController internal constructor(
                 is Esp32RadioEvent.EthernetCommandWritten -> snapshot.copy(
                     ethernetCommandsWritten = snapshot.ethernetCommandsWritten + 1,
                 )
-                is Esp32RadioEvent.TxDone -> if (event.isEthernetTransmit()) snapshot.copy(
-                    ethernetTxCompleted = snapshot.ethernetTxCompleted + 1,
-                ) else return
+                is Esp32RadioEvent.TxDone -> event.ethernetAcknowledged()?.let { acknowledged ->
+                    snapshot.copy(
+                        ethernetTxCompleted = snapshot.ethernetTxCompleted + 1,
+                        ethernetTxAcknowledged = snapshot.ethernetTxAcknowledged + if (acknowledged) 1 else 0,
+                        ethernetTxUnacknowledged = snapshot.ethernetTxUnacknowledged + if (acknowledged) 0 else 1,
+                        firstEthernetTxAcknowledged = snapshot.firstEthernetTxAcknowledged ?: acknowledged,
+                    )
+                } ?: return
                 else -> return
             }
             snapshot
@@ -444,9 +452,11 @@ class LdnDiscoveryController internal constructor(
 }
 
 /** Firmware sets queued-us to UINT32_MAX for TX callbacks that are not CMD_ETH_TX data frames. */
-private fun Esp32RadioEvent.TxDone.isEthernetTransmit(): Boolean = payload.size >= 8 &&
-    !(payload[4] == 0xff.toByte() && payload[5] == 0xff.toByte() &&
-        payload[6] == 0xff.toByte() && payload[7] == 0xff.toByte())
+private fun Esp32RadioEvent.TxDone.ethernetAcknowledged(): Boolean? {
+    if (payload.size < 9 || (payload[4] == 0xff.toByte() && payload[5] == 0xff.toByte() &&
+            payload[6] == 0xff.toByte() && payload[7] == 0xff.toByte())) return null
+    return payload[8].toInt() != 0
+}
 
 private fun deepestPiaStage(current: LdnPiaStage, candidate: LdnPiaStage?): LdnPiaStage {
     if (candidate == null) return current

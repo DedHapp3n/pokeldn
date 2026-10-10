@@ -132,6 +132,8 @@ class LdnDiscoveryControllerTest {
         )
         controller.start()
         transport.emit(Esp32RadioEvent.LdnControlEthernet(ByteArray(6), participant.mac, byteArrayOf(1)))
+        transport.emit(Esp32RadioEvent.TxDone(ByteArray(12).also { it[8] = 1 }))
+        transport.emit(Esp32RadioEvent.TxDone(ByteArray(12)))
         val beforeLeave = controller.currentSnapshot()
         transport.emit(Esp32RadioEvent.StationLeft(participant.mac, 3))
 
@@ -140,6 +142,9 @@ class LdnDiscoveryControllerTest {
         assertEquals(beforeLeave.piaNetRequests, final.piaNetRequests)
         assertFalse(final.participantRegistered)
         assertTrue(final.participantEverRegistered)
+        assertEquals(1, final.ethernetTxAcknowledged)
+        assertEquals(1, final.ethernetTxUnacknowledged)
+        assertEquals(beforeLeave.firstEthernetTxAcknowledged, final.firstEthernetTxAcknowledged)
         controller.stop()
     }
 
@@ -165,6 +170,7 @@ class LdnDiscoveryControllerTest {
         controller.start()
         transport.emit(Esp32RadioEvent.LdnControlEthernet("021122334455".hex(), participant.mac, byteArrayOf(1)))
         transport.emit(Esp32RadioEvent.EthernetCommandWritten(150))
+        transport.emit(Esp32RadioEvent.TxDone(ByteArray(12).also { it[8] = 1 }))
         transport.emit(Esp32RadioEvent.TxDone(ByteArray(12)))
         transport.emit(Esp32RadioEvent.TxDone(ByteArray(12) { if (it in 4..7) -1 else 0 }))
 
@@ -173,7 +179,10 @@ class LdnDiscoveryControllerTest {
         assertEquals(3, snapshot.ethernetFramesSubmitted)
         assertEquals(3, snapshot.ethernetFramesAccepted)
         assertEquals(1, snapshot.ethernetCommandsWritten)
-        assertEquals(1, snapshot.ethernetTxCompleted)
+        assertEquals(2, snapshot.ethernetTxCompleted)
+        assertEquals(1, snapshot.ethernetTxAcknowledged)
+        assertEquals(1, snapshot.ethernetTxUnacknowledged)
+        assertEquals(true, snapshot.firstEthernetTxAcknowledged)
         controller.stop()
     }
 

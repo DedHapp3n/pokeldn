@@ -124,6 +124,9 @@ class FrlgOperationLifecycleTest {
                 ethernetFramesAccepted = 9,
                 ethernetCommandsWritten = 9,
                 ethernetTxCompleted = 8,
+                ethernetTxAcknowledged = 3,
+                ethernetTxUnacknowledged = 5,
+                firstEthernetTxAcknowledged = true,
             ),
         )
 
@@ -137,5 +140,8 @@ class FrlgOperationLifecycleTest {
         assertTrue(diagnostics.contains("ethQueue=9"))
         assertTrue(diagnostics.contains("ethWrite=9"))
         assertTrue(diagnostics.contains("ethTxDone=8"))
+        assertTrue(diagnostics.contains("ethAck=3"))
+        assertTrue(diagnostics.contains("ethUnack=5"))
+        assertTrue(diagnostics.contains("firstEthAck=true"))
     }
 }
