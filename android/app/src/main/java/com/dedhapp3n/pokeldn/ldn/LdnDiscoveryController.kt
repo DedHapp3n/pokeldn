@@ -40,6 +40,11 @@ data class LdnDiscoverySnapshot(
     val ethernetTxAcknowledged: Long = 0,
     val ethernetTxUnacknowledged: Long = 0,
     val firstEthernetTxAcknowledged: Boolean? = null,
+    val rawDataTraces: Long = 0,
+    val rawDataAfterRegistration: Long = 0,
+    val rawPeerDataAfterRegistration: Long = 0,
+    val rawProtectedPeerDataAfterRegistration: Long = 0,
+    val firstPeerDataTrace: LdnRawDataTrace? = null,
     val reliableEstablished: Boolean = false,
     val reliableFramesReceived: Long = 0,
     val reliableFramesSent: Long = 0,
@@ -49,6 +54,16 @@ data class LdnDiscoverySnapshot(
     val detectedCartridge: String? = null,
     val giftStage: com.dedhapp3n.pokeldn.frlg.FrlgGiftStage? = null,
     val latestActivity: String? = null,
+)
+
+data class LdnRawDataTrace(
+    val toDs: Boolean,
+    val fromDs: Boolean,
+    val protectedFrame: Boolean,
+    val sourceMac: ByteArray,
+    val targetMac: ByteArray,
+    val frameLength: Int,
+    val ccmpKeyId: Int?,
 )
 
 internal fun interface LdnScheduledHandle {
@@ -182,18 +197,43 @@ class LdnDiscoveryController internal constructor(
             if (event is Esp32RadioEvent.StationLeft) associatedStations -= event.mac.formatMac()
             if (event is Esp32RadioEvent.StationLeft) piaHost?.participantLeft(event.mac)
             snapshot = when (event) {
-                is Esp32RadioEvent.ManagementFrame -> snapshot.copy(
-                    discoveryActivityCount = snapshot.discoveryActivityCount + 1,
-                    managementFrames = snapshot.managementFrames + if (event.frameType == 0) 1 else 0,
-                    ldnActionFrames = snapshot.ldnActionFrames + if (event.isLdnAction) 1 else 0,
-                    latestActivity = if (event.isLdnAction) {
-                        "Nintendo LDN action frame received"
-                    } else if (event.frameType == 2) {
-                        "802.11 data trace received"
-                    } else {
-                        "802.11 ${managementSubtypeName(event.subtype)} received"
-                    },
-                )
+                is Esp32RadioEvent.ManagementFrame -> {
+                    val isData = event.frameType == IEEE80211_DATA
+                    val afterRegistration = isData && snapshot.participantEverRegistered
+                    val peerData = afterRegistration && snapshot.registeredParticipant?.mac
+                        ?.contentEquals(event.source) == true
+                    val firstTrace = if (peerData && snapshot.firstPeerDataTrace == null) {
+                        LdnRawDataTrace(
+                            toDs = event.toDs,
+                            fromDs = event.fromDs,
+                            protectedFrame = event.protectedFrame,
+                            sourceMac = event.source.copyOf(),
+                            targetMac = event.target.copyOf(),
+                            frameLength = event.frame.size,
+                            ccmpKeyId = event.ccmpKeyId,
+                        )
+                    } else snapshot.firstPeerDataTrace
+                    snapshot.copy(
+                        discoveryActivityCount = snapshot.discoveryActivityCount + 1,
+                        managementFrames = snapshot.managementFrames + if (event.frameType == 0) 1 else 0,
+                        ldnActionFrames = snapshot.ldnActionFrames + if (event.isLdnAction) 1 else 0,
+                        rawDataTraces = snapshot.rawDataTraces + if (isData) 1 else 0,
+                        rawDataAfterRegistration = snapshot.rawDataAfterRegistration +
+                            if (afterRegistration) 1 else 0,
+                        rawPeerDataAfterRegistration = snapshot.rawPeerDataAfterRegistration +
+                            if (peerData) 1 else 0,
+                        rawProtectedPeerDataAfterRegistration = snapshot.rawProtectedPeerDataAfterRegistration +
+                            if (peerData && event.protectedFrame) 1 else 0,
+                        firstPeerDataTrace = firstTrace,
+                        latestActivity = if (event.isLdnAction) {
+                            "Nintendo LDN action frame received"
+                        } else if (isData) {
+                            "802.11 data trace received"
+                        } else {
+                            "802.11 ${managementSubtypeName(event.subtype)} received"
+                        },
+                    )
+                }
                 is Esp32RadioEvent.LdnControlEthernet -> snapshot.copy(
                     discoveryActivityCount = snapshot.discoveryActivityCount + 1,
                     ldnControlFrames = snapshot.ldnControlFrames + 1,
@@ -432,6 +472,7 @@ class LdnDiscoveryController internal constructor(
     override fun close() = stop()
 
     companion object {
+        private const val IEEE80211_DATA = 2
         private const val FRLG_FRAME_INTERVAL_MS = 17L
         private fun ethernetFrame(target: ByteArray, source: ByteArray, payload: ByteArray): ByteArray {
             require(target.size == 6 && source.size == 6)

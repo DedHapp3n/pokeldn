@@ -225,6 +225,59 @@ class LdnDiscoveryControllerTest {
         controller.stop()
     }
 
+    @Test
+    fun rawDataTracesPreservePostRegistrationPeerEvidence() {
+        val transport = FakeTransport()
+        val participant = LdnParticipant(
+            1, "169.254.33.2", "0a0b0c0d0e0f".hex(), "Console".toByteArray(), 88, 0,
+        )
+        val controller = LdnDiscoveryController(
+            operation = Esp32RadioOperation(6), advertisementFrame = { ByteArray(24) },
+            sendRaw = { _, _ -> true }, sendEthernet = { _, _ -> true },
+            authenticate = { _, _ -> LdnAuthenticationOutcome(byteArrayOf(1), 0, true, participant) },
+            removeParticipant = { participant }, subscribe = transport::subscribe,
+            scheduler = FakeScheduler(),
+        )
+        controller.start()
+        transport.emit(dataTrace("111111111111".hex(), protected = false))
+        transport.emit(Esp32RadioEvent.LdnControlEthernet(ByteArray(6), participant.mac, byteArrayOf(1)))
+        transport.emit(dataTrace(participant.mac, protected = true, keyId = 2))
+        transport.emit(dataTrace("222222222222".hex(), protected = true, keyId = 1))
+        transport.emit(Esp32RadioEvent.StationLeft(participant.mac, 3))
+
+        val snapshot = controller.currentSnapshot()
+        assertEquals(3, snapshot.rawDataTraces)
+        assertEquals(2, snapshot.rawDataAfterRegistration)
+        assertEquals(1, snapshot.rawPeerDataAfterRegistration)
+        assertEquals(1, snapshot.rawProtectedPeerDataAfterRegistration)
+        val first = snapshot.firstPeerDataTrace!!
+        assertTrue(first.toDs)
+        assertFalse(first.fromDs)
+        assertTrue(first.protectedFrame)
+        assertArrayEquals(participant.mac, first.sourceMac)
+        assertArrayEquals("021122334455".hex(), first.targetMac)
+        assertEquals(40, first.frameLength)
+        assertEquals(2, first.ccmpKeyId)
+        controller.stop()
+    }
+
+    private fun dataTrace(source: ByteArray, protected: Boolean, keyId: Int? = null) =
+        Esp32RadioEvent.ManagementFrame(
+            channel = 6,
+            rssi = -40,
+            frameType = 2,
+            subtype = 8,
+            target = "021122334455".hex(),
+            source = source,
+            bssid = "ffffffffffff".hex(),
+            isLdnAction = false,
+            frame = ByteArray(40),
+            toDs = true,
+            fromDs = false,
+            protectedFrame = protected,
+            ccmpKeyId = keyId,
+        )
+
     private class FakeTransport {
         private var listener: ((Esp32RadioEvent) -> Unit)? = null
 

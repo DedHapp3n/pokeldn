@@ -62,6 +62,10 @@ sealed interface Esp32RadioEvent {
         val bssid: ByteArray,
         val isLdnAction: Boolean,
         val frame: ByteArray,
+        val toDs: Boolean,
+        val fromDs: Boolean,
+        val protectedFrame: Boolean,
+        val ccmpKeyId: Int?,
     ) : Esp32RadioEvent
     data class TxDone(val payload: ByteArray) : Esp32RadioEvent
     /** A complete CMD_ETH_TX frame was handed to the serial transport. */
@@ -637,6 +641,9 @@ class Esp32RadioSession internal constructor(
         val frameControl = if (frame.size >= 2) uint16(frame, 0) else 0
         val type = (frameControl ushr 2) and 0x03
         val subtype = (frameControl ushr 4) and 0x0f
+        val toDs = frameControl and IEEE80211_TO_DS != 0
+        val fromDs = frameControl and IEEE80211_FROM_DS != 0
+        val protectedFrame = frameControl and IEEE80211_PROTECTED != 0
         fun address(offset: Int): ByteArray = if (frame.size >= offset + 6) {
             frame.copyOfRange(offset, offset + 6)
         } else byteArrayOf()
@@ -656,7 +663,29 @@ class Esp32RadioSession internal constructor(
             bssid = address(16),
             isLdnAction = isLdnAction,
             frame = frame,
+            toDs = toDs,
+            fromDs = fromDs,
+            protectedFrame = protectedFrame,
+            ccmpKeyId = ccmpKeyId(frame, frameControl, type, subtype, toDs, fromDs),
         )
+    }
+
+    private fun ccmpKeyId(
+        frame: ByteArray,
+        frameControl: Int,
+        type: Int,
+        subtype: Int,
+        toDs: Boolean,
+        fromDs: Boolean,
+    ): Int? {
+        if (type != IEEE80211_DATA || frameControl and IEEE80211_PROTECTED == 0) return null
+        var headerLength = IEEE80211_HEADER_SIZE
+        if (toDs && fromDs) headerLength += IEEE80211_ADDRESS_SIZE
+        val qosData = subtype and IEEE80211_QOS_SUBTYPE_BIT != 0
+        if (qosData) headerLength += IEEE80211_QOS_CONTROL_SIZE
+        if (qosData && frameControl and IEEE80211_ORDER != 0) headerLength += IEEE80211_HT_CONTROL_SIZE
+        return frame.getOrNull(headerLength + CCMP_KEY_ID_OFFSET)
+            ?.toInt()?.and(0xff)?.ushr(6)?.and(0x03)
     }
 
     private fun publishEvent(event: Esp32RadioEvent) {
@@ -750,8 +779,18 @@ class Esp32RadioSession internal constructor(
         private const val LDN_ETHERTYPE = 0x88B7
         private const val MANAGEMENT_PREFIX_SIZE = 2
         private const val IEEE80211_HEADER_SIZE = 24
+        private const val IEEE80211_ADDRESS_SIZE = 6
+        private const val IEEE80211_QOS_CONTROL_SIZE = 2
+        private const val IEEE80211_HT_CONTROL_SIZE = 4
+        private const val CCMP_KEY_ID_OFFSET = 3
         private const val IEEE80211_MANAGEMENT = 0
+        private const val IEEE80211_DATA = 2
         private const val IEEE80211_ACTION = 13
+        private const val IEEE80211_QOS_SUBTYPE_BIT = 0x08
+        private const val IEEE80211_TO_DS = 0x0100
+        private const val IEEE80211_FROM_DS = 0x0200
+        private const val IEEE80211_PROTECTED = 0x4000
+        private const val IEEE80211_ORDER = 0x8000
         private val LDN_ACTION_PREFIX = byteArrayOf(0x7f, 0x00, 0x22, 0xaa.toByte())
         private const val FLOW_STALL_NS = 300_000_000L
         private const val FLOW_BLIND_NS = 5_000_000_000L

@@ -2,6 +2,7 @@ package com.dedhapp3n.pokeldn.frlg
 
 import com.dedhapp3n.pokeldn.ldn.LdnDiscoverySnapshot
 import com.dedhapp3n.pokeldn.ldn.LdnPiaStage
+import com.dedhapp3n.pokeldn.ldn.LdnRawDataTrace
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -130,6 +131,19 @@ class FrlgOperationLifecycleTest {
                 ethernetTxAcknowledged = 3,
                 ethernetTxUnacknowledged = 5,
                 firstEthernetTxAcknowledged = true,
+                rawDataTraces = 5,
+                rawDataAfterRegistration = 4,
+                rawPeerDataAfterRegistration = 3,
+                rawProtectedPeerDataAfterRegistration = 2,
+                firstPeerDataTrace = LdnRawDataTrace(
+                    toDs = true,
+                    fromDs = false,
+                    protectedFrame = true,
+                    sourceMac = byteArrayOf(10, 11, 12, 13, 14, 15),
+                    targetMac = byteArrayOf(2, 17, 34, 51, 68, 85),
+                    frameLength = 40,
+                    ccmpKeyId = 1,
+                ),
             ),
         )
 
@@ -149,5 +163,15 @@ class FrlgOperationLifecycleTest {
         assertTrue(diagnostics.contains("ethAck=3"))
         assertTrue(diagnostics.contains("ethUnack=5"))
         assertTrue(diagnostics.contains("firstEthAck=true"))
+        assertTrue(diagnostics.contains("rawData=5"))
+        assertTrue(diagnostics.contains("rawDataAfterReg=4"))
+        assertTrue(diagnostics.contains("rawPeerData=3"))
+        assertTrue(diagnostics.contains("rawProtected=2"))
+        assertTrue(
+            diagnostics.contains(
+                "rawFirst=toDS:1/fromDS:0/protected:1/src:0a:0b:0c:0d:0e:0f/" +
+                    "target:02:11:22:33:44:55/len:40/keyId:1",
+            ),
+        )
     }
 }

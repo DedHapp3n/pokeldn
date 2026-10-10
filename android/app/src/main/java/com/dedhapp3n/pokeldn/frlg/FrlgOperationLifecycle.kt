@@ -1,5 +1,6 @@
 package com.dedhapp3n.pokeldn.frlg
 
+import com.dedhapp3n.pokeldn.esp32.formatMac
 import com.dedhapp3n.pokeldn.ldn.LdnDiscoverySnapshot
 
 enum class FrlgOperationPhase(val label: String) {
@@ -104,6 +105,20 @@ internal fun frlgFailureDiagnostics(snapshot: LdnDiscoverySnapshot): String = bu
     append(" ethAck=${snapshot.ethernetTxAcknowledged}")
     append(" ethUnack=${snapshot.ethernetTxUnacknowledged}")
     append(" firstEthAck=${snapshot.firstEthernetTxAcknowledged ?: "unknown"}")
+    append(" rawData=${snapshot.rawDataTraces}")
+    append(" rawDataAfterReg=${snapshot.rawDataAfterRegistration}")
+    append(" rawPeerData=${snapshot.rawPeerDataAfterRegistration}")
+    append(" rawProtected=${snapshot.rawProtectedPeerDataAfterRegistration}")
+    snapshot.firstPeerDataTrace?.let { trace ->
+        append(" rawFirst=")
+        append("toDS:${if (trace.toDs) 1 else 0}")
+        append("/fromDS:${if (trace.fromDs) 1 else 0}")
+        append("/protected:${if (trace.protectedFrame) 1 else 0}")
+        append("/src:${trace.sourceMac.formatMac()}")
+        append("/target:${trace.targetMac.formatMac()}")
+        append("/len:${trace.frameLength}")
+        trace.ccmpKeyId?.let { append("/keyId:$it") }
+    }
     append(" Reliable=${snapshot.reliableFramesReceived}/${snapshot.reliableFramesSent}")
     append(" RFU=${snapshot.rfuConnected}")
     append(" LinkPlayer=${snapshot.linkPlayerExchanged}")

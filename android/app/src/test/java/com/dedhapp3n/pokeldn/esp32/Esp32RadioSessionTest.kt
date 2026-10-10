@@ -330,6 +330,40 @@ class Esp32RadioSessionTest {
     }
 
     @Test
+    fun protectedQosDataTraceFromRxMgmtExposesDirectionPeerAndCcmpKeyId() {
+        val serial = FakeSerial()
+        session(serial).use { runtime ->
+            runtime.verifyAndPrepare()
+            val events = mutableListOf<Esp32RadioEvent>()
+            runtime.addEventListener { events += it }
+            val bssid = "021122334455".hex()
+            val peer = "0a0b0c0d0e0f".hex()
+            val destination = "ffffffffffff".hex()
+            val frame = ByteArray(40).also {
+                it[0] = 0x88.toByte() // QoS data
+                it[1] = 0x41 // ToDS + Protected
+                bssid.copyInto(it, 4)
+                peer.copyInto(it, 10)
+                destination.copyInto(it, 16)
+                it[29] = 0xa0.toByte() // CCMP extended IV, key ID 2
+            }
+            serial.emit(Esp32Protocol.MSG_RX_MGMT, byteArrayOf(6, -37) + frame)
+            await { events.any { it is Esp32RadioEvent.ManagementFrame } }
+
+            val data = events.filterIsInstance<Esp32RadioEvent.ManagementFrame>().single()
+            assertEquals(2, data.frameType)
+            assertEquals(8, data.subtype)
+            assertTrue(data.toDs)
+            assertFalse(data.fromDs)
+            assertTrue(data.protectedFrame)
+            assertEquals(2, data.ccmpKeyId)
+            assertArrayEquals(bssid, data.target)
+            assertArrayEquals(peer, data.source)
+            assertEquals(40, data.frame.size)
+        }
+    }
+
+    @Test
     fun aliveCapabilityMatchesUpstreamMinimumFirmware() {
         assertFalse(Esp32RadioSession.supportsAlive("1.3.9"))
         assertTrue(Esp32RadioSession.supportsAlive("1.4.0"))
