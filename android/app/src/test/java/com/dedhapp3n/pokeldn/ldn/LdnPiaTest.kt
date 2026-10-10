@@ -1,0 +1,101 @@
+package com.dedhapp3n.pokeldn.ldn
+
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class LdnPiaTest {
+    private val ssid = "5c42961f018902911a2f1c9548c8e9c4".hex()
+    private val hostMac = "3ca9abf73c06".hex()
+    private val consoleMac = "3c3300609493".hex()
+    private val participant = LdnParticipant(1, "169.254.88.2", consoleMac, "EMU".toByteArray(), 88, 0)
+
+    @Test
+    fun upstreamPiaFixturesAdvanceNetJoinResponseAndFinalAck() {
+        val host = host()
+        host.participantJoined(participant, 0)
+        val probes = host.tick(0)
+        assertEquals(listOf("169.254.88.255", participant.ipAddress), probes.map { it.destinationIp })
+        val probe = PiaCrypto(ssid).decode(probes.first().payload, "169.254.88.1")
+        assertEquals(1, probe.messages.single().protocol)
+        assertEquals(0x11, probe.messages.single().payload[1].toInt() and 0xff)
+        assertEquals(LdnPiaStage.NET_PROBING, host.snapshot().stage)
+
+        host.receive(NET_RESPONSE.hex(), participant.ipAddress, 10)
+        assertEquals(LdnPiaStage.NET_CONNECTED, host.snapshot().stage)
+
+        val responses = host.receive(SESSION_JOIN.hex(), participant.ipAddress, 20)
+        assertEquals(3, responses.size)
+        assertEquals(listOf("169.254.88.255", participant.ipAddress, participant.ipAddress), responses.map { it.destinationIp })
+        val crypto = PiaCrypto(ssid)
+        val decoded = responses.map { crypto.decode(it.payload, "169.254.88.1") }
+        assertEquals(listOf(5, 5, 2), decoded.map { it.messages.single().payload[0].toInt() and 0xff })
+        assertArrayEquals(UPSTREAM_UPDATE.hex(), decoded[0].messages.single().payload)
+        assertArrayEquals(UPSTREAM_RESPONSE.hex(), decoded[2].messages.single().payload)
+        assertEquals(LdnPiaStage.SESSION_RESPONSE_SENT, host.snapshot().stage)
+        assertEquals(1, host.snapshot().sessionRequests)
+        assertEquals(1, host.snapshot().sessionResponses)
+
+        host.receive(SESSION_ACK.hex(), participant.ipAddress, 30)
+        assertEquals(LdnPiaStage.ESTABLISHED, host.snapshot().stage)
+        assertEquals("PIA session established", host.snapshot().detail)
+    }
+
+    @Test
+    fun sessionAcceptanceRetriesAndCleanupClearsPiaIdentity() {
+        val host = host()
+        host.participantJoined(participant, 0)
+        host.receive(SESSION_JOIN.hex(), participant.ipAddress, 20)
+        assertTrue(host.tick(269).isEmpty())
+        assertEquals(3, host.tick(270).size)
+
+        host.reset()
+        assertEquals(LdnPiaStage.WAITING, host.snapshot().stage)
+        assertEquals(0, host.snapshot().sessionRequests)
+        assertTrue(host.tick(1_000).isEmpty())
+    }
+
+    @Test
+    fun minimumUdpTransportConsumesOneDatagramAndAnswersArp() {
+        val hostTransport = LdnPiaUdpTransport("169.254.88.1", hostMac)
+        val consoleTransport = LdnPiaUdpTransport("169.254.88.2", consoleMac)
+        val frame = consoleTransport.frame("169.254.88.1", hostMac, byteArrayOf(1, 2, 3))
+        val (datagram, reply) = hostTransport.receive(frame)
+        assertEquals(null, reply)
+        assertEquals("169.254.88.2", datagram!!.sourceIp)
+        assertArrayEquals(consoleMac, datagram.sourceMac)
+        assertArrayEquals(byteArrayOf(1, 2, 3), datagram.payload)
+
+        val request = hostMac + consoleMac + "08060001080006040001".hex() + consoleMac +
+            "a9fe5802".hex() + ByteArray(6) + "a9fe5801".hex()
+        val (_, arp) = hostTransport.receive(request)
+        requireNotNull(arp)
+        assertArrayEquals(consoleMac, arp.copyOfRange(0, 6))
+        assertArrayEquals(hostMac, arp.copyOfRange(6, 12))
+        assertEquals(2, ((arp[20].toInt() and 0xff) shl 8) or (arp[21].toInt() and 0xff))
+    }
+
+    private fun host() = LdnPiaHost(
+        ssid = ssid,
+        hostMac = hostMac,
+        networkNumber = 88,
+        maxParticipants = 2,
+        randomBytes = { size -> ByteArray(size) { size.toByte() } },
+    )
+
+    companion object {
+        private const val NET_RESPONSE =
+            "32ab9864902000c6c493000002000000000000000325d8ae50ea0efcd60afe97e6ab475d80612f5a64cc553d08"
+        private const val SESSION_JOIN =
+            "32ab986490f000c6c493000102000000000000000147ee274e1ac56efc1c51e33c43274192f2908a4357b8e5bc63caa3c475996a07aea9ad04d83dde9a58b043334a1721342acf4017567aba5a4dec0213dcfb496e5d3f6c5ed0a07decc1f7ece8692e13432518265931ebe0a334c667f73e20f4e1fa02c63afc517db5b36a0f17cfceb1d9a1404913126471acfbdaf6c1f13d709dcdc1a0936ad6b4fc"
+        private const val SESSION_ACK =
+            "32ab986490b000c6c4930002020000000000000002376190c00cb5caf9a01377f4b0e06c711d48ec966f1c1368d8a7da7af78a0a83f4336e00dcabbc0c"
+        private const val UPSTREAM_RESPONSE =
+            "020d07010000000004040404ab3c06f7a93c000000c63c33006094930000c4930100010000"
+        private const val UPSTREAM_UPDATE =
+            "05000001000003ab3c06f7a93c000000c602000001000000000000ab3c06f7a93c000000c6a9fe580130390000000000000000000000000000000000000000000000000000000000000000000000000001010000000000000000000100000000000000000000000701504f4b454c444e3c33006094930000c493a9fe580230390100010000000000000000000000000000000000000000000000000000000000000000000001010000000000000000000100000000000000000000000301454d55"
+    }
+}
+
+private fun String.hex(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteArray()

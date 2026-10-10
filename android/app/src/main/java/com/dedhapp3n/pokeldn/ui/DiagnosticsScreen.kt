@@ -274,6 +274,10 @@ private fun DiagnosticDevicePanel(
                         "Participant",
                         if (ldnApTestState.participantRegistered) "Registered" else "Not registered",
                     )
+                    DetailLine("PIA Net probes", ldnApTestState.piaNetRequests.toString())
+                    DetailLine("PIA requests", ldnApTestState.piaSessionRequests.toString())
+                    DetailLine("PIA responses", ldnApTestState.piaSessionResponses.toString())
+                    DetailLine("PIA session", if (ldnApTestState.piaEstablished) "Established" else "Waiting")
                     DetailLine(
                         "Station",
                         if (ldnApTestState.stationDetected) "Associated" else "Not detected",
@@ -429,8 +433,9 @@ private fun LdnApTestPhase.toStatusTone(): StatusTone = when (this) {
     LdnApTestPhase.READY, LdnApTestPhase.ADVERTISING,
     LdnApTestPhase.CONSOLE_ACTIVITY, LdnApTestPhase.AUTH_REQUEST,
     LdnApTestPhase.AUTH_RESPONSE_SENT, LdnApTestPhase.PARTICIPANT_REGISTERED,
-    LdnApTestPhase.STATION_ASSOCIATED -> StatusTone.POSITIVE
-    LdnApTestPhase.AUTHENTICATION_REJECTED -> StatusTone.WARNING
+    LdnApTestPhase.STATION_ASSOCIATED, LdnApTestPhase.PIA_REQUEST,
+    LdnApTestPhase.PIA_RESPONSE_SENT, LdnApTestPhase.PIA_ESTABLISHED -> StatusTone.POSITIVE
+    LdnApTestPhase.AUTHENTICATION_REJECTED, LdnApTestPhase.PIA_FAILED -> StatusTone.WARNING
     LdnApTestPhase.PREPARING, LdnApTestPhase.STARTING_AP,
     LdnApTestPhase.STOPPING -> StatusTone.WARNING
     LdnApTestPhase.FAILED, LdnApTestPhase.CLEANUP_REQUIRED -> StatusTone.ERROR

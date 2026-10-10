@@ -40,6 +40,7 @@ import com.dedhapp3n.pokeldn.ldn.LdnApTestPhase
 import com.dedhapp3n.pokeldn.ldn.LdnApTestState
 import com.dedhapp3n.pokeldn.ldn.LdnDiscoveryController
 import com.dedhapp3n.pokeldn.ldn.LdnDiscoverySnapshot
+import com.dedhapp3n.pokeldn.ldn.LdnPiaStage
 import com.dedhapp3n.pokeldn.ldn.toEsp32AccessPointConfig
 import com.dedhapp3n.pokeldn.ui.PokeLdnApp
 import com.dedhapp3n.pokeldn.ui.theme.PokeLDNTheme
@@ -718,6 +719,10 @@ class MainActivity : ComponentActivity() {
     private fun discoveryState(channel: Int, snapshot: LdnDiscoverySnapshot): LdnApTestState =
         LdnApTestState(
             phase = when {
+                snapshot.piaStage == LdnPiaStage.ESTABLISHED -> LdnApTestPhase.PIA_ESTABLISHED
+                snapshot.piaStage == LdnPiaStage.FAILED -> LdnApTestPhase.PIA_FAILED
+                snapshot.piaStage == LdnPiaStage.SESSION_RESPONSE_SENT -> LdnApTestPhase.PIA_RESPONSE_SENT
+                snapshot.piaStage == LdnPiaStage.SESSION_JOIN_RECEIVED -> LdnApTestPhase.PIA_REQUEST
                 snapshot.stationDetected -> LdnApTestPhase.STATION_ASSOCIATED
                 snapshot.participantRegistered -> LdnApTestPhase.PARTICIPANT_REGISTERED
                 snapshot.authenticationFailures > 0 -> LdnApTestPhase.AUTHENTICATION_REJECTED
@@ -735,6 +740,10 @@ class MainActivity : ComponentActivity() {
             authenticationResponses = snapshot.authenticationResponses,
             authenticationFailures = snapshot.authenticationFailures,
             participantRegistered = snapshot.participantRegistered,
+            piaNetRequests = snapshot.piaNetRequests,
+            piaSessionRequests = snapshot.piaSessionRequests,
+            piaSessionResponses = snapshot.piaSessionResponses,
+            piaEstablished = snapshot.piaStage == LdnPiaStage.ESTABLISHED,
             latestActivity = snapshot.latestActivity,
         )
 

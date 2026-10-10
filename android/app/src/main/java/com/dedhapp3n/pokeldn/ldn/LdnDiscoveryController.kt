@@ -23,6 +23,10 @@ data class LdnDiscoverySnapshot(
     val authenticationFailures: Long = 0,
     val participantRegistered: Boolean = false,
     val registeredParticipant: LdnParticipant? = null,
+    val piaStage: LdnPiaStage = LdnPiaStage.WAITING,
+    val piaNetRequests: Long = 0,
+    val piaSessionRequests: Long = 0,
+    val piaSessionResponses: Long = 0,
     val latestActivity: String? = null,
 )
 
@@ -61,6 +65,8 @@ class LdnDiscoveryController internal constructor(
     private val sendEthernet: (Esp32RadioOperation, ByteArray) -> Boolean = { _, _ -> true },
     private val authenticate: (ByteArray, ByteArray) -> LdnAuthenticationOutcome? = { _, _ -> null },
     private val removeParticipant: (ByteArray) -> LdnParticipant? = { null },
+    private val piaHost: LdnPiaHost? = null,
+    private val piaTransport: LdnPiaUdpTransport? = null,
     private val subscribe: (Esp32RadioOperation, (Esp32RadioEvent) -> Unit) -> AutoCloseable,
     private val scheduler: LdnAdvertisementScheduler = ExecutorLdnAdvertisementScheduler(),
     private val onSnapshot: (LdnDiscoverySnapshot) -> Unit = {},
@@ -79,6 +85,8 @@ class LdnDiscoveryController internal constructor(
         sendEthernet = session::sendEthernet,
         authenticate = network.authenticationHost::process,
         removeParticipant = network.authenticationHost::removeParticipant,
+        piaHost = network.piaHost,
+        piaTransport = LdnPiaUdpTransport(network.piaHost.hostIp, network.accessPoint.bssid),
         subscribe = session::addOperationEventListener,
         onSnapshot = onSnapshot,
         onFailure = onFailure,
@@ -103,6 +111,7 @@ class LdnDiscoveryController internal constructor(
             scheduled = scheduler.schedule(LdnAdvertisementBuilder.ADVERTISEMENT_INTERVAL_MS) {
                 try {
                     transmitAdvertisement()
+                    transmitPia()
                 } catch (error: Throwable) {
                     fail(error)
                 }
@@ -128,6 +137,7 @@ class LdnDiscoveryController internal constructor(
 
     private fun onEvent(event: Esp32RadioEvent) {
         if (event is Esp32RadioEvent.LdnControlEthernet && handleAuthentication(event)) return
+        if (event is Esp32RadioEvent.Ethernet && handleIpTraffic(event.frame)) return
         val removedParticipant = if (event is Esp32RadioEvent.StationLeft) {
             removeParticipant(event.mac)
         } else null
@@ -135,6 +145,7 @@ class LdnDiscoveryController internal constructor(
             if (!running) return
             if (event is Esp32RadioEvent.StationJoined) associatedStations += event.mac.formatMac()
             if (event is Esp32RadioEvent.StationLeft) associatedStations -= event.mac.formatMac()
+            if (event is Esp32RadioEvent.StationLeft) piaHost?.participantLeft(event.mac)
             snapshot = when (event) {
                 is Esp32RadioEvent.ManagementFrame -> snapshot.copy(
                     discoveryActivityCount = snapshot.discoveryActivityCount + 1,
@@ -170,6 +181,7 @@ class LdnDiscoveryController internal constructor(
                     stationDetected = associatedStations.isNotEmpty(),
                     participantRegistered = if (removedParticipant != null) false else snapshot.participantRegistered,
                     registeredParticipant = if (removedParticipant != null) null else snapshot.registeredParticipant,
+                    piaStage = if (removedParticipant != null) LdnPiaStage.WAITING else snapshot.piaStage,
                     latestActivity = "Station left: ${event.mac.formatMac()}",
                 )
                 else -> return
@@ -218,6 +230,7 @@ class LdnDiscoveryController internal constructor(
                         "Authentication response sent (status ${outcome.statusCode})"
                     },
                 )
+                outcome.participant?.let { piaHost?.participantJoined(it, System.currentTimeMillis()) }
                 snapshot
             }
         } catch (error: Throwable) {
@@ -225,7 +238,71 @@ class LdnDiscoveryController internal constructor(
             return true
         }
         onSnapshot(sent)
+        transmitPia()
         return true
+    }
+
+    private fun handleIpTraffic(frame: ByteArray): Boolean {
+        val transport = piaTransport ?: return false
+        val (datagram, immediateReply) = try { transport.receive(frame) } catch (_: Exception) { return false }
+        if (datagram == null && immediateReply == null) return false
+        try {
+            synchronized(lock) {
+                if (!running) return true
+                if (immediateReply != null && !sendEthernet(operation, immediateReply)) {
+                    throw IllegalStateException("ESP32 transmit queue rejected the ARP response")
+                }
+                val replies = if (datagram == null) emptyList() else {
+                    piaHost?.receive(datagram.payload, datagram.sourceIp, System.currentTimeMillis()).orEmpty()
+                }
+                sendPiaDatagrams(replies)
+                updatePiaSnapshotLocked()
+                snapshot = snapshot.copy(
+                    discoveryActivityCount = snapshot.discoveryActivityCount + 1,
+                    ethernetFrames = snapshot.ethernetFrames + 1,
+                    latestActivity = snapshot.piaStage.activity(snapshot.latestActivity),
+                )
+            }
+            onSnapshot(currentSnapshot())
+        } catch (error: Throwable) {
+            fail(error)
+        }
+        return true
+    }
+
+    private fun transmitPia() {
+        val next = synchronized(lock) {
+            if (!running || piaHost == null) return
+            sendPiaDatagrams(piaHost.tick(System.currentTimeMillis()))
+            updatePiaSnapshotLocked()
+            snapshot
+        }
+        if (next.piaNetRequests == 1L || next.piaSessionResponses == 1L || next.piaStage == LdnPiaStage.ESTABLISHED) {
+            onSnapshot(next)
+        }
+    }
+
+    private fun sendPiaDatagrams(datagrams: List<LdnPiaDatagram>) {
+        val transport = piaTransport ?: return
+        val participant = snapshot.registeredParticipant
+        datagrams.forEach { datagram ->
+            val mac = if (datagram.destinationIp.endsWith(".255")) ByteArray(6) { 0xff.toByte() }
+            else participant?.takeIf { it.ipAddress == datagram.destinationIp }?.mac ?: return@forEach
+            if (!sendEthernet(operation, transport.frame(datagram.destinationIp, mac, datagram.payload))) {
+                throw IllegalStateException("ESP32 transmit queue rejected a PIA packet")
+            }
+        }
+    }
+
+    private fun updatePiaSnapshotLocked() {
+        val pia = piaHost?.snapshot() ?: return
+        snapshot = snapshot.copy(
+            piaStage = pia.stage,
+            piaNetRequests = pia.netRequestsSent,
+            piaSessionRequests = pia.sessionRequests,
+            piaSessionResponses = pia.sessionResponses,
+            latestActivity = pia.stage.activity(snapshot.latestActivity),
+        )
     }
 
     private fun fail(error: Throwable) {
@@ -251,6 +328,7 @@ class LdnDiscoveryController internal constructor(
         }
         resources.first?.cancel()
         resources.second?.close()
+        piaHost?.reset()
         scheduler.close()
     }
 
@@ -270,6 +348,16 @@ class LdnDiscoveryController internal constructor(
             12 -> "deauthentication"
             13 -> "action frame"
             else -> "management frame subtype $subtype"
+        }
+
+        private fun LdnPiaStage.activity(previous: String?): String = when (this) {
+            LdnPiaStage.NET_PROBING -> "PIA network negotiation started"
+            LdnPiaStage.NET_CONNECTED -> "PIA network response received"
+            LdnPiaStage.SESSION_JOIN_RECEIVED -> "PIA connection request received"
+            LdnPiaStage.SESSION_RESPONSE_SENT -> "PIA response sent"
+            LdnPiaStage.ESTABLISHED -> "PIA session established"
+            LdnPiaStage.FAILED -> "PIA session failed"
+            LdnPiaStage.WAITING -> previous ?: "Waiting for PIA negotiation"
         }
     }
 }

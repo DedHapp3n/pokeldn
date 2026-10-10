@@ -13,6 +13,7 @@ class LdnDiscoveryNetwork internal constructor(
     val localCommunicationId: Long,
     val sceneId: Int,
     internal val authenticationHost: LdnAuthenticationHost,
+    internal val piaHost: LdnPiaHost,
 )
 
 /** Minimum protocol-3 host advertisement used by upstream's FRLG discovery-only probe. */
@@ -52,12 +53,19 @@ class LdnAdvertisementBuilder internal constructor(
             applicationData = applicationData,
         )
         val authenticationHost = LdnAuthenticationHost(keys, identity)
+        val piaHost = LdnPiaHost(
+            ssid = ssid,
+            hostMac = bssid,
+            networkNumber = networkNumber,
+            maxParticipants = MAX_PARTICIPANTS,
+        )
         return LdnDiscoveryNetwork(
             accessPoint = accessPoint,
             advertisementFrame = authenticationHost.currentAdvertisementFrame(),
             localCommunicationId = LOCAL_COMMUNICATION_ID,
             sceneId = SCENE_ID,
             authenticationHost = authenticationHost,
+            piaHost = piaHost,
         )
     }
 
