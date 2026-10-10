@@ -543,11 +543,18 @@ private fun message(protocol: Int, payload: ByteArray, messageFlags: Int? = null
 }
 private fun zstdCompress(data: ByteArray): ByteArray {
     val context = ZstdCompressCtx()
-    return try {
+    val frame = try {
         context.setLevel(4).setContentSize(false).compress(data)
     } finally {
         context.close()
     }
+    // Match upstream crypto._to_window_frame(): native PIA uses the explicit 0x18 window
+    // descriptor even when the encoder selected a smaller valid window for this short message.
+    if (frame.size >= 6 && frame.copyOfRange(0, 4).contentEquals("28b52ffd".hex()) &&
+        (frame[4].u8() and 0x07) == 0 && frame[5].u8() <= 0x18) {
+        frame[5] = 0x18
+    }
+    return frame
 }
 private fun parseMessages(data: ByteArray): List<PiaMessage> {
     val out = mutableListOf<PiaMessage>(); var p = 0; var size: Int? = null; var protocol: Int? = null

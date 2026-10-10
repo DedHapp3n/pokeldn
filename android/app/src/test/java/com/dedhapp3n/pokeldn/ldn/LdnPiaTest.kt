@@ -17,6 +17,7 @@ class LdnPiaTest {
         host.participantJoined(participant, 0)
         val probes = host.tick(0)
         assertEquals(listOf("169.254.88.255", participant.ipAddress), probes.map { it.destinationIp })
+        assertArrayEquals(UPSTREAM_NET_PROBE.hex(), probes.first().payload)
         val probe = PiaCrypto(ssid).decode(probes.first().payload, "169.254.88.1")
         assertEquals(1, probe.messages.single().protocol)
         assertEquals(0x11, probe.messages.single().payload[1].toInt() and 0xff)
@@ -89,6 +90,15 @@ class LdnPiaTest {
         assertEquals(2, ((arp[20].toInt() and 0xff) shl 8) or (arp[21].toInt() and 0xff))
     }
 
+    @Test
+    fun upstreamNetProbeHasExactUdpIpv4AndEthernetFraming() {
+        val probe = host().apply { participantJoined(participant, 0) }.tick(0).first().payload
+        val transport = LdnPiaUdpTransport("169.254.88.1", hostMac)
+
+        assertArrayEquals(UPSTREAM_BROADCAST_ETHERNET.hex(), transport.frame("169.254.88.255", ByteArray(6) { -1 }, probe))
+        assertArrayEquals(UPSTREAM_UNICAST_ETHERNET.hex(), transport.frame(participant.ipAddress, consoleMac, probe))
+    }
+
     private fun host() = LdnPiaHost(
         ssid = ssid,
         hostMac = hostMac,
@@ -98,6 +108,12 @@ class LdnPiaTest {
     )
 
     companion object {
+        private const val UPSTREAM_NET_PROBE =
+            "32ab98649083000000c600000008080808080808083bb8bcaddd0046979b5106850cc40b1aeb119971fa6e9e375747bb4bc04a6e040d9788a96aea29e4fd9b10045250c96460dac19bfdd75a0e2506093dad9fd214cb3e89c3199342253a6632874846bc09b6b805594a5d8244"
+        private const val UPSTREAM_BROADCAST_ETHERNET =
+            "ffffffffffff3ca9abf73c060800450000890001000040117566a9fe5801a9fe58ff303930390075f9bf$UPSTREAM_NET_PROBE"
+        private const val UPSTREAM_UNICAST_ETHERNET =
+            "3c33006094933ca9abf73c060800450000890002000040117662a9fe5801a9fe5802303930390075fabc$UPSTREAM_NET_PROBE"
         private const val NET_RESPONSE =
             "32ab9864902000c6c493000002000000000000000325d8ae50ea0efcd60afe97e6ab475d80612f5a64cc553d08"
         private const val SESSION_JOIN =

@@ -119,6 +119,11 @@ class FrlgOperationLifecycleTest {
                 piaNetRequests = 4,
                 piaSessionRequests = 2,
                 piaSessionResponses = 1,
+                piaDatagramsGenerated = 8,
+                ethernetFramesSubmitted = 9,
+                ethernetFramesAccepted = 9,
+                ethernetCommandsWritten = 9,
+                ethernetTxCompleted = 8,
             ),
         )
 
@@ -127,5 +132,10 @@ class FrlgOperationLifecycleTest {
         assertTrue(diagnostics.contains("piaSessReq=2"))
         assertTrue(diagnostics.contains("piaSessRes=1"))
         assertTrue(diagnostics.contains("participantEver=true"))
+        assertTrue(diagnostics.contains("piaDgram=8"))
+        assertTrue(diagnostics.contains("ethSubmit=9"))
+        assertTrue(diagnostics.contains("ethQueue=9"))
+        assertTrue(diagnostics.contains("ethWrite=9"))
+        assertTrue(diagnostics.contains("ethTxDone=8"))
     }
 }

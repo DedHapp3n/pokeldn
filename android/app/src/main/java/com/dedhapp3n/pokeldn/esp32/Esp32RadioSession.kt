@@ -64,6 +64,8 @@ sealed interface Esp32RadioEvent {
         val frame: ByteArray,
     ) : Esp32RadioEvent
     data class TxDone(val payload: ByteArray) : Esp32RadioEvent
+    /** A complete CMD_ETH_TX frame was handed to the serial transport. */
+    data class EthernetCommandWritten(val encodedBytes: Int) : Esp32RadioEvent
     data class StationJoined(
         val mac: ByteArray,
         val associationId: Int,
@@ -490,6 +492,9 @@ class Esp32RadioSession internal constructor(
                 if (item.token?.cancelled == true ||
                     (item.generation != null && item.generation != activeGeneration)) continue
                 serial.write(item.frame, WRITE_TIMEOUT_MS)
+                if (item.type == Esp32Protocol.CMD_ETH_TX) {
+                    publishEvent(Esp32RadioEvent.EthernetCommandWritten(item.frame.size))
+                }
                 synchronized(outboundMonitor) {
                     written += item.frame.size
                     if (item.type == Esp32Protocol.CMD_HELLO) {

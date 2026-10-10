@@ -138,6 +138,21 @@ class Esp32RadioSessionTest {
     }
 
     @Test
+    fun acceptedEthernetCommandPublishesOnlyAfterSerialWrite() {
+        val serial = FakeSerial()
+        session(serial).use { runtime ->
+            runtime.verifyAndPrepare()
+            val operation = runtime.startAccessPoint(config())
+            val events = mutableListOf<Esp32RadioEvent>()
+            runtime.addOperationEventListener(operation) { events += it }
+
+            assertTrue(runtime.sendEthernet(operation, ByteArray(64)))
+            await { events.any { it is Esp32RadioEvent.EthernetCommandWritten } }
+            assertEquals(1, serial.commandCount(Esp32Protocol.CMD_ETH_TX))
+        }
+    }
+
+    @Test
     fun aliveStartsAndStopsOnceForOperation() {
         val serial = FakeSerial()
         val scheduler = FakeAliveScheduler()

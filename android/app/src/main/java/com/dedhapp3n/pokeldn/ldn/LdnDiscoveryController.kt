@@ -29,6 +29,11 @@ data class LdnDiscoverySnapshot(
     val piaNetRequests: Long = 0,
     val piaSessionRequests: Long = 0,
     val piaSessionResponses: Long = 0,
+    val piaDatagramsGenerated: Long = 0,
+    val ethernetFramesSubmitted: Long = 0,
+    val ethernetFramesAccepted: Long = 0,
+    val ethernetCommandsWritten: Long = 0,
+    val ethernetTxCompleted: Long = 0,
     val reliableEstablished: Boolean = false,
     val reliableFramesReceived: Long = 0,
     val reliableFramesSent: Long = 0,
@@ -210,12 +215,20 @@ class LdnDiscoveryController internal constructor(
                     reliableFramesSent = maxOf(snapshot.reliableFramesSent, piaBeforeLeave?.reliableFramesSent ?: 0),
                     latestActivity = "Station left: ${event.mac.formatMac()}",
                 )
+                is Esp32RadioEvent.EthernetCommandWritten -> snapshot.copy(
+                    ethernetCommandsWritten = snapshot.ethernetCommandsWritten + 1,
+                )
+                is Esp32RadioEvent.TxDone -> if (event.isEthernetTransmit()) snapshot.copy(
+                    ethernetTxCompleted = snapshot.ethernetTxCompleted + 1,
+                ) else return
                 else -> return
             }
             snapshot
         }
         if (event is Esp32RadioEvent.StationJoined || event is Esp32RadioEvent.StationLeft ||
-            next.discoveryActivityCount == 1L || next.discoveryActivityCount % 10L == 0L) {
+            next.discoveryActivityCount == 1L || next.discoveryActivityCount % 10L == 0L ||
+            (event is Esp32RadioEvent.EthernetCommandWritten && next.ethernetCommandsWritten == 1L) ||
+            (event is Esp32RadioEvent.TxDone && next.ethernetTxCompleted == 1L)) {
             onSnapshot(next)
         }
     }
@@ -242,7 +255,7 @@ class LdnDiscoveryController internal constructor(
         val sent = try {
             synchronized(lock) {
                 if (!running) return true
-                if (!sendEthernet(operation, response)) {
+                if (!submitEthernetLocked(response)) {
                     throw IllegalStateException("ESP32 transmit queue rejected the authentication response")
                 }
                 snapshot = snapshot.copy(
@@ -276,7 +289,7 @@ class LdnDiscoveryController internal constructor(
         try {
             synchronized(lock) {
                 if (!running) return true
-                if (immediateReply != null && !sendEthernet(operation, immediateReply)) {
+                if (immediateReply != null && !submitEthernetLocked(immediateReply)) {
                     throw IllegalStateException("ESP32 transmit queue rejected the ARP response")
                 }
                 val replies = if (datagram == null) emptyList() else {
@@ -325,13 +338,22 @@ class LdnDiscoveryController internal constructor(
     private fun sendPiaDatagrams(datagrams: List<LdnPiaDatagram>) {
         val transport = piaTransport ?: return
         val participant = snapshot.registeredParticipant
+        snapshot = snapshot.copy(piaDatagramsGenerated = snapshot.piaDatagramsGenerated + datagrams.size)
         datagrams.forEach { datagram ->
             val mac = if (datagram.destinationIp.endsWith(".255")) ByteArray(6) { 0xff.toByte() }
             else participant?.takeIf { it.ipAddress == datagram.destinationIp }?.mac ?: return@forEach
-            if (!sendEthernet(operation, transport.frame(datagram.destinationIp, mac, datagram.payload))) {
+            if (!submitEthernetLocked(transport.frame(datagram.destinationIp, mac, datagram.payload))) {
                 throw IllegalStateException("ESP32 transmit queue rejected a PIA packet")
             }
         }
+    }
+
+    /** Must be called with [lock] held. A true result means Android queue acceptance only. */
+    private fun submitEthernetLocked(frame: ByteArray): Boolean {
+        snapshot = snapshot.copy(ethernetFramesSubmitted = snapshot.ethernetFramesSubmitted + 1)
+        val accepted = sendEthernet(operation, frame)
+        if (accepted) snapshot = snapshot.copy(ethernetFramesAccepted = snapshot.ethernetFramesAccepted + 1)
+        return accepted
     }
 
     private fun updatePiaSnapshotLocked() {
@@ -420,6 +442,11 @@ class LdnDiscoveryController internal constructor(
         }
     }
 }
+
+/** Firmware sets queued-us to UINT32_MAX for TX callbacks that are not CMD_ETH_TX data frames. */
+private fun Esp32RadioEvent.TxDone.isEthernetTransmit(): Boolean = payload.size >= 8 &&
+    !(payload[4] == 0xff.toByte() && payload[5] == 0xff.toByte() &&
+        payload[6] == 0xff.toByte() && payload[7] == 0xff.toByte())
 
 private fun deepestPiaStage(current: LdnPiaStage, candidate: LdnPiaStage?): LdnPiaStage {
     if (candidate == null) return current

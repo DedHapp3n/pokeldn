@@ -143,6 +143,40 @@ class LdnDiscoveryControllerTest {
         controller.stop()
     }
 
+    @Test
+    fun piaTransmissionCountersSeparateGenerationQueueSerialAndFirmwareBoundaries() {
+        val transport = FakeTransport()
+        val participant = LdnParticipant(
+            1, "169.254.33.2", "0a0b0c0d0e0f".hex(), "Console".toByteArray(), 88, 0,
+        )
+        val pia = LdnPiaHost(
+            ssid = ByteArray(16) { it.toByte() }, hostMac = "021122334455".hex(),
+            networkNumber = 33, maxParticipants = 6,
+            randomBytes = { size -> ByteArray(size) { size.toByte() } },
+        )
+        val controller = LdnDiscoveryController(
+            operation = Esp32RadioOperation(5), advertisementFrame = { ByteArray(24) },
+            sendRaw = { _, _ -> true }, sendEthernet = { _, _ -> true },
+            authenticate = { _, _ -> LdnAuthenticationOutcome(byteArrayOf(1), 0, true, participant) },
+            piaHost = pia,
+            piaTransport = LdnPiaUdpTransport("169.254.33.1", "021122334455".hex()),
+            subscribe = transport::subscribe, scheduler = FakeScheduler(),
+        )
+        controller.start()
+        transport.emit(Esp32RadioEvent.LdnControlEthernet("021122334455".hex(), participant.mac, byteArrayOf(1)))
+        transport.emit(Esp32RadioEvent.EthernetCommandWritten(150))
+        transport.emit(Esp32RadioEvent.TxDone(ByteArray(12)))
+        transport.emit(Esp32RadioEvent.TxDone(ByteArray(12) { if (it in 4..7) -1 else 0 }))
+
+        val snapshot = controller.currentSnapshot()
+        assertEquals(2, snapshot.piaDatagramsGenerated)
+        assertEquals(3, snapshot.ethernetFramesSubmitted)
+        assertEquals(3, snapshot.ethernetFramesAccepted)
+        assertEquals(1, snapshot.ethernetCommandsWritten)
+        assertEquals(1, snapshot.ethernetTxCompleted)
+        controller.stop()
+    }
+
     private class FakeTransport {
         private var listener: ((Esp32RadioEvent) -> Unit)? = null
 
