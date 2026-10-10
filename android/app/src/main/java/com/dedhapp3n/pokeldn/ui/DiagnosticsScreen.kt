@@ -162,6 +162,12 @@ private fun DiagnosticDevicePanel(
         LdnApTestPhase.AUTHENTICATION_REJECTED,
         LdnApTestPhase.PARTICIPANT_REGISTERED,
         LdnApTestPhase.STATION_ASSOCIATED,
+        LdnApTestPhase.PIA_REQUEST,
+        LdnApTestPhase.PIA_RESPONSE_SENT,
+        LdnApTestPhase.PIA_ESTABLISHED,
+        LdnApTestPhase.RELIABLE_ESTABLISHED,
+        LdnApTestPhase.RFU_CONNECTED,
+        LdnApTestPhase.LINK_PLAYER_EXCHANGED,
     )
     val ldnBusy = ldnApTestState.phase in setOf(
         LdnApTestPhase.PREPARING,

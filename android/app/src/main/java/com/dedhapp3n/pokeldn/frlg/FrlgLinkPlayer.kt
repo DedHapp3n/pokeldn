@@ -39,6 +39,7 @@ internal class FrlgLinkPlayerExchange {
     private var hostInitSends = 0
     private var hostFragment = 0
     private var standby: Int? = null
+    val standbyCount: Int? get() = standby
 
     init {
         repeat(8) { commands += FrlgRfu.playerIds() }
@@ -81,7 +82,7 @@ internal class FrlgLinkPlayerExchange {
     fun tick(): IntArray {
         if (commands.isNotEmpty()) return commands.removeFirst()
         if (stage == FrlgLinkStage.SENDING_HOST) {
-            if (hostInitSends++ < 5) return FrlgRfu.blockInit(17)
+            if (hostInitSends++ < 4) return FrlgRfu.blockInit(17)
             val start = hostFragment * 12
             val words = FrlgRfu.blockFragment(hostFragment, HOST_BLOCK_200.copyOfRange(start, start + 12))
             hostFragment++

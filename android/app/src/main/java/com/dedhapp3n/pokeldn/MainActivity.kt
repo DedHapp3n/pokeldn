@@ -35,6 +35,9 @@ import com.dedhapp3n.pokeldn.esp32.RawSerialCapture
 import com.dedhapp3n.pokeldn.frlg.ProdKeysState
 import com.dedhapp3n.pokeldn.frlg.ProdKeysStore
 import com.dedhapp3n.pokeldn.frlg.ProdKeysPhase
+import com.dedhapp3n.pokeldn.frlg.FrlgGiftStage
+import com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase
+import com.dedhapp3n.pokeldn.frlg.FrlgOperationState
 import com.dedhapp3n.pokeldn.ldn.LdnAdvertisementBuilder
 import com.dedhapp3n.pokeldn.ldn.LdnApTestPhase
 import com.dedhapp3n.pokeldn.ldn.LdnApTestState
@@ -73,6 +76,7 @@ class MainActivity : ComponentActivity() {
     private var selectedReadBufferMode by mutableStateOf(RawReadBufferMode.REUSED)
     private var prodKeysState by mutableStateOf(ProdKeysState())
     private var ldnApTestState by mutableStateOf(LdnApTestState())
+    private var frlgOperationState by mutableStateOf(FrlgOperationState())
     private var pendingDeviceId: Int? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var permissionTimeout: Runnable? = null
@@ -89,6 +93,9 @@ class MainActivity : ComponentActivity() {
     private val ldnTestLock = Any()
     @Volatile private var activeLdnTest: ActiveLdnTest? = null
     @Volatile private var ldnTestId = 0
+    private val frlgOperationLock = Any()
+    @Volatile private var activeFrlgOperation: ActiveLdnTest? = null
+    @Volatile private var frlgOperationId = 0
 
     private data class ActiveLdnTest(
         val session: Esp32RadioSession,
@@ -127,6 +134,7 @@ class MainActivity : ComponentActivity() {
                     operationId++
                     esp32State = Esp32HandshakeState()
                     invalidateLdnApTest()
+                    invalidateFrlgOperation()
                     connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.DISCONNECTED)
                     serialWorker.execute { closeRadioAndTransport() }
                 }
@@ -172,6 +180,9 @@ class MainActivity : ComponentActivity() {
                     ldnApTestState = ldnApTestState,
                     onStartLdnApTest = ::startLdnApTest,
                     onStopLdnApTest = ::stopLdnApTest,
+                    frlgOperationState = frlgOperationState,
+                    onStartWalkThroughWalls = ::startWalkThroughWalls,
+                    onCancelWalkThroughWalls = ::cancelWalkThroughWalls,
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -190,6 +201,7 @@ class MainActivity : ComponentActivity() {
         cancelHello()
         cancelRawCapture()
         invalidateLdnApTest()
+        invalidateFrlgOperation()
         operationId++
         serialWorker.execute { closeRadioAndTransport() }
         serialWorker.shutdown()
@@ -211,6 +223,7 @@ class MainActivity : ComponentActivity() {
             operationId++
             esp32State = Esp32HandshakeState()
             invalidateLdnApTest()
+            invalidateFrlgOperation()
             connectionState = SerialConnectionState(name, SerialConnectionPhase.DISCONNECTED)
             serialWorker.execute { closeRadioAndTransport() }
         } else if (device != null && connectionState.phase in setOf(
@@ -355,6 +368,7 @@ class MainActivity : ComponentActivity() {
                 if (error == null && usbManager.deviceList.containsKey(device.deviceName)) {
                     esp32State = Esp32HandshakeState()
                     invalidateLdnApTest()
+                    invalidateFrlgOperation()
                     connectedBaudRate = transport.configuredBaudRate ?: UsbSerialTransport.BAUD_RATE
                     connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.CONNECTED)
                     val shouldVerify = verifyAfterSerialConnect
@@ -382,6 +396,7 @@ class MainActivity : ComponentActivity() {
         val thisOperation = ++operationId
         esp32State = Esp32HandshakeState()
         invalidateLdnApTest()
+        invalidateFrlgOperation()
         connectionState = SerialConnectionState(name, SerialConnectionPhase.DISCONNECTING)
         serialWorker.execute {
             closeRadioAndTransport()
@@ -462,6 +477,7 @@ class MainActivity : ComponentActivity() {
                     "ESP32 HELLO timed out. The serial connection was closed; reconnect to retry.",
                 )
                 invalidateLdnApTest()
+                invalidateFrlgOperation()
             }
         }, HELLO_OPERATION_TIMEOUT_MS, TimeUnit.MILLISECONDS)
     }
@@ -492,6 +508,7 @@ class MainActivity : ComponentActivity() {
         )
         esp32State = Esp32HandshakeState()
         invalidateLdnApTest()
+        invalidateFrlgOperation()
         val task = helloWorker.submit {
             var reopened = false
             val nextState = try {
@@ -572,6 +589,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startLdnApTest() {
+        if (activeFrlgOperation != null) return
         if (prodKeysState.phase != ProdKeysPhase.AVAILABLE) {
             ldnApTestState = LdnApTestState(LdnApTestPhase.FAILED, "Valid prod.keys are required")
             return
@@ -714,6 +732,164 @@ class MainActivity : ComponentActivity() {
         }
         active?.discovery?.stop()
         ldnApTestState = LdnApTestState(LdnApTestPhase.DISCONNECTED)
+    }
+
+    private fun startWalkThroughWalls() {
+        if (prodKeysState.phase != ProdKeysPhase.AVAILABLE) {
+            frlgOperationState = FrlgOperationState(FrlgOperationPhase.FAILED, "Valid prod.keys are required")
+            return
+        }
+        val session = radioSession
+        if (esp32State.phase != Esp32HandshakePhase.VERIFIED || session?.state?.phase != Esp32RadioPhase.READY) {
+            frlgOperationState = FrlgOperationState(FrlgOperationPhase.FAILED, "ESP32 radio is not Ready")
+            return
+        }
+        if (activeLdnTest != null || activeFrlgOperation != null) return
+        val jobId = synchronized(frlgOperationLock) { ++frlgOperationId }
+        frlgOperationState = FrlgOperationState(FrlgOperationPhase.PREPARING_ESP32)
+        ldnOperationWorker.execute {
+            var operation: Esp32RadioOperation? = null
+            var discovery: LdnDiscoveryController? = null
+            try {
+                val network = LdnAdvertisementBuilder().buildDiscoveryNetwork(prodKeysStore.loadLdnKeys())
+                val config = network.accessPoint.toEsp32AccessPointConfig()
+                runOnUiThread {
+                    if (jobId == frlgOperationId) frlgOperationState =
+                        FrlgOperationState(FrlgOperationPhase.STARTING_NETWORK, "Starting Nintendo LDN access point")
+                }
+                val activeOperation = session.startAccessPoint(config)
+                operation = activeOperation
+                lateinit var controller: LdnDiscoveryController
+                controller = LdnDiscoveryController(
+                    session = session,
+                    operation = activeOperation,
+                    network = network,
+                    walkThroughWalls = true,
+                    onSnapshot = { snapshot ->
+                        runOnUiThread {
+                            val current = synchronized(frlgOperationLock) {
+                                jobId == frlgOperationId && activeFrlgOperation?.discovery === controller
+                            }
+                            if (!current) return@runOnUiThread
+                            frlgOperationState = frlgState(snapshot)
+                            when {
+                                snapshot.giftStage == FrlgGiftStage.COMPLETED ->
+                                    finishFrlgOperation(jobId, FrlgOperationPhase.COMPLETED,
+                                        "Walk Through Walls installed. Hold R while moving.")
+                                snapshot.giftStage == FrlgGiftStage.FAILED ->
+                                    finishFrlgOperation(jobId, FrlgOperationPhase.FAILED,
+                                        snapshot.latestActivity ?: "Mystery Gift transfer failed")
+                                snapshot.stationLeaves > 0 && snapshot.giftStage != FrlgGiftStage.COMPLETED ->
+                                    finishFrlgOperation(jobId, FrlgOperationPhase.FAILED,
+                                        "Console disconnected before the operation completed")
+                            }
+                        }
+                    },
+                    onFailure = { error ->
+                        runOnUiThread {
+                            finishFrlgOperation(jobId, FrlgOperationPhase.FAILED,
+                                error.message ?: "FRLG wireless operation failed")
+                        }
+                    },
+                )
+                discovery = controller
+                val accepted = synchronized(frlgOperationLock) {
+                    if (jobId == frlgOperationId && radioSession === session) {
+                        activeFrlgOperation = ActiveLdnTest(session, activeOperation, controller)
+                        true
+                    } else false
+                }
+                if (!accepted) {
+                    controller.stop()
+                    try { session.stopAccessPoint(activeOperation) } catch (_: Exception) { }
+                    return@execute
+                }
+                controller.start()
+                runOnUiThread {
+                    if (jobId == frlgOperationId) frlgOperationState = FrlgOperationState(
+                        FrlgOperationPhase.WAITING_FOR_CONSOLE,
+                        "On the GBA, open Mystery Gift, choose Wonder Cards, then Friend.",
+                    )
+                }
+            } catch (error: Exception) {
+                discovery?.stop()
+                operation?.let {
+                    if (session.state.phase in setOf(Esp32RadioPhase.STARTING_RADIO, Esp32RadioPhase.RADIO_ACTIVE)) {
+                        try { session.stopAccessPoint(it) } catch (_: Exception) { }
+                    }
+                }
+                synchronized(frlgOperationLock) {
+                    if (activeFrlgOperation?.discovery === discovery) activeFrlgOperation = null
+                }
+                runOnUiThread {
+                    if (jobId == frlgOperationId) frlgOperationState = FrlgOperationState(
+                        FrlgOperationPhase.FAILED, error.message ?: "Could not start FRLG operation")
+                }
+            }
+        }
+    }
+
+    private fun frlgState(snapshot: LdnDiscoverySnapshot): FrlgOperationState {
+        val phase = when (snapshot.giftStage) {
+            FrlgGiftStage.READING_CARTRIDGE -> FrlgOperationPhase.READING_CARTRIDGE
+            FrlgGiftStage.PREPARING_BOOST -> FrlgOperationPhase.PREPARING_BOOST
+            FrlgGiftStage.SENDING_BOOST -> FrlgOperationPhase.SENDING_BOOST
+            FrlgGiftStage.WAITING_RESULT -> FrlgOperationPhase.WAITING_FOR_CLOSE
+            FrlgGiftStage.CLOSING -> FrlgOperationPhase.CLOSING_LINK
+            FrlgGiftStage.COMPLETED -> FrlgOperationPhase.COMPLETED
+            FrlgGiftStage.FAILED -> FrlgOperationPhase.FAILED
+            FrlgGiftStage.WAITING_CLIENT -> FrlgOperationPhase.ESTABLISHING_GAME_LINK
+            null -> when {
+                snapshot.linkPlayerExchanged -> FrlgOperationPhase.ESTABLISHING_GAME_LINK
+                snapshot.rfuConnected -> FrlgOperationPhase.ESTABLISHING_RFU
+                snapshot.reliableEstablished -> FrlgOperationPhase.ESTABLISHING_RELIABLE
+                snapshot.piaStage == LdnPiaStage.ESTABLISHED -> FrlgOperationPhase.ESTABLISHING_PIA
+                snapshot.authenticationRequests > 0 || snapshot.participantRegistered -> FrlgOperationPhase.AUTHENTICATING
+                snapshot.discoveryActivityCount > 0 -> FrlgOperationPhase.CONSOLE_DETECTED
+                else -> FrlgOperationPhase.WAITING_FOR_CONSOLE
+            }
+        }
+        val detected = snapshot.detectedCartridge?.let { "$it detected" }
+        return FrlgOperationState(phase, detected ?: snapshot.latestActivity)
+    }
+
+    private fun cancelWalkThroughWalls() {
+        val id = synchronized(frlgOperationLock) {
+            if (activeFrlgOperation == null) return
+            frlgOperationId
+        }
+        finishFrlgOperation(id, FrlgOperationPhase.CANCELLED, "Operation cancelled")
+    }
+
+    private fun finishFrlgOperation(id: Int, terminal: FrlgOperationPhase, detail: String) {
+        val active = synchronized(frlgOperationLock) {
+            if (id != frlgOperationId) return
+            activeFrlgOperation?.also { activeFrlgOperation = null } ?: return
+        }
+        frlgOperationState = FrlgOperationState(FrlgOperationPhase.RETURNING_TO_READY,
+            "Returning adapter to Ready")
+        ldnOperationWorker.execute {
+            val error = try {
+                active.discovery.stop()
+                active.session.stopAccessPoint(active.operation)
+                null
+            } catch (failure: Exception) { failure }
+            runOnUiThread {
+                if (id != frlgOperationId) return@runOnUiThread
+                frlgOperationState = if (error == null) FrlgOperationState(terminal, detail) else
+                    FrlgOperationState(FrlgOperationPhase.FAILED,
+                        error.message ?: "Adapter cleanup failed; reconnect before retrying")
+            }
+        }
+    }
+
+    private fun invalidateFrlgOperation() {
+        val active = synchronized(frlgOperationLock) {
+            frlgOperationId++
+            activeFrlgOperation.also { activeFrlgOperation = null }
+        }
+        active?.discovery?.stop()
+        frlgOperationState = FrlgOperationState()
     }
 
     private fun discoveryState(channel: Int, snapshot: LdnDiscoverySnapshot): LdnApTestState =

@@ -35,6 +35,7 @@ data class LdnDiscoverySnapshot(
     val rfuReady: Boolean = false,
     val linkPlayerExchanged: Boolean = false,
     val detectedCartridge: String? = null,
+    val giftStage: com.dedhapp3n.pokeldn.frlg.FrlgGiftStage? = null,
     val latestActivity: String? = null,
 )
 
@@ -85,6 +86,7 @@ class LdnDiscoveryController internal constructor(
         session: Esp32RadioSession,
         operation: Esp32RadioOperation,
         network: LdnDiscoveryNetwork,
+        walkThroughWalls: Boolean = false,
         onSnapshot: (LdnDiscoverySnapshot) -> Unit = {},
         onFailure: (Throwable) -> Unit = {},
     ) : this(
@@ -96,7 +98,7 @@ class LdnDiscoveryController internal constructor(
         removeParticipant = network.authenticationHost::removeParticipant,
         piaHost = network.piaHost,
         piaTransport = LdnPiaUdpTransport(network.piaHost.hostIp, network.accessPoint.bssid),
-        frlgHost = FrlgHostLink(network.piaHost, network.parentSessionId),
+        frlgHost = FrlgHostLink(network.piaHost, network.parentSessionId, walkThroughWalls),
         subscribe = session::addOperationEventListener,
         onSnapshot = onSnapshot,
         onFailure = onFailure,
@@ -344,6 +346,7 @@ class LdnDiscoveryController internal constructor(
             rfuReady = link.rfuReady,
             linkPlayerExchanged = link.linkPlayerExchanged,
             detectedCartridge = link.cartridge?.let { "${it.game} / ${it.language}" },
+            giftStage = link.gift?.stage,
             latestActivity = link.detail ?: snapshot.latestActivity,
         )
     }

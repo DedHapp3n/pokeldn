@@ -57,7 +57,7 @@ class FrlgRfuTest {
         assertEquals("LeafGreen", exchange.child!!.cartridge!!.game)
         assertEquals("German", exchange.child!!.cartridge!!.language)
         assertEquals(FrlgLinkStage.SENDING_HOST, exchange.stage)
-        repeat(5) { assertEquals(FrlgRfu.SEND_BLOCK_INIT, exchange.tick()[0] and FrlgRfu.MASK) }
+        repeat(4) { assertEquals(FrlgRfu.SEND_BLOCK_INIT, exchange.tick()[0] and FrlgRfu.MASK) }
         repeat(17) { index -> assertEquals(index, exchange.tick()[0] and 31) }
         assertEquals(FrlgLinkStage.WAITING_STANDBY, exchange.stage)
         exchange.receive(FrlgRfu.serialize(intArrayOf(FrlgRfu.READY_EXIT_STANDBY, 3)))

@@ -6,9 +6,16 @@ enum class FrlgOperationPhase(val label: String) {
     STARTING_NETWORK("Starting wireless network"),
     WAITING_FOR_CONSOLE("Waiting for console"),
     CONSOLE_DETECTED("Console detected"),
+    AUTHENTICATING("Authenticating"),
+    ESTABLISHING_PIA("Establishing PIA session"),
+    ESTABLISHING_RELIABLE("Establishing reliable link"),
+    ESTABLISHING_RFU("Establishing RFU"),
     ESTABLISHING_GAME_LINK("Establishing game link"),
+    READING_CARTRIDGE("Reading cartridge"),
+    PREPARING_BOOST("Preparing boost"),
     SENDING_BOOST("Sending boost"),
     WAITING_FOR_CLOSE("Waiting for save/close"),
+    CLOSING_LINK("Closing link"),
     RETURNING_TO_READY("Returning adapter to Ready"),
     COMPLETED("Completed"),
     FAILED("Failed"),
@@ -34,7 +41,7 @@ class FrlgOperationLifecycle {
 
     fun advance(phase: FrlgOperationPhase, detail: String? = null) {
         check(state.running) { "No FRLG operation is running" }
-        require(phase in FrlgOperationPhase.STARTING_NETWORK..FrlgOperationPhase.WAITING_FOR_CLOSE) {
+        require(phase in FrlgOperationPhase.STARTING_NETWORK..FrlgOperationPhase.CLOSING_LINK) {
             "Only active operation phases may advance directly"
         }
         state = FrlgOperationState(phase, detail)

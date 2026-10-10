@@ -176,6 +176,8 @@ internal class LdnPiaHost(
     fun reliableReceiveAcknowledgementSent(sequence: Int): Boolean =
         reliable.receiveAcknowledgementSent(sequence)
 
+    val reliableOutstanding: Int get() = reliable.outstanding
+
     fun reset() {
         participant = null
         stage = LdnPiaStage.WAITING

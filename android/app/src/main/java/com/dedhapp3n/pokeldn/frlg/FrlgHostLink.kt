@@ -8,6 +8,7 @@ internal data class FrlgHostLinkSnapshot(
     val rfuReady: Boolean,
     val linkPlayerExchanged: Boolean,
     val cartridge: FrlgCartridge?,
+    val gift: FrlgGiftSnapshot?,
     val detail: String?,
 )
 
@@ -15,12 +16,15 @@ internal data class FrlgHostLinkSnapshot(
 internal class FrlgHostLink(
     private val pia: LdnPiaHost,
     parentSessionId: ByteArray,
+    private val runWalkThroughWalls: Boolean = false,
 ) {
     private val rfu = FrlgRfuLeader(parentSessionId)
     private val link = FrlgLinkPlayerExchange()
     private var connectSequence: Int? = null
     private var localReliableOpened = false
     private var detail: String? = null
+    private var gift: FrlgMysteryGiftEngine? = null
+    private var disconnectSent = false
 
     fun tick(nowMillis: Long): List<LdnPiaDatagram> {
         pia.drainReliableDeliveries().forEach { delivery ->
@@ -31,8 +35,12 @@ internal class FrlgHostLink(
                 }
                 "child_ni_complete" -> detail = "RFU identity received"
                 "uni" -> {
-                    link.receive(rfu.childCommand)
-                    detail = when (link.stage) {
+                    val activeGift = gift
+                    if (activeGift != null) activeGift.receive(rfu.childCommand) else {
+                        link.receive(rfu.childCommand)
+                        ensureGift()
+                    }
+                    detail = gift?.snapshot()?.detail ?: when (link.stage) {
                         FrlgLinkStage.ESTABLISHED -> "LinkPlayer exchanged"
                         FrlgLinkStage.FAILED -> link.error
                         else -> "RFU connected"
@@ -44,7 +52,16 @@ internal class FrlgHostLink(
         }
         val connect = connectSequence ?: return emptyList()
         if (!pia.reliableReceiveAcknowledgementSent(connect)) return emptyList()
-        val parentWords = if (rfu.state == FrlgRfuState.UNI) link.tick() else null
+        if (gift?.disconnectRequested == true && !disconnectSent) {
+            disconnectSent = true
+            val payload = rfu.disconnect() ?: return emptyList()
+            gift?.markDisconnected()
+            return listOf(pia.sendReliable(payload, nowMillis))
+        }
+        if (pia.reliableOutstanding >= 6) return emptyList()
+        val parentWords = if (rfu.state == FrlgRfuState.UNI) {
+            gift?.tick() ?: link.tick().also { ensureGift() }
+        } else null
         val payload = rfu.tick(parentWords) ?: return emptyList()
         val datagram = if (!localReliableOpened) {
             localReliableOpened = true
@@ -57,9 +74,15 @@ internal class FrlgHostLink(
         rfuConnected = rfu.state != FrlgRfuState.WAIT_CONNECT && rfu.state != FrlgRfuState.DISCONNECTED,
         rfuReady = rfu.state == FrlgRfuState.UNI,
         linkPlayerExchanged = link.stage == FrlgLinkStage.ESTABLISHED,
-        cartridge = link.child?.cartridge,
-        detail = detail,
+        cartridge = gift?.snapshot()?.cartridge ?: link.child?.cartridge,
+        gift = gift?.snapshot(),
+        detail = gift?.snapshot()?.detail ?: detail,
     )
 
     fun close(nowMillis: Long): LdnPiaDatagram? = rfu.disconnect()?.let { pia.sendReliable(it, nowMillis) }
+
+    private fun ensureGift() {
+        if (!runWalkThroughWalls || gift != null || link.stage != FrlgLinkStage.ESTABLISHED) return
+        link.child?.cartridge?.let { gift = FrlgMysteryGiftEngine(it, link.standbyCount ?: 0) }
+    }
 }

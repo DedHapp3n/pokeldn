@@ -105,6 +105,9 @@ fun PokeLdnApp(
     ldnApTestState: LdnApTestState,
     onStartLdnApTest: () -> Unit,
     onStopLdnApTest: () -> Unit,
+    frlgOperationState: FrlgOperationState,
+    onStartWalkThroughWalls: () -> Unit,
+    onCancelWalkThroughWalls: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var destination by rememberSaveable { mutableStateOf(AppDestination.HOME) }
@@ -131,8 +134,10 @@ fun PokeLdnApp(
                     connectionState = connectionState,
                     esp32State = esp32State,
                     keysState = prodKeysState,
-                    operationState = FrlgOperationState(),
+                    operationState = frlgOperationState,
                     onImportKeys = onImportProdKeys,
+                    onStart = onStartWalkThroughWalls,
+                    onCancel = onCancelWalkThroughWalls,
                     onBack = { selectedOperation = null },
                     modifier = Modifier.padding(innerPadding),
                 )
@@ -521,8 +526,8 @@ private fun FrlgOperationsScreen(
                 OperationRow(
                     "Walk Through Walls",
                     "Hold R to pass through walls, trees, and water.",
-                    "First port target",
-                    StatusTone.WARNING,
+                    "Available",
+                    StatusTone.POSITIVE,
                     onOpenWalkThroughWalls,
                 )
                 PlannedOperation("Speed Up", "Planned")
@@ -561,6 +566,8 @@ private fun WalkThroughWallsScreen(
     keysState: ProdKeysState,
     operationState: FrlgOperationState,
     onImportKeys: () -> Unit,
+    onStart: () -> Unit,
+    onCancel: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -571,7 +578,15 @@ private fun WalkThroughWallsScreen(
         item { DeviceButton("Back to operations", onBack, Modifier.fillMaxWidth()) }
         item {
             BezelDisplay("Operation status") {
-                DisplayStatus(operationState.phase.label, if (operationState.running) StatusTone.WARNING else StatusTone.NEUTRAL)
+                DisplayStatus(
+                    operationState.phase.label,
+                    when (operationState.phase) {
+                        com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.COMPLETED -> StatusTone.POSITIVE
+                        com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.FAILED -> StatusTone.ERROR
+                        else -> if (operationState.running) StatusTone.WARNING else StatusTone.NEUTRAL
+                    },
+                )
+                operationState.detail?.let { Text(it, color = ScreenMuted) }
                 Text("Game: FireRed / LeafGreen", color = ScreenMuted)
                 Text("Activation: hold ${WalkThroughWallsPreset.ACTIVATION_BUTTON}", color = ScreenMuted)
                 DisplayStatus(if (adapterReady) "ESP32 ready" else "ESP32 not ready", if (adapterReady) StatusTone.POSITIVE else StatusTone.ERROR)
@@ -594,12 +609,19 @@ private fun WalkThroughWallsScreen(
             ShellPanel("Requirements") {
                 Text("Import your own prod.keys. The app stores the validated file only in private app storage.")
                 DeviceButton("Import prod.keys", onImportKeys, Modifier.fillMaxWidth())
-                Text(
-                    "Wireless delivery is not enabled in this build: the Android LDN, PIA, RFU, and Mystery Gift layers still need to be ported. Start remains disabled so the app cannot claim a boost was sent.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = DeviceInk.copy(alpha = 0.72f),
-                )
-                DeviceButton("Start", {}, Modifier.fillMaxWidth(), enabled = false, style = DeviceButtonStyle.SECONDARY)
+                Text("On the GBA, enable Mystery Gift, open Wonder Cards, then choose Friend. Start here before selecting the host on the console.")
+                Text("The boost lasts until the game restarts or the console is powered off.",
+                    style = MaterialTheme.typography.bodySmall, color = DeviceInk.copy(alpha = 0.72f))
+                if (operationState.running) {
+                    DeviceButton("Cancel", onCancel, Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY)
+                } else {
+                    DeviceButton(
+                        "Start",
+                        onStart,
+                        Modifier.fillMaxWidth(),
+                        enabled = adapterReady && keysState.phase == ProdKeysPhase.AVAILABLE,
+                    )
+                }
             }
         }
     }
