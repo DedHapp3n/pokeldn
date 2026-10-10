@@ -109,6 +109,10 @@ internal fun frlgFailureDiagnostics(snapshot: LdnDiscoverySnapshot): String = bu
     append(" rawDataAfterReg=${snapshot.rawDataAfterRegistration}")
     append(" rawPeerData=${snapshot.rawPeerDataAfterRegistration}")
     append(" rawProtected=${snapshot.rawProtectedPeerDataAfterRegistration}")
+    append(" rawDecoded=${snapshot.rawDecoded}")
+    append(" rawDecryptFail=${snapshot.rawDecryptFailures}")
+    append(" arpRx=${snapshot.arpFramesReceived}")
+    append(" arpReply=${snapshot.arpRepliesSent}")
     snapshot.firstPeerDataTrace?.let { trace ->
         append(" rawFirst=")
         append("toDS:${if (trace.toDs) 1 else 0}")

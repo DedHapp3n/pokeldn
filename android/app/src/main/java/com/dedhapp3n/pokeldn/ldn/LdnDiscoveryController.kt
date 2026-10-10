@@ -45,6 +45,10 @@ data class LdnDiscoverySnapshot(
     val rawPeerDataAfterRegistration: Long = 0,
     val rawProtectedPeerDataAfterRegistration: Long = 0,
     val firstPeerDataTrace: LdnRawDataTrace? = null,
+    val rawDecoded: Long = 0,
+    val rawDecryptFailures: Long = 0,
+    val arpFramesReceived: Long = 0,
+    val arpRepliesSent: Long = 0,
     val reliableEstablished: Boolean = false,
     val reliableFramesReceived: Long = 0,
     val reliableFramesSent: Long = 0,
@@ -103,6 +107,7 @@ class LdnDiscoveryController internal constructor(
     private val removeParticipant: (ByteArray) -> LdnParticipant? = { null },
     private val piaHost: LdnPiaHost? = null,
     private val piaTransport: LdnPiaUdpTransport? = null,
+    private val rawGroupDecoder: LdnRawGroupDecoder? = null,
     private val frlgHost: FrlgHostLink? = null,
     private val subscribe: (Esp32RadioOperation, (Esp32RadioEvent) -> Unit) -> AutoCloseable,
     private val scheduler: LdnAdvertisementScheduler = ExecutorLdnAdvertisementScheduler(),
@@ -125,6 +130,7 @@ class LdnDiscoveryController internal constructor(
         removeParticipant = network.authenticationHost::removeParticipant,
         piaHost = network.piaHost,
         piaTransport = LdnPiaUdpTransport(network.piaHost.hostIp, network.accessPoint.bssid),
+        rawGroupDecoder = LdnRawGroupDecoder(network.accessPoint.wlanKey),
         frlgHost = FrlgHostLink(network.piaHost, network.parentSessionId, walkThroughWalls),
         subscribe = session::addOperationEventListener,
         onSnapshot = onSnapshot,
@@ -187,6 +193,10 @@ class LdnDiscoveryController internal constructor(
     private fun onEvent(event: Esp32RadioEvent) {
         if (event is Esp32RadioEvent.LdnControlEthernet && handleAuthentication(event)) return
         if (event is Esp32RadioEvent.Ethernet && handleIpTraffic(event.frame)) return
+        if (event is Esp32RadioEvent.ManagementFrame) {
+            handleManagementFrame(event)?.let(::handleIpTraffic)
+            return
+        }
         val piaBeforeLeave = if (event is Esp32RadioEvent.StationLeft) piaHost?.snapshot() else null
         val removedParticipant = if (event is Esp32RadioEvent.StationLeft) {
             removeParticipant(event.mac)
@@ -197,43 +207,7 @@ class LdnDiscoveryController internal constructor(
             if (event is Esp32RadioEvent.StationLeft) associatedStations -= event.mac.formatMac()
             if (event is Esp32RadioEvent.StationLeft) piaHost?.participantLeft(event.mac)
             snapshot = when (event) {
-                is Esp32RadioEvent.ManagementFrame -> {
-                    val isData = event.frameType == IEEE80211_DATA
-                    val afterRegistration = isData && snapshot.participantEverRegistered
-                    val peerData = afterRegistration && snapshot.registeredParticipant?.mac
-                        ?.contentEquals(event.source) == true
-                    val firstTrace = if (peerData && snapshot.firstPeerDataTrace == null) {
-                        LdnRawDataTrace(
-                            toDs = event.toDs,
-                            fromDs = event.fromDs,
-                            protectedFrame = event.protectedFrame,
-                            sourceMac = event.source.copyOf(),
-                            targetMac = event.target.copyOf(),
-                            frameLength = event.frame.size,
-                            ccmpKeyId = event.ccmpKeyId,
-                        )
-                    } else snapshot.firstPeerDataTrace
-                    snapshot.copy(
-                        discoveryActivityCount = snapshot.discoveryActivityCount + 1,
-                        managementFrames = snapshot.managementFrames + if (event.frameType == 0) 1 else 0,
-                        ldnActionFrames = snapshot.ldnActionFrames + if (event.isLdnAction) 1 else 0,
-                        rawDataTraces = snapshot.rawDataTraces + if (isData) 1 else 0,
-                        rawDataAfterRegistration = snapshot.rawDataAfterRegistration +
-                            if (afterRegistration) 1 else 0,
-                        rawPeerDataAfterRegistration = snapshot.rawPeerDataAfterRegistration +
-                            if (peerData) 1 else 0,
-                        rawProtectedPeerDataAfterRegistration = snapshot.rawProtectedPeerDataAfterRegistration +
-                            if (peerData && event.protectedFrame) 1 else 0,
-                        firstPeerDataTrace = firstTrace,
-                        latestActivity = if (event.isLdnAction) {
-                            "Nintendo LDN action frame received"
-                        } else if (isData) {
-                            "802.11 data trace received"
-                        } else {
-                            "802.11 ${managementSubtypeName(event.subtype)} received"
-                        },
-                    )
-                }
+                is Esp32RadioEvent.ManagementFrame -> error("Management frames are handled before this branch")
                 is Esp32RadioEvent.LdnControlEthernet -> snapshot.copy(
                     discoveryActivityCount = snapshot.discoveryActivityCount + 1,
                     ldnControlFrames = snapshot.ldnControlFrames + 1,
@@ -286,6 +260,64 @@ class LdnDiscoveryController internal constructor(
             (event is Esp32RadioEvent.TxDone && next.ethernetTxCompleted == 1L)) {
             onSnapshot(next)
         }
+    }
+
+    private fun handleManagementFrame(event: Esp32RadioEvent.ManagementFrame): ByteArray? {
+        var promoted: ByteArray? = null
+        val next = synchronized(lock) {
+            if (!running) return null
+            val isData = event.frameType == IEEE80211_DATA
+            val afterRegistration = isData && snapshot.participantEverRegistered
+            val peerData = afterRegistration && snapshot.registeredParticipant?.mac
+                ?.contentEquals(event.source) == true
+            val firstTrace = if (peerData && snapshot.firstPeerDataTrace == null) {
+                LdnRawDataTrace(
+                    toDs = event.toDs,
+                    fromDs = event.fromDs,
+                    protectedFrame = event.protectedFrame,
+                    sourceMac = event.source.copyOf(),
+                    targetMac = event.target.copyOf(),
+                    frameLength = event.frame.size,
+                    ccmpKeyId = event.ccmpKeyId,
+                )
+            } else snapshot.firstPeerDataTrace
+            val specialGroupFrame = peerData && !event.toDs && !event.fromDs && event.protectedFrame
+            var decoded = false
+            var decryptFailed = false
+            if (specialGroupFrame && rawGroupDecoder != null) {
+                try {
+                    promoted = rawGroupDecoder.decode(event.frame)
+                    decoded = true
+                } catch (_: Exception) {
+                    decryptFailed = true
+                }
+            }
+            snapshot = snapshot.copy(
+                discoveryActivityCount = snapshot.discoveryActivityCount + 1,
+                managementFrames = snapshot.managementFrames + if (event.frameType == 0) 1 else 0,
+                ldnActionFrames = snapshot.ldnActionFrames + if (event.isLdnAction) 1 else 0,
+                rawDataTraces = snapshot.rawDataTraces + if (isData) 1 else 0,
+                rawDataAfterRegistration = snapshot.rawDataAfterRegistration + if (afterRegistration) 1 else 0,
+                rawPeerDataAfterRegistration = snapshot.rawPeerDataAfterRegistration + if (peerData) 1 else 0,
+                rawProtectedPeerDataAfterRegistration = snapshot.rawProtectedPeerDataAfterRegistration +
+                    if (peerData && event.protectedFrame) 1 else 0,
+                firstPeerDataTrace = firstTrace,
+                rawDecoded = snapshot.rawDecoded + if (decoded) 1 else 0,
+                rawDecryptFailures = snapshot.rawDecryptFailures + if (decryptFailed) 1 else 0,
+                latestActivity = when {
+                    decoded -> "Encrypted group data decoded"
+                    decryptFailed -> "Encrypted group data failed CCMP verification"
+                    event.isLdnAction -> "Nintendo LDN action frame received"
+                    isData -> "802.11 data trace received"
+                    else -> "802.11 ${managementSubtypeName(event.subtype)} received"
+                },
+            )
+            snapshot
+        }
+        if (next.discoveryActivityCount == 1L || next.discoveryActivityCount % 10L == 0L || promoted != null) {
+            onSnapshot(next)
+        }
+        return promoted
     }
 
     private fun handleAuthentication(event: Esp32RadioEvent.LdnControlEthernet): Boolean {
@@ -341,11 +373,14 @@ class LdnDiscoveryController internal constructor(
 
     private fun handleIpTraffic(frame: ByteArray): Boolean {
         val transport = piaTransport ?: return false
+        val isArp = frame.size >= ETHERNET_HEADER_SIZE &&
+            (frame[12].toInt() and 0xff) == 0x08 && (frame[13].toInt() and 0xff) == 0x06
         val (datagram, immediateReply) = try { transport.receive(frame) } catch (_: Exception) { return false }
         if (datagram == null && immediateReply == null) return false
         try {
             synchronized(lock) {
                 if (!running) return true
+                if (isArp) snapshot = snapshot.copy(arpFramesReceived = snapshot.arpFramesReceived + 1)
                 if (immediateReply != null && !submitEthernetLocked(immediateReply)) {
                     throw IllegalStateException("ESP32 transmit queue rejected the ARP response")
                 }
@@ -357,6 +392,7 @@ class LdnDiscoveryController internal constructor(
                 snapshot = snapshot.copy(
                     discoveryActivityCount = snapshot.discoveryActivityCount + 1,
                     ethernetFrames = snapshot.ethernetFrames + 1,
+                    arpRepliesSent = snapshot.arpRepliesSent + if (immediateReply != null) 1 else 0,
                     latestActivity = snapshot.piaStage.activity(snapshot.latestActivity),
                 )
             }
@@ -473,6 +509,7 @@ class LdnDiscoveryController internal constructor(
 
     companion object {
         private const val IEEE80211_DATA = 2
+        private const val ETHERNET_HEADER_SIZE = 14
         private const val FRLG_FRAME_INTERVAL_MS = 17L
         private fun ethernetFrame(target: ByteArray, source: ByteArray, payload: ByteArray): ByteArray {
             require(target.size == 6 && source.size == 6)

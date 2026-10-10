@@ -135,6 +135,10 @@ class FrlgOperationLifecycleTest {
                 rawDataAfterRegistration = 4,
                 rawPeerDataAfterRegistration = 3,
                 rawProtectedPeerDataAfterRegistration = 2,
+                rawDecoded = 2,
+                rawDecryptFailures = 1,
+                arpFramesReceived = 2,
+                arpRepliesSent = 2,
                 firstPeerDataTrace = LdnRawDataTrace(
                     toDs = true,
                     fromDs = false,
@@ -167,6 +171,10 @@ class FrlgOperationLifecycleTest {
         assertTrue(diagnostics.contains("rawDataAfterReg=4"))
         assertTrue(diagnostics.contains("rawPeerData=3"))
         assertTrue(diagnostics.contains("rawProtected=2"))
+        assertTrue(diagnostics.contains("rawDecoded=2"))
+        assertTrue(diagnostics.contains("rawDecryptFail=1"))
+        assertTrue(diagnostics.contains("arpRx=2"))
+        assertTrue(diagnostics.contains("arpReply=2"))
         assertTrue(
             diagnostics.contains(
                 "rawFirst=toDS:1/fromDS:0/protected:1/src:0a:0b:0c:0d:0e:0f/" +

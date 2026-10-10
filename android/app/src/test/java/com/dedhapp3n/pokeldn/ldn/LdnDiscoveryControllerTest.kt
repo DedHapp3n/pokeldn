@@ -261,6 +261,72 @@ class LdnDiscoveryControllerTest {
         controller.stop()
     }
 
+    @Test
+    fun encryptedNoDsPeerArpUsesExistingEthernetPathAndOtherRawTracesAreNotPromoted() {
+        val transport = FakeTransport()
+        val sent = mutableListOf<ByteArray>()
+        val participant = LdnParticipant(
+            1, "169.254.14.2", LdnRawDataFrameTest.PEER.hex(), "Console".toByteArray(), 88, 0,
+        )
+        val controller = LdnDiscoveryController(
+            operation = Esp32RadioOperation(7), advertisementFrame = { ByteArray(24) },
+            sendRaw = { _, _ -> true }, sendEthernet = { _, frame -> sent += frame; true },
+            authenticate = { _, _ -> LdnAuthenticationOutcome(byteArrayOf(1), 0, true, participant) },
+            removeParticipant = { participant },
+            piaTransport = LdnPiaUdpTransport("169.254.14.1", "021122334455".hex()),
+            rawGroupDecoder = LdnRawGroupDecoder(LdnRawDataFrameTest.KEY.hex()),
+            subscribe = transport::subscribe, scheduler = FakeScheduler(),
+        )
+        controller.start()
+        transport.emit(Esp32RadioEvent.LdnControlEthernet(ByteArray(6), participant.mac, byteArrayOf(1)))
+
+        val toDs = LdnRawDataFrameTest.UPSTREAM_GROUP_ARP.hex().also { it[1] = 0x41 }
+        transport.emit(managementData(toDs))
+        val wrongSource = LdnRawDataFrameTest.UPSTREAM_GROUP_ARP.hex().also { it[10] = 0x55 }
+        transport.emit(managementData(wrongSource))
+        assertEquals(1, sent.size) // Authentication response only.
+
+        transport.emit(managementData(LdnRawDataFrameTest.UPSTREAM_GROUP_ARP.hex()))
+        assertEquals(2, sent.size)
+        val expectedReply = (
+            LdnRawDataFrameTest.PEER + "02112233445508060001080006040002" +
+                "021122334455a9fe0e01" + LdnRawDataFrameTest.PEER + "a9fe0e02"
+            ).hex()
+        assertArrayEquals(expectedReply, sent.last())
+
+        val badMic = LdnRawDataFrameTest.UPSTREAM_GROUP_ARP.hex().also {
+            it[it.lastIndex] = (it.last().toInt() xor 1).toByte()
+        }
+        transport.emit(managementData(badMic))
+        transport.emit(Esp32RadioEvent.StationLeft(participant.mac, 3))
+
+        val snapshot = controller.currentSnapshot()
+        assertEquals(1, snapshot.rawDecoded)
+        assertEquals(1, snapshot.rawDecryptFailures)
+        assertEquals(1, snapshot.arpFramesReceived)
+        assertEquals(1, snapshot.arpRepliesSent)
+        controller.stop()
+    }
+
+    private fun managementData(raw: ByteArray): Esp32RadioEvent.ManagementFrame {
+        val frame = LdnRawDataFrame.decode(raw)
+        return Esp32RadioEvent.ManagementFrame(
+            channel = 6,
+            rssi = -40,
+            frameType = 2,
+            subtype = if (frame.qos) 8 else 0,
+            target = frame.target,
+            source = frame.source,
+            bssid = frame.bssid,
+            isLdnAction = false,
+            frame = raw,
+            toDs = frame.toDs,
+            fromDs = frame.fromDs,
+            protectedFrame = frame.protectedFrame,
+            ccmpKeyId = frame.keyId,
+        )
+    }
+
     private fun dataTrace(source: ByteArray, protected: Boolean, keyId: Int? = null) =
         Esp32RadioEvent.ManagementFrame(
             channel = 6,
