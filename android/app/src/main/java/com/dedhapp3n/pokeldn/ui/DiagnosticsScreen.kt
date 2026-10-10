@@ -279,6 +279,11 @@ private fun DiagnosticDevicePanel(
                     DetailLine("PIA responses", ldnApTestState.piaSessionResponses.toString())
                     DetailLine("PIA session", if (ldnApTestState.piaEstablished) "Established" else "Waiting")
                     DetailLine(
+                        "Reliable",
+                        if (ldnApTestState.reliableEstablished) "Established" else "Waiting",
+                    )
+                    DetailLine("Reliable RX / TX", "${ldnApTestState.reliableFramesReceived} / ${ldnApTestState.reliableFramesSent}")
+                    DetailLine(
                         "Station",
                         if (ldnApTestState.stationDetected) "Associated" else "Not detected",
                     )
@@ -434,7 +439,8 @@ private fun LdnApTestPhase.toStatusTone(): StatusTone = when (this) {
     LdnApTestPhase.CONSOLE_ACTIVITY, LdnApTestPhase.AUTH_REQUEST,
     LdnApTestPhase.AUTH_RESPONSE_SENT, LdnApTestPhase.PARTICIPANT_REGISTERED,
     LdnApTestPhase.STATION_ASSOCIATED, LdnApTestPhase.PIA_REQUEST,
-    LdnApTestPhase.PIA_RESPONSE_SENT, LdnApTestPhase.PIA_ESTABLISHED -> StatusTone.POSITIVE
+    LdnApTestPhase.PIA_RESPONSE_SENT, LdnApTestPhase.PIA_ESTABLISHED,
+    LdnApTestPhase.RELIABLE_ESTABLISHED -> StatusTone.POSITIVE
     LdnApTestPhase.AUTHENTICATION_REJECTED, LdnApTestPhase.PIA_FAILED -> StatusTone.WARNING
     LdnApTestPhase.PREPARING, LdnApTestPhase.STARTING_AP,
     LdnApTestPhase.STOPPING -> StatusTone.WARNING

@@ -719,6 +719,7 @@ class MainActivity : ComponentActivity() {
     private fun discoveryState(channel: Int, snapshot: LdnDiscoverySnapshot): LdnApTestState =
         LdnApTestState(
             phase = when {
+                snapshot.reliableEstablished -> LdnApTestPhase.RELIABLE_ESTABLISHED
                 snapshot.piaStage == LdnPiaStage.ESTABLISHED -> LdnApTestPhase.PIA_ESTABLISHED
                 snapshot.piaStage == LdnPiaStage.FAILED -> LdnApTestPhase.PIA_FAILED
                 snapshot.piaStage == LdnPiaStage.SESSION_RESPONSE_SENT -> LdnApTestPhase.PIA_RESPONSE_SENT
@@ -744,6 +745,9 @@ class MainActivity : ComponentActivity() {
             piaSessionRequests = snapshot.piaSessionRequests,
             piaSessionResponses = snapshot.piaSessionResponses,
             piaEstablished = snapshot.piaStage == LdnPiaStage.ESTABLISHED,
+            reliableEstablished = snapshot.reliableEstablished,
+            reliableFramesReceived = snapshot.reliableFramesReceived,
+            reliableFramesSent = snapshot.reliableFramesSent,
             latestActivity = snapshot.latestActivity,
         )
 

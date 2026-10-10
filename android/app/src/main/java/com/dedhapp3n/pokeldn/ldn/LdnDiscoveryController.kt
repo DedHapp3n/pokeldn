@@ -27,6 +27,9 @@ data class LdnDiscoverySnapshot(
     val piaNetRequests: Long = 0,
     val piaSessionRequests: Long = 0,
     val piaSessionResponses: Long = 0,
+    val reliableEstablished: Boolean = false,
+    val reliableFramesReceived: Long = 0,
+    val reliableFramesSent: Long = 0,
     val latestActivity: String? = null,
 )
 
@@ -301,7 +304,10 @@ class LdnDiscoveryController internal constructor(
             piaNetRequests = pia.netRequestsSent,
             piaSessionRequests = pia.sessionRequests,
             piaSessionResponses = pia.sessionResponses,
-            latestActivity = pia.stage.activity(snapshot.latestActivity),
+            reliableEstablished = pia.reliableEstablished,
+            reliableFramesReceived = pia.reliableFramesReceived,
+            reliableFramesSent = pia.reliableFramesSent,
+            latestActivity = pia.detail ?: pia.stage.activity(snapshot.latestActivity),
         )
     }
 

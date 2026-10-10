@@ -15,6 +15,7 @@ enum class LdnApTestPhase(val label: String) {
     PIA_REQUEST("PIA connection request received"),
     PIA_RESPONSE_SENT("PIA response sent"),
     PIA_ESTABLISHED("PIA session established"),
+    RELIABLE_ESTABLISHED("Reliable established"),
     PIA_FAILED("PIA session failed"),
     STOPPING("Stopping"),
     FAILED("Failed"),
@@ -36,5 +37,8 @@ data class LdnApTestState(
     val piaSessionRequests: Long = 0,
     val piaSessionResponses: Long = 0,
     val piaEstablished: Boolean = false,
+    val reliableEstablished: Boolean = false,
+    val reliableFramesReceived: Long = 0,
+    val reliableFramesSent: Long = 0,
     val latestActivity: String? = null,
 )

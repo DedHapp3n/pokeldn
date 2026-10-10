@@ -20,6 +20,9 @@ internal data class LdnPiaSnapshot(
     val netRequestsSent: Long = 0,
     val sessionRequests: Long = 0,
     val sessionResponses: Long = 0,
+    val reliableEstablished: Boolean = false,
+    val reliableFramesReceived: Long = 0,
+    val reliableFramesSent: Long = 0,
     val detail: String? = null,
 )
 
@@ -48,6 +51,11 @@ internal class LdnPiaHost(
     private var guestVar: Int? = null
     private var join: SessionJoin? = null
     private var nextPacketId = 2
+    private var nextReliablePacketId = 2
+    private val reliable = LdnReliableSession(retransmitLimit = 2)
+    private val reliableDeliveries = ArrayDeque<LdnReliableDelivery>()
+    private var reliableFramesReceived = 0L
+    private var reliableFramesSent = 0L
     private var rttTemplate: ByteArray? = null
     private var nextRttMillis = Long.MAX_VALUE
     private var rttSystemTime = 0x10000L
@@ -65,7 +73,10 @@ internal class LdnPiaHost(
         if (participant?.mac?.contentEquals(mac) == true) reset()
     }
 
-    fun snapshot() = LdnPiaSnapshot(stage, netRequests, sessionRequests, sessionResponses, detail)
+    fun snapshot() = LdnPiaSnapshot(
+        stage, netRequests, sessionRequests, sessionResponses,
+        reliable.peerOpened, reliableFramesReceived, reliableFramesSent, detail,
+    )
 
     fun tick(nowMillis: Long): List<LdnPiaDatagram> {
         val peer = participant ?: return emptyList()
@@ -89,6 +100,9 @@ internal class LdnPiaHost(
             }
             out += buildSingleMessage(3, request, SESSION_VAR, HOST_VAR, nextPacket(), guestVar)
             nextRttMillis = nowMillis + RTT_PERIOD_MS
+        }
+        if (stage == LdnPiaStage.ESTABLISHED) {
+            reliable.poll(nowMillis).forEach { out += reliableDatagram(it) }
         }
         return out
     }
@@ -136,10 +150,28 @@ internal class LdnPiaHost(
                         if (nextRttMillis == Long.MAX_VALUE) nextRttMillis = nowMillis
                     }
                 }
+                10 -> if (stage == LdnPiaStage.ESTABLISHED) {
+                    val deliveries = reliable.receive(message.payload, nowMillis)
+                    reliableFramesReceived++
+                    reliableDeliveries.addAll(deliveries)
+                    if (reliable.peerOpened && detail != "Reliable protocol established") {
+                        detail = "Reliable protocol established"
+                    }
+                }
             }
         }
         return out
     }
+
+    fun drainReliableDeliveries(): List<LdnReliableDelivery> = buildList {
+        while (reliableDeliveries.isNotEmpty()) add(reliableDeliveries.removeFirst())
+    }
+
+    fun openReliable(payload: ByteArray, nowMillis: Long): LdnPiaDatagram? =
+        reliable.open(payload, nowMillis)?.let(::reliableDatagram)
+
+    fun sendReliable(payload: ByteArray, nowMillis: Long): LdnPiaDatagram =
+        reliableDatagram(reliable.send(payload, nowMillis))
 
     fun reset() {
         participant = null
@@ -153,6 +185,12 @@ internal class LdnPiaHost(
         join = null
         rttTemplate = null
         nextRttMillis = Long.MAX_VALUE
+        nextPacketId = 2
+        nextReliablePacketId = 2
+        reliable.reset()
+        reliableDeliveries.clear()
+        reliableFramesReceived = 0
+        reliableFramesSent = 0
         detail = null
     }
 
@@ -215,8 +253,9 @@ internal class LdnPiaHost(
         footerVar: Int?,
         compress: Boolean = false,
         nonce: ByteArray = randomBytes(8),
+        messageFlags: Int? = null,
     ): LdnPiaDatagram {
-        var body = message(protocol, payload)
+        var body = message(protocol, payload, messageFlags)
         if (compress) body = zstdCompress(body)
         val footer = if (footerVar == null) byteArrayOf() else u16(footerVar)
         body += footer
@@ -227,6 +266,20 @@ internal class LdnPiaHost(
             PiaHeader(destinationVar, sourceVar, packetId, nonce, (pad shl 4) or if (compress) 1 else 0, footer.size),
         )
         return LdnPiaDatagram(participant!!.ipAddress, packet)
+    }
+
+    private fun reliableDatagram(emission: LdnReliableEmission): LdnPiaDatagram {
+        reliableFramesSent++
+        return buildSingleMessage(
+            protocol = 10,
+            payload = emission.encode(),
+            destinationVar = guestVar ?: error("PIA guest identity is missing"),
+            sourceVar = HOST_VAR,
+            packetId = nextReliablePacket(),
+            footerVar = guestVar,
+            compress = emission.encode().size + (if (emission.piaMessageFlags == null) 4 else 5) >= 62,
+            messageFlags = emission.piaMessageFlags,
+        )
     }
 
     private fun buildJoinResponse(value: SessionJoin, random4: ByteArray): ByteArray {
@@ -286,6 +339,9 @@ internal class LdnPiaHost(
     } catch (_: Exception) { null }
 
     private fun nextPacket(): Int = nextPacketId.also { nextPacketId = if (it == 0xffff) 1 else it + 1 }
+    private fun nextReliablePacket(): Int = nextReliablePacketId.also {
+        nextReliablePacketId = if (it == 0xffff) 1 else it + 1
+    }
     private fun networkId(): Int = CRC32().apply { update(ssid, 1, 15) }.value.toInt()
 
     private data class Player(val id: ByteArray, val encoding: Int, val name: ByteArray)
@@ -460,7 +516,12 @@ internal class LdnPiaUdpTransport(private val hostIp: String, private val hostMa
     }
 }
 
-private fun message(protocol: Int, payload: ByteArray) = byteArrayOf(6) + u16(payload.size) + byteArrayOf(protocol.toByte()) + payload
+private fun message(protocol: Int, payload: ByteArray, messageFlags: Int? = null): ByteArray {
+    val flags = 6 or if (messageFlags == null) 0 else 1
+    return byteArrayOf(flags.toByte()) +
+        (if (messageFlags == null) byteArrayOf() else byteArrayOf(messageFlags.toByte())) +
+        u16(payload.size) + byteArrayOf(protocol.toByte()) + payload
+}
 private fun zstdCompress(data: ByteArray): ByteArray {
     val context = ZstdCompressCtx()
     return try {
