@@ -128,6 +128,7 @@ fun PokeLdnApp(
                 result = result,
                 connectionState = connectionState,
                 esp32State = esp32State,
+                radioState = radioState,
                 onConnectEsp32 = onConnectEsp32,
                 onOpenGames = { destination = AppDestination.GAMES },
                 onOpenDiagnostics = { destination = AppDestination.DIAGNOSTICS },
@@ -153,6 +154,7 @@ fun PokeLdnApp(
                 )
                 else -> GamesScreen(
                     onOpenFrlg = { selectedGame = "frlg" },
+                    radioState = radioState,
                     modifier = Modifier.padding(innerPadding),
                 )
             }
@@ -281,6 +283,7 @@ private fun HomeScreen(
     result: UsbScanResult?,
     connectionState: SerialConnectionState,
     esp32State: Esp32HandshakeState,
+    radioState: Esp32RadioState,
     onConnectEsp32: (String) -> Unit,
     onOpenGames: () -> Unit,
     onOpenDiagnostics: () -> Unit,
@@ -296,6 +299,7 @@ private fun HomeScreen(
                 device = serialDevice,
                 connectionState = connectionState,
                 esp32State = esp32State,
+                radioState = radioState,
                 onConnectEsp32 = onConnectEsp32,
             )
         }
@@ -337,10 +341,12 @@ private fun MainAdapterDisplay(
     device: UsbDeviceInfo?,
     connectionState: SerialConnectionState,
     esp32State: Esp32HandshakeState,
+    radioState: Esp32RadioState,
     onConnectEsp32: (String) -> Unit,
 ) {
     val serialConnected = connectionState.phase == SerialConnectionPhase.CONNECTED
-    val verified = serialConnected && esp32State.phase == Esp32HandshakePhase.VERIFIED && esp32State.info != null
+    val handshakeVerified = serialConnected && esp32State.phase == Esp32HandshakePhase.VERIFIED && esp32State.info != null
+    val ready = handshakeVerified && radioState.phase == Esp32RadioPhase.READY
     val failed = connectionState.phase == SerialConnectionPhase.CONNECTION_FAILED ||
         esp32State.phase == Esp32HandshakePhase.FAILED
     val busy = connectionState.phase in setOf(
@@ -353,7 +359,8 @@ private fun MainAdapterDisplay(
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 DisplayStatus(
                     when {
-                        verified -> "ESP32 ready"
+                        ready -> "ESP32 ready"
+                        handshakeVerified -> "ESP32 ${radioState.phase.name.lowercase().replace('_', ' ')}"
                         esp32State.phase == Esp32HandshakePhase.TESTING -> "Verifying link"
                         connectionState.phase == SerialConnectionPhase.PERMISSION_DENIED -> "Permission denied"
                         failed -> "Connection failed"
@@ -363,7 +370,8 @@ private fun MainAdapterDisplay(
                         else -> "No ESP32 detected"
                     },
                     when {
-                        verified -> StatusTone.POSITIVE
+                        ready -> StatusTone.POSITIVE
+                        handshakeVerified -> StatusTone.WARNING
                         busy -> StatusTone.WARNING
                         failed || connectionState.phase == SerialConnectionPhase.PERMISSION_DENIED -> StatusTone.ERROR
                         else -> StatusTone.NEUTRAL
@@ -371,7 +379,8 @@ private fun MainAdapterDisplay(
                 )
                 Text(
                     when {
-                        verified -> "PokeLDN radio verified. Choose a game to continue."
+                        ready -> "PokeLDN radio is operationally ready. Choose a game to continue."
+                        handshakeVerified -> radioState.detail ?: "The ESP32 radio is not ready for a new operation."
                         connectionState.phase == SerialConnectionPhase.PERMISSION_DENIED ->
                             "USB permission is required. Tap Connect ESP32 to ask again."
                         esp32State.phase == Esp32HandshakePhase.FAILED ->
@@ -385,7 +394,7 @@ private fun MainAdapterDisplay(
             }
             if (busy) CircularProgressIndicator(Modifier.size(30.dp), color = IndicatorCyan, strokeWidth = 3.dp)
         }
-        if (!verified && serialConnected) {
+        if (!handshakeVerified && serialConnected) {
             esp32State.detail?.let { Text(it, color = IndicatorRed) }
             DeviceButton(
                 if (esp32State.phase == Esp32HandshakePhase.FAILED) "Retry connection" else "Connect ESP32",
@@ -394,7 +403,7 @@ private fun MainAdapterDisplay(
                 enabled = !busy && device != null,
                 style = DeviceButtonStyle.DISPLAY,
             )
-        } else if (!verified && device != null) {
+        } else if (!handshakeVerified && device != null) {
             DeviceButton(
                 "Connect ESP32",
                 { onConnectEsp32(device.deviceName) },
@@ -408,13 +417,21 @@ private fun MainAdapterDisplay(
 }
 
 @Composable
-private fun GamesScreen(onOpenFrlg: () -> Unit, modifier: Modifier = Modifier) {
+private fun GamesScreen(
+    onOpenFrlg: () -> Unit,
+    radioState: Esp32RadioState,
+    modifier: Modifier = Modifier,
+) {
     CenteredDeviceList(modifier) {
         item {
             DeviceScreenTitle(null, "Game modules", "FireRed and LeafGreen are the first Android focus")
         }
         item {
             BezelDisplay("Selected development target") {
+                DisplayStatus(
+                    if (radioState.phase == Esp32RadioPhase.READY) "ESP32 ready" else "ESP32 not ready",
+                    if (radioState.phase == Esp32RadioPhase.READY) StatusTone.POSITIVE else StatusTone.WARNING,
+                )
                 DisplayStatus("FireRed / LeafGreen", StatusTone.WARNING)
                 Text(
                     "This module is being prepared first. No Android game operation is available in this build yet.",

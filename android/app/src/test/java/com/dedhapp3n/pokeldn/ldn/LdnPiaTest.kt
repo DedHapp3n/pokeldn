@@ -20,6 +20,8 @@ class LdnPiaTest {
         val probe = PiaCrypto(ssid).decode(probes.first().payload, "169.254.88.1")
         assertEquals(1, probe.messages.single().protocol)
         assertEquals(0x11, probe.messages.single().payload[1].toInt() and 0xff)
+        assertEquals(6, readU16(probe.messages.single().payload, 27))
+        assertArrayEquals("0808080808080808".hex(), probe.header.nonce)
         assertEquals(LdnPiaStage.NET_PROBING, host.snapshot().stage)
 
         host.receive(NET_RESPONSE.hex(), participant.ipAddress, 10)
@@ -27,12 +29,15 @@ class LdnPiaTest {
 
         val responses = host.receive(SESSION_JOIN.hex(), participant.ipAddress, 20)
         assertEquals(3, responses.size)
-        assertEquals(listOf("169.254.88.255", participant.ipAddress, participant.ipAddress), responses.map { it.destinationIp })
+        assertEquals(listOf(participant.ipAddress, "169.254.88.255", participant.ipAddress), responses.map { it.destinationIp })
         val crypto = PiaCrypto(ssid)
         val decoded = responses.map { crypto.decode(it.payload, "169.254.88.1") }
-        assertEquals(listOf(5, 5, 2), decoded.map { it.messages.single().payload[0].toInt() and 0xff })
-        assertArrayEquals(UPSTREAM_UPDATE.hex(), decoded[0].messages.single().payload)
-        assertArrayEquals(UPSTREAM_RESPONSE.hex(), decoded[2].messages.single().payload)
+        assertEquals(listOf(2, 5, 5), decoded.map { it.messages.single().payload[0].toInt() and 0xff })
+        assertArrayEquals(UPSTREAM_RESPONSE.hex(), decoded[0].messages.single().payload)
+        assertArrayEquals(UPSTREAM_UPDATE.hex(), decoded[1].messages.single().payload)
+        assertArrayEquals("0808080808080809".hex(), decoded[0].header.nonce)
+        assertArrayEquals("080808080808080a".hex(), decoded[1].header.nonce)
+        assertArrayEquals(decoded[1].header.nonce, decoded[2].header.nonce)
         assertEquals(LdnPiaStage.SESSION_RESPONSE_SENT, host.snapshot().stage)
         assertEquals(1, host.snapshot().sessionRequests)
         assertEquals(1, host.snapshot().sessionResponses)
@@ -54,6 +59,14 @@ class LdnPiaTest {
         assertEquals(LdnPiaStage.WAITING, host.snapshot().stage)
         assertEquals(0, host.snapshot().sessionRequests)
         assertTrue(host.tick(1_000).isEmpty())
+    }
+
+    @Test
+    fun nativeNonceSequenceIncrementsAndWrapsForWholeSession() {
+        val sequence = PiaNonceSequence("ffffffffffffffff".hex())
+        assertArrayEquals("ffffffffffffffff".hex(), sequence.take())
+        assertArrayEquals("0000000000000000".hex(), sequence.take())
+        assertArrayEquals("0000000000000001".hex(), sequence.take())
     }
 
     @Test
@@ -80,7 +93,7 @@ class LdnPiaTest {
         ssid = ssid,
         hostMac = hostMac,
         networkNumber = 88,
-        maxParticipants = 2,
+        maxParticipants = 6,
         randomBytes = { size -> ByteArray(size) { size.toByte() } },
     )
 
@@ -97,5 +110,8 @@ class LdnPiaTest {
             "05000001000003ab3c06f7a93c000000c602000001000000000000ab3c06f7a93c000000c6a9fe580130390000000000000000000000000000000000000000000000000000000000000000000000000001010000000000000000000100000000000000000000000701504f4b454c444e3c33006094930000c493a9fe580230390100010000000000000000000000000000000000000000000000000000000000000000000001010000000000000000000100000000000000000000000301454d55"
     }
 }
+
+private fun readU16(value: ByteArray, offset: Int): Int =
+    ((value[offset].toInt() and 0xff) shl 8) or (value[offset + 1].toInt() and 0xff)
 
 private fun String.hex(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteArray()

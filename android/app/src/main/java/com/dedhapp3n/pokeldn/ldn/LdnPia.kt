@@ -41,6 +41,7 @@ internal class LdnPiaHost(
     val hostIp = "169.254.$networkNumber.1"
     val broadcastIp = "169.254.$networkNumber.255"
     private val crypto = PiaCrypto(ssid)
+    private val nonces = PiaNonceSequence(randomBytes(8))
     private var participant: LdnParticipant? = null
     private var stage = LdnPiaStage.WAITING
     private var netRequests = 0L
@@ -222,14 +223,15 @@ internal class LdnPiaHost(
         return crypto.encode(
             compressed + ByteArray((-compressed.size).mod(16)) { 0xff.toByte() },
             hostIp,
-            PiaHeader(0, HOST_VAR, 0, randomBytes(8), ((-compressed.size).mod(16) shl 4) or 3, 0),
+            PiaHeader(0, HOST_VAR, 0, nonces.take(), ((-compressed.size).mod(16) shl 4) or 3, 0),
         )
     }
 
     private fun sessionAcceptance(value: SessionJoin): List<LdnPiaDatagram> {
         val response = buildJoinResponse(value, randomBytes(4))
-        val responseNonce = randomBytes(8)
-        val updateNonce = randomBytes(8)
+        // Native allocates the response nonce first, even though transmission order is configurable.
+        val responseNonce = nonces.take()
+        val updateNonce = nonces.take()
         val update = buildSessionUpdate(value)
         val updatePacket = buildSingleMessage(
             13, update, SESSION_VAR, HOST_VAR, 1, value.sourceVar,
@@ -243,9 +245,9 @@ internal class LdnPiaHost(
         stage = LdnPiaStage.SESSION_RESPONSE_SENT
         detail = "PIA response sent"
         return listOf(
+            LdnPiaDatagram(value.ip, responsePacket),
             LdnPiaDatagram(broadcastIp, updatePacket),
             LdnPiaDatagram(value.ip, updatePacket),
-            LdnPiaDatagram(value.ip, responsePacket),
         )
     }
 
@@ -257,7 +259,7 @@ internal class LdnPiaHost(
         packetId: Int,
         footerVar: Int?,
         compress: Boolean = false,
-        nonce: ByteArray = randomBytes(8),
+        nonce: ByteArray? = null,
         messageFlags: Int? = null,
     ): LdnPiaDatagram {
         var body = message(protocol, payload, messageFlags)
@@ -268,7 +270,7 @@ internal class LdnPiaHost(
         body += ByteArray(pad) { 0xff.toByte() }
         val packet = crypto.encode(
             body, hostIp,
-            PiaHeader(destinationVar, sourceVar, packetId, nonce, (pad shl 4) or if (compress) 1 else 0, footer.size),
+            PiaHeader(destinationVar, sourceVar, packetId, nonce ?: nonces.take(), (pad shl 4) or if (compress) 1 else 0, footer.size),
         )
         return LdnPiaDatagram(participant!!.ipAddress, packet)
     }
@@ -369,6 +371,18 @@ internal class LdnPiaHost(
         private const val RTT_PERIOD_MS = 315L
         private val HOST_NAME = "POKELDN".toByteArray()
         private val DEFAULT_PLAYER_ID = "00000000000000010000000000000000".hex()
+    }
+}
+
+internal class PiaNonceSequence(initial: ByteArray) {
+    private var next = require(initial.size == 8) { "PIA nonce must be eight bytes" }.let {
+        ByteBuffer.wrap(initial.copyOf()).order(ByteOrder.BIG_ENDIAN).long.toULong()
+    }
+
+    fun take(): ByteArray {
+        val value = next
+        next += 1uL
+        return ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(value.toLong()).array()
     }
 }
 

@@ -20,6 +20,7 @@ class LdnAdvertisementTest {
         val network = LdnAdvertisementBuilder(random).buildDiscoveryNetwork(keys())
         assertEquals(LdnAdvertisementBuilder.LOCAL_COMMUNICATION_ID, network.localCommunicationId)
         assertEquals(LdnAdvertisementBuilder.SCENE_ID, network.sceneId)
+        assertEquals(6, network.accessPoint.maxParticipants)
         assertArrayEquals("760d603ffb6bc07c57f89651caaff05c".hex(), network.accessPoint.wlanKey)
         assertEquals(EXPECTED_ACTION_FRAME, network.advertisementFrame.toHex())
     }
@@ -52,9 +53,9 @@ class LdnAdvertisementTest {
                 "00000000000000000000006346606c642e74673d6140524c5e71232323232323652323232323232323"
         private const val EXPECTED_ACTION_FRAME =
             "d0000000ffffffffffff021122334455ffffffffffff00007f0022aa040001010000000001006fa0233f" +
-                "80000000570f00000000404142434445464748494a4b4c4d4e4f040300d460616263e17e1c743bcb" +
-                "2270662f03f082dbb5db2405e256bdcb02348042cfc0dbaff50eab32ec4edc42e31cfd1bc0f05bae" +
-                "b29d7ec8f68c965de9d6083f769a87a7d9be201ff786d8f2096320a5bacf54bb6dede8aef8fcab0" +
+                "80000000570f00000000404142434445464748494a4b4c4d4e4f040300d4606162636d594dce2b46" +
+                "6cd385d82a2052ebc6df2405e256bdcb02348042cfc0dbaff50eab32ec4edc42e31cfd1bc0f05bae" +
+                "b29d7ec8f68c965dedd6083f769a87a7d9be201ff786d8f2096320a5bacf54bb6dede8aef8fcab0" +
                 "de4c7e23fbf452cd511299a36555aab61bf41485c7e4a01ebcb3ac09896b0b91e1dc7c42af315ec" +
                 "d5eb947eacb764ce6a4211f756e68f3228222093be1041e743c805b965b3854faf2deacd1112fa92" +
                 "faecf9f53f41f5c5499d9060e52d2a98e945f25cd53fd57121f0e7a3974bc12aef4b6052a58d13" +

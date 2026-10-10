@@ -73,7 +73,7 @@ class LdnAdvertisementBuilder internal constructor(
 
     companion object {
         const val CHANNEL = 6
-        const val MAX_PARTICIPANTS = 2
+        const val MAX_PARTICIPANTS = 6
         const val LOCAL_COMMUNICATION_ID = 0x01006fa0233f8000L
         const val SCENE_ID = 22287
         const val APP_VERSION = 88

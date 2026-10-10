@@ -104,6 +104,38 @@ class LdnDiscoveryControllerTest {
         controller.stop()
     }
 
+    @Test
+    fun stationLeavePreservesPreDisconnectPiaBoundaryAndCounters() {
+        val transport = FakeTransport()
+        val participant = LdnParticipant(
+            1, "169.254.33.2", "0a0b0c0d0e0f".hex(), "Console".toByteArray(), 88, 0,
+        )
+        val pia = LdnPiaHost(
+            ssid = ByteArray(16) { it.toByte() },
+            hostMac = "021122334455".hex(),
+            networkNumber = 33,
+            maxParticipants = 6,
+            randomBytes = { size -> ByteArray(size) { size.toByte() } },
+        )
+        pia.participantJoined(participant, 0)
+        pia.tick(0)
+        val controller = LdnDiscoveryController(
+            operation = Esp32RadioOperation(4),
+            advertisementFrame = { ByteArray(24) },
+            sendRaw = { _, _ -> true },
+            piaHost = pia,
+            subscribe = transport::subscribe,
+            scheduler = FakeScheduler(),
+        )
+        controller.start()
+        transport.emit(Esp32RadioEvent.StationLeft(participant.mac, 3))
+
+        val final = controller.currentSnapshot()
+        assertEquals(LdnPiaStage.NET_PROBING, final.piaStage)
+        assertEquals(1, final.piaNetRequests)
+        controller.stop()
+    }
+
     private class FakeTransport {
         private var listener: ((Esp32RadioEvent) -> Unit)? = null
 

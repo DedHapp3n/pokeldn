@@ -156,6 +156,7 @@ class LdnDiscoveryController internal constructor(
     private fun onEvent(event: Esp32RadioEvent) {
         if (event is Esp32RadioEvent.LdnControlEthernet && handleAuthentication(event)) return
         if (event is Esp32RadioEvent.Ethernet && handleIpTraffic(event.frame)) return
+        val piaBeforeLeave = if (event is Esp32RadioEvent.StationLeft) piaHost?.snapshot() else null
         val removedParticipant = if (event is Esp32RadioEvent.StationLeft) {
             removeParticipant(event.mac)
         } else null
@@ -199,7 +200,13 @@ class LdnDiscoveryController internal constructor(
                     stationDetected = associatedStations.isNotEmpty(),
                     participantRegistered = if (removedParticipant != null) false else snapshot.participantRegistered,
                     registeredParticipant = if (removedParticipant != null) null else snapshot.registeredParticipant,
-                    piaStage = if (removedParticipant != null) LdnPiaStage.WAITING else snapshot.piaStage,
+                    piaStage = deepestPiaStage(snapshot.piaStage, piaBeforeLeave?.stage),
+                    piaNetRequests = maxOf(snapshot.piaNetRequests, piaBeforeLeave?.netRequestsSent ?: 0),
+                    piaSessionRequests = maxOf(snapshot.piaSessionRequests, piaBeforeLeave?.sessionRequests ?: 0),
+                    piaSessionResponses = maxOf(snapshot.piaSessionResponses, piaBeforeLeave?.sessionResponses ?: 0),
+                    reliableEstablished = snapshot.reliableEstablished || piaBeforeLeave?.reliableEstablished == true,
+                    reliableFramesReceived = maxOf(snapshot.reliableFramesReceived, piaBeforeLeave?.reliableFramesReceived ?: 0),
+                    reliableFramesSent = maxOf(snapshot.reliableFramesSent, piaBeforeLeave?.reliableFramesSent ?: 0),
                     latestActivity = "Station left: ${event.mac.formatMac()}",
                 )
                 else -> return
@@ -410,4 +417,18 @@ class LdnDiscoveryController internal constructor(
             LdnPiaStage.WAITING -> previous ?: "Waiting for PIA negotiation"
         }
     }
+}
+
+private fun deepestPiaStage(current: LdnPiaStage, candidate: LdnPiaStage?): LdnPiaStage {
+    if (candidate == null) return current
+    fun LdnPiaStage.rank() = when (this) {
+        LdnPiaStage.WAITING -> 0
+        LdnPiaStage.NET_PROBING -> 1
+        LdnPiaStage.NET_CONNECTED -> 2
+        LdnPiaStage.SESSION_JOIN_RECEIVED -> 3
+        LdnPiaStage.SESSION_RESPONSE_SENT -> 4
+        LdnPiaStage.ESTABLISHED -> 5
+        LdnPiaStage.FAILED -> 6
+    }
+    return if (candidate.rank() > current.rank()) candidate else current
 }
