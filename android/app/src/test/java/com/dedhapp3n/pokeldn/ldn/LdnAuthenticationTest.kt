@@ -27,6 +27,12 @@ class LdnAuthenticationTest {
     fun respondsWithUpstreamFixtureAndRegistersOneParticipant() {
         val network = network()
         val source = "0a0b0c0d0e0f".hex()
+        val initialAdvertisement = network.authenticationHost.currentAdvertisementFrame()
+
+        assertArrayEquals(network.accessPoint.bssid, network.authenticationHost.hostMac)
+        assertArrayEquals(network.accessPoint.bssid, network.piaHost.hostMac)
+        assertEquals(network.authenticationHost.hostIp, network.piaHost.hostIp)
+        assertEquals(network.authenticationHost.networkNumber, network.piaHost.networkNumber)
 
         val outcome = network.authenticationHost.process(source, fixture("ldn_auth_request.hex"))
 
@@ -44,6 +50,15 @@ class LdnAuthenticationTest {
             fixture("ldn_registered_advertisement.hex"),
             network.authenticationHost.currentAdvertisementFrame(),
         )
+        assertFalse(initialAdvertisement.contentEquals(network.authenticationHost.currentAdvertisementFrame()))
+
+        network.piaHost.participantJoined(participant, 0)
+        val piaParticipant = network.piaHost.participantIdentity()
+        assertNotNull(piaParticipant)
+        piaParticipant!!
+        assertEquals(participant.index, piaParticipant.index)
+        assertEquals(participant.ipAddress, piaParticipant.ipAddress)
+        assertArrayEquals(source, piaParticipant.mac)
 
         assertNotNull(network.authenticationHost.removeParticipant(source))
         assertNull(network.authenticationHost.removeParticipant(source))

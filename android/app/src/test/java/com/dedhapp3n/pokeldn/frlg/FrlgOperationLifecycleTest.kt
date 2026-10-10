@@ -115,6 +115,9 @@ class FrlgOperationLifecycleTest {
                 authenticationResponses = 1,
                 participantRegistered = false,
                 participantEverRegistered = true,
+                registeredAdvertisementsSent = 6,
+                participantIndex = 1,
+                participantIp = "169.254.33.2",
                 piaStage = LdnPiaStage.NET_PROBING,
                 piaNetRequests = 4,
                 piaSessionRequests = 2,
@@ -135,6 +138,9 @@ class FrlgOperationLifecycleTest {
         assertTrue(diagnostics.contains("piaSessReq=2"))
         assertTrue(diagnostics.contains("piaSessRes=1"))
         assertTrue(diagnostics.contains("participantEver=true"))
+        assertTrue(diagnostics.contains("regAdv=6"))
+        assertTrue(diagnostics.contains("participantIndex=1"))
+        assertTrue(diagnostics.contains("participantIp=169.254.33.2"))
         assertTrue(diagnostics.contains("piaDgram=8"))
         assertTrue(diagnostics.contains("ethSubmit=9"))
         assertTrue(diagnostics.contains("ethQueue=9"))

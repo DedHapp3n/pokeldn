@@ -15,7 +15,14 @@ class LdnDiscoveryNetwork internal constructor(
     internal val authenticationHost: LdnAuthenticationHost,
     internal val piaHost: LdnPiaHost,
     internal val parentSessionId: ByteArray,
-)
+) {
+    init {
+        require(accessPoint.bssid.contentEquals(authenticationHost.hostMac))
+        require(accessPoint.bssid.contentEquals(piaHost.hostMac))
+        require(authenticationHost.networkNumber == piaHost.networkNumber)
+        require(authenticationHost.hostIp == piaHost.hostIp)
+    }
+}
 
 /** Minimum protocol-3 host advertisement used by upstream's FRLG discovery-only probe. */
 class LdnAdvertisementBuilder internal constructor(

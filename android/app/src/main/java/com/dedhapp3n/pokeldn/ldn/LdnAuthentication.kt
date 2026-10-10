@@ -54,6 +54,10 @@ internal class LdnAuthenticationHost(
     private var nonce = identity.advertisementNonce
     private var advertisement = encodeAdvertisement()
 
+    internal val hostMac: ByteArray get() = identity.bssid.copyOf()
+    internal val hostIp: String get() = "169.254.${identity.networkNumber}.1"
+    internal val networkNumber: Int get() = identity.networkNumber
+
     fun currentAdvertisementFrame(): ByteArray = synchronized(lock) { advertisement.copyOf() }
 
     fun process(source: ByteArray, payload: ByteArray): LdnAuthenticationOutcome = synchronized(lock) {

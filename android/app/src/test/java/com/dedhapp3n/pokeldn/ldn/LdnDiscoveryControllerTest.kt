@@ -106,6 +106,45 @@ class LdnDiscoveryControllerTest {
     }
 
     @Test
+    fun schedulerRepeatedlyTransmitsUpdatedAdvertisementAfterRegistration() {
+        val transport = FakeTransport()
+        val scheduler = FakeScheduler()
+        val frames = mutableListOf<ByteArray>()
+        val participant = LdnParticipant(
+            1, "169.254.33.2", "0a0b0c0d0e0f".hex(), "Console".toByteArray(), 88, 0,
+        )
+        var registered = false
+        val controller = LdnDiscoveryController(
+            operation = Esp32RadioOperation(31),
+            advertisementFrame = { ByteArray(24) { if (registered) 2 else 1 } },
+            sendRaw = { _, frame -> frames += frame; true },
+            sendEthernet = { _, _ -> true },
+            authenticate = { _, _ ->
+                registered = true
+                LdnAuthenticationOutcome(byteArrayOf(1), 0, true, participant)
+            },
+            subscribe = transport::subscribe,
+            scheduler = scheduler,
+        )
+
+        controller.start()
+        transport.emit(Esp32RadioEvent.StationJoined(participant.mac, 1, 0, true))
+        transport.emit(Esp32RadioEvent.LdnControlEthernet("021122334455".hex(), participant.mac, byteArrayOf(1)))
+        scheduler.fire()
+        scheduler.fire()
+
+        assertEquals(3, frames.size)
+        assertEquals(1, frames.first()[0].toInt())
+        assertTrue(frames.drop(1).all { it[0].toInt() == 2 })
+        val snapshot = controller.currentSnapshot()
+        assertEquals(2, snapshot.registeredAdvertisementsSent)
+        assertEquals(1, snapshot.participantIndex)
+        assertEquals("169.254.33.2", snapshot.participantIp)
+        assertArrayEquals(participant.mac, snapshot.registeredParticipant!!.mac)
+        controller.stop()
+    }
+
+    @Test
     fun stationLeavePreservesPreDisconnectPiaBoundaryAndCounters() {
         val transport = FakeTransport()
         val participant = LdnParticipant(

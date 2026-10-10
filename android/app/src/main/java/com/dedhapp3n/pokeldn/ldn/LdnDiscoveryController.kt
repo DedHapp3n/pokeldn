@@ -25,6 +25,9 @@ data class LdnDiscoverySnapshot(
     val participantRegistered: Boolean = false,
     val participantEverRegistered: Boolean = false,
     val registeredParticipant: LdnParticipant? = null,
+    val registeredAdvertisementsSent: Long = 0,
+    val participantIndex: Int? = null,
+    val participantIp: String? = null,
     val piaStage: LdnPiaStage = LdnPiaStage.WAITING,
     val piaNetRequests: Long = 0,
     val piaSessionRequests: Long = 0,
@@ -156,7 +159,11 @@ class LdnDiscoveryController internal constructor(
         val next = synchronized(lock) {
             if (!running) return
             if (!sendRaw(operation, advertisementFrame())) return
-            snapshot = snapshot.copy(advertisementsSent = snapshot.advertisementsSent + 1)
+            snapshot = snapshot.copy(
+                advertisementsSent = snapshot.advertisementsSent + 1,
+                registeredAdvertisementsSent = snapshot.registeredAdvertisementsSent +
+                    if (snapshot.participantRegistered) 1 else 0,
+            )
             snapshot
         }
         if (next.advertisementsSent == 1L || next.advertisementsSent % 10L == 0L) onSnapshot(next)
@@ -272,6 +279,8 @@ class LdnDiscoveryController internal constructor(
                     participantRegistered = snapshot.participantRegistered || outcome.participant != null,
                     participantEverRegistered = snapshot.participantEverRegistered || outcome.participant != null,
                     registeredParticipant = outcome.participant ?: snapshot.registeredParticipant,
+                    participantIndex = outcome.participant?.index ?: snapshot.participantIndex,
+                    participantIp = outcome.participant?.ipAddress ?: snapshot.participantIp,
                     latestActivity = if (outcome.participant != null) {
                         "Participant registered: ${outcome.participant.mac.formatMac()}"
                     } else {

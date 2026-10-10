@@ -31,13 +31,14 @@ internal data class LdnPiaDatagram(val destinationIp: String, val payload: ByteA
 /** Minimum upstream HostPeerProtocol path: Pia Net, Session and RTT only. */
 internal class LdnPiaHost(
     private val ssid: ByteArray,
-    private val hostMac: ByteArray,
-    networkNumber: Int,
+    hostMac: ByteArray,
+    internal val networkNumber: Int,
     private val maxParticipants: Int,
     private val randomBytes: (Int) -> ByteArray = SecureRandom().let { random ->
         { size -> ByteArray(size).also(random::nextBytes) }
     },
 ) {
+    internal val hostMac = hostMac.copyOf()
     val hostIp = "169.254.$networkNumber.1"
     val broadcastIp = "169.254.$networkNumber.255"
     private val crypto = PiaCrypto(ssid)
@@ -78,6 +79,10 @@ internal class LdnPiaHost(
         stage, netRequests, sessionRequests, sessionResponses,
         reliable.peerOpened, reliableFramesReceived, reliableFramesSent, detail,
     )
+
+    internal fun participantIdentity(): LdnParticipant? = participant?.let {
+        it.copy(mac = it.mac.copyOf(), name = it.name.copyOf())
+    }
 
     fun tick(nowMillis: Long): List<LdnPiaDatagram> {
         val peer = participant ?: return emptyList()
