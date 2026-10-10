@@ -54,6 +54,7 @@ internal class LdnReliableSession(
     private var nextAcknowledgementMillis: Long? = null
     private var peerGap: Int? = null
     private var peerGapReports = 0
+    private var lastReceiveAcknowledgement: Int? = null
 
     var localOpened = false
         private set
@@ -63,6 +64,9 @@ internal class LdnReliableSession(
     val inflight: Int get() = unacknowledged.size
     val outstanding: Int get() = unacknowledged.values.count { !it.acknowledged }
     val receiveNext: Int get() = nextReceive
+
+    fun receiveAcknowledgementSent(sequence: Int): Boolean =
+        lastReceiveAcknowledgement?.let { sequenceBefore(sequence and 0xffff, it) } == true
 
     fun open(payload: ByteArray, nowMillis: Long, flags: Int = RELIABLE_FLAGS_DATA): LdnReliableEmission? {
         if (localOpened) return null
@@ -113,6 +117,7 @@ internal class LdnReliableSession(
         if (nextAcknowledgementMillis?.let { nowMillis >= it } == true &&
             (acknowledgementOwed || receivedOutOfOrder.isNotEmpty())) {
             out += LdnReliableEmission(start, RELIABLE_FLAGS_CONTROL, sendLow(), acknowledgementPayload())
+            lastReceiveAcknowledgement = nextReceive
             acknowledgementOwed = false
             nextAcknowledgementMillis = if (receivedOutOfOrder.isEmpty()) null else nowMillis + acknowledgementPeriodMillis
         }
@@ -131,6 +136,7 @@ internal class LdnReliableSession(
         acknowledgementOwed = false; nextAcknowledgementMillis = null
         localOpened = false; peerOpened = false
         peerGap = null; peerGapReports = 0
+        lastReceiveAcknowledgement = null
     }
 
     private fun queue(payload: ByteArray, flags: Int, nowMillis: Long): LdnReliableEmission {

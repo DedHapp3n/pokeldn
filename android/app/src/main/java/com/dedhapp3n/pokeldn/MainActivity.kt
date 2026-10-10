@@ -719,6 +719,8 @@ class MainActivity : ComponentActivity() {
     private fun discoveryState(channel: Int, snapshot: LdnDiscoverySnapshot): LdnApTestState =
         LdnApTestState(
             phase = when {
+                snapshot.linkPlayerExchanged -> LdnApTestPhase.LINK_PLAYER_EXCHANGED
+                snapshot.rfuConnected -> LdnApTestPhase.RFU_CONNECTED
                 snapshot.reliableEstablished -> LdnApTestPhase.RELIABLE_ESTABLISHED
                 snapshot.piaStage == LdnPiaStage.ESTABLISHED -> LdnApTestPhase.PIA_ESTABLISHED
                 snapshot.piaStage == LdnPiaStage.FAILED -> LdnApTestPhase.PIA_FAILED
@@ -748,6 +750,9 @@ class MainActivity : ComponentActivity() {
             reliableEstablished = snapshot.reliableEstablished,
             reliableFramesReceived = snapshot.reliableFramesReceived,
             reliableFramesSent = snapshot.reliableFramesSent,
+            rfuConnected = snapshot.rfuConnected,
+            linkPlayerExchanged = snapshot.linkPlayerExchanged,
+            detectedCartridge = snapshot.detectedCartridge,
             latestActivity = snapshot.latestActivity,
         )
 

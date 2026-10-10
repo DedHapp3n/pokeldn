@@ -4,6 +4,7 @@ import com.dedhapp3n.pokeldn.esp32.Esp32RadioEvent
 import com.dedhapp3n.pokeldn.esp32.Esp32RadioOperation
 import com.dedhapp3n.pokeldn.esp32.Esp32RadioSession
 import com.dedhapp3n.pokeldn.esp32.formatMac
+import com.dedhapp3n.pokeldn.frlg.FrlgHostLink
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -30,6 +31,10 @@ data class LdnDiscoverySnapshot(
     val reliableEstablished: Boolean = false,
     val reliableFramesReceived: Long = 0,
     val reliableFramesSent: Long = 0,
+    val rfuConnected: Boolean = false,
+    val rfuReady: Boolean = false,
+    val linkPlayerExchanged: Boolean = false,
+    val detectedCartridge: String? = null,
     val latestActivity: String? = null,
 )
 
@@ -70,6 +75,7 @@ class LdnDiscoveryController internal constructor(
     private val removeParticipant: (ByteArray) -> LdnParticipant? = { null },
     private val piaHost: LdnPiaHost? = null,
     private val piaTransport: LdnPiaUdpTransport? = null,
+    private val frlgHost: FrlgHostLink? = null,
     private val subscribe: (Esp32RadioOperation, (Esp32RadioEvent) -> Unit) -> AutoCloseable,
     private val scheduler: LdnAdvertisementScheduler = ExecutorLdnAdvertisementScheduler(),
     private val onSnapshot: (LdnDiscoverySnapshot) -> Unit = {},
@@ -90,6 +96,7 @@ class LdnDiscoveryController internal constructor(
         removeParticipant = network.authenticationHost::removeParticipant,
         piaHost = network.piaHost,
         piaTransport = LdnPiaUdpTransport(network.piaHost.hostIp, network.accessPoint.bssid),
+        frlgHost = FrlgHostLink(network.piaHost, network.parentSessionId),
         subscribe = session::addOperationEventListener,
         onSnapshot = onSnapshot,
         onFailure = onFailure,
@@ -101,6 +108,7 @@ class LdnDiscoveryController internal constructor(
     private var snapshot = LdnDiscoverySnapshot()
     private var subscription: AutoCloseable? = null
     private var scheduled: LdnScheduledHandle? = null
+    private var protocolScheduled: LdnScheduledHandle? = null
     private val associatedStations = mutableSetOf<String>()
 
     fun start(): LdnDiscoverySnapshot {
@@ -117,6 +125,11 @@ class LdnDiscoveryController internal constructor(
                     transmitPia()
                 } catch (error: Throwable) {
                     fail(error)
+                }
+            }
+            if (frlgHost != null) {
+                protocolScheduled = scheduler.schedule(FRLG_FRAME_INTERVAL_MS) {
+                    try { transmitFrlg() } catch (error: Throwable) { fail(error) }
                 }
             }
             return synchronized(lock) { snapshot }
@@ -285,6 +298,19 @@ class LdnDiscoveryController internal constructor(
         }
     }
 
+    private fun transmitFrlg() {
+        val next = synchronized(lock) {
+            if (!running || frlgHost == null) return
+            val now = System.currentTimeMillis()
+            sendPiaDatagrams(piaHost?.tick(now).orEmpty())
+            sendPiaDatagrams(frlgHost.tick(now))
+            updatePiaSnapshotLocked()
+            updateFrlgSnapshotLocked()
+            snapshot
+        }
+        if (next.rfuConnected || next.linkPlayerExchanged) onSnapshot(next)
+    }
+
     private fun sendPiaDatagrams(datagrams: List<LdnPiaDatagram>) {
         val transport = piaTransport ?: return
         val participant = snapshot.registeredParticipant
@@ -311,6 +337,17 @@ class LdnDiscoveryController internal constructor(
         )
     }
 
+    private fun updateFrlgSnapshotLocked() {
+        val link = frlgHost?.snapshot() ?: return
+        snapshot = snapshot.copy(
+            rfuConnected = link.rfuConnected,
+            rfuReady = link.rfuReady,
+            linkPlayerExchanged = link.linkPlayerExchanged,
+            detectedCartridge = link.cartridge?.let { "${it.game} / ${it.language}" },
+            latestActivity = link.detail ?: snapshot.latestActivity,
+        )
+    }
+
     private fun fail(error: Throwable) {
         val report = synchronized(lock) {
             if (!running || failed) false else {
@@ -325,15 +362,18 @@ class LdnDiscoveryController internal constructor(
 
     fun stop() {
         val resources = synchronized(lock) {
-            if (!running && scheduled == null && subscription == null) return
+            if (!running && scheduled == null && protocolScheduled == null && subscription == null) return
             running = false
             val pair = scheduled to subscription
             scheduled = null
+            val protocol = protocolScheduled
+            protocolScheduled = null
             subscription = null
-            pair
+            Triple(pair.first, protocol, pair.second)
         }
         resources.first?.cancel()
-        resources.second?.close()
+        resources.second?.cancel()
+        resources.third?.close()
         piaHost?.reset()
         scheduler.close()
     }
@@ -341,6 +381,7 @@ class LdnDiscoveryController internal constructor(
     override fun close() = stop()
 
     companion object {
+        private const val FRLG_FRAME_INTERVAL_MS = 17L
         private fun ethernetFrame(target: ByteArray, source: ByteArray, payload: ByteArray): ByteArray {
             require(target.size == 6 && source.size == 6)
             return target + source + byteArrayOf(0x88.toByte(), 0xb7.toByte()) + payload

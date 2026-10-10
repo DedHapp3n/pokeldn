@@ -173,6 +173,9 @@ internal class LdnPiaHost(
     fun sendReliable(payload: ByteArray, nowMillis: Long): LdnPiaDatagram =
         reliableDatagram(reliable.send(payload, nowMillis))
 
+    fun reliableReceiveAcknowledgementSent(sequence: Int): Boolean =
+        reliable.receiveAcknowledgementSent(sequence)
+
     fun reset() {
         participant = null
         stage = LdnPiaStage.WAITING
