@@ -1,5 +1,7 @@
 package com.dedhapp3n.pokeldn.frlg
 
+import com.dedhapp3n.pokeldn.ldn.LdnDiscoverySnapshot
+import com.dedhapp3n.pokeldn.ldn.LdnPiaStage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -99,5 +101,31 @@ class FrlgOperationLifecycleTest {
         val merged = reliable.recordProgress(stationLeave)
         assertEquals(FrlgOperationPhase.ESTABLISHING_RELIABLE, merged.lastReached)
         assertEquals("station=1/1", merged.diagnostics)
+    }
+
+    @Test
+    fun failureDiagnosticsIncludePreservedPostAuthenticationEvidence() {
+        val diagnostics = frlgFailureDiagnostics(
+            LdnDiscoverySnapshot(
+                discoveryActivityCount = 7,
+                ethernetFrames = 3,
+                stationJoins = 1,
+                stationLeaves = 1,
+                authenticationRequests = 1,
+                authenticationResponses = 1,
+                participantRegistered = false,
+                participantEverRegistered = true,
+                piaStage = LdnPiaStage.NET_PROBING,
+                piaNetRequests = 4,
+                piaSessionRequests = 2,
+                piaSessionResponses = 1,
+            ),
+        )
+
+        assertTrue(diagnostics.contains("eth=3"))
+        assertTrue(diagnostics.contains("piaNet=4"))
+        assertTrue(diagnostics.contains("piaSessReq=2"))
+        assertTrue(diagnostics.contains("piaSessRes=1"))
+        assertTrue(diagnostics.contains("participantEver=true"))
     }
 }

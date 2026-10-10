@@ -23,6 +23,7 @@ data class LdnDiscoverySnapshot(
     val authenticationResponses: Long = 0,
     val authenticationFailures: Long = 0,
     val participantRegistered: Boolean = false,
+    val participantEverRegistered: Boolean = false,
     val registeredParticipant: LdnParticipant? = null,
     val piaStage: LdnPiaStage = LdnPiaStage.WAITING,
     val piaNetRequests: Long = 0,
@@ -248,6 +249,7 @@ class LdnDiscoveryController internal constructor(
                     authenticationResponses = snapshot.authenticationResponses + 1,
                     authenticationFailures = snapshot.authenticationFailures + if (outcome.statusCode == 0) 0 else 1,
                     participantRegistered = snapshot.participantRegistered || outcome.participant != null,
+                    participantEverRegistered = snapshot.participantEverRegistered || outcome.participant != null,
                     registeredParticipant = outcome.participant ?: snapshot.registeredParticipant,
                     latestActivity = if (outcome.participant != null) {
                         "Participant registered: ${outcome.participant.mac.formatMac()}"

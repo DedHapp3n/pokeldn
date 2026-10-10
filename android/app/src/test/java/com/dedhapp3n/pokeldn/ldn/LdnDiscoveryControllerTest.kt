@@ -101,6 +101,7 @@ class LdnDiscoveryControllerTest {
         assertEquals(1, controller.currentSnapshot().authenticationRequests)
         assertEquals(1, controller.currentSnapshot().authenticationResponses)
         assertTrue(controller.currentSnapshot().participantRegistered)
+        assertTrue(controller.currentSnapshot().participantEverRegistered)
         controller.stop()
     }
 
@@ -123,16 +124,22 @@ class LdnDiscoveryControllerTest {
             operation = Esp32RadioOperation(4),
             advertisementFrame = { ByteArray(24) },
             sendRaw = { _, _ -> true },
+            authenticate = { _, _ -> LdnAuthenticationOutcome(byteArrayOf(1), 0, true, participant) },
+            removeParticipant = { participant },
             piaHost = pia,
             subscribe = transport::subscribe,
             scheduler = FakeScheduler(),
         )
         controller.start()
+        transport.emit(Esp32RadioEvent.LdnControlEthernet(ByteArray(6), participant.mac, byteArrayOf(1)))
+        val beforeLeave = controller.currentSnapshot()
         transport.emit(Esp32RadioEvent.StationLeft(participant.mac, 3))
 
         val final = controller.currentSnapshot()
         assertEquals(LdnPiaStage.NET_PROBING, final.piaStage)
-        assertEquals(1, final.piaNetRequests)
+        assertEquals(beforeLeave.piaNetRequests, final.piaNetRequests)
+        assertFalse(final.participantRegistered)
+        assertTrue(final.participantEverRegistered)
         controller.stop()
     }
 

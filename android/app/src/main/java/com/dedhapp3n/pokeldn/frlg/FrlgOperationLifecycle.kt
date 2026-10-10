@@ -1,5 +1,7 @@
 package com.dedhapp3n.pokeldn.frlg
 
+import com.dedhapp3n.pokeldn.ldn.LdnDiscoverySnapshot
+
 enum class FrlgOperationPhase(val label: String) {
     IDLE("Ready"),
     PREPARING_ESP32("Preparing ESP32"),
@@ -78,6 +80,24 @@ private fun FrlgOperationPhase.progressRank(): Int = when (this) {
     FrlgOperationPhase.WAITING_FOR_CLOSE -> 12
     FrlgOperationPhase.CLOSING_LINK -> 13
     else -> -1
+}
+
+internal fun frlgFailureDiagnostics(snapshot: LdnDiscoverySnapshot): String = buildString {
+    append("Counters: discovery=${snapshot.discoveryActivityCount}")
+    append(" station=${snapshot.stationJoins}/${snapshot.stationLeaves}")
+    append(" auth=${snapshot.authenticationRequests}/${snapshot.authenticationResponses}")
+    append(" participant=${snapshot.participantRegistered}")
+    append(" participantEver=${snapshot.participantEverRegistered}")
+    append(" eth=${snapshot.ethernetFrames}")
+    append(" PIA=${snapshot.piaStage}")
+    append(" piaNet=${snapshot.piaNetRequests}")
+    append(" piaSessReq=${snapshot.piaSessionRequests}")
+    append(" piaSessRes=${snapshot.piaSessionResponses}")
+    append(" Reliable=${snapshot.reliableFramesReceived}/${snapshot.reliableFramesSent}")
+    append(" RFU=${snapshot.rfuConnected}")
+    append(" LinkPlayer=${snapshot.linkPlayerExchanged}")
+    snapshot.detectedCartridge?.let { append(" cartridge=$it") }
+    snapshot.giftStage?.let { append(" gift=$it") }
 }
 
 /** Pure lifecycle gate used by the future LDN operation runner. */

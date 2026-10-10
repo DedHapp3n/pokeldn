@@ -40,6 +40,7 @@ import com.dedhapp3n.pokeldn.frlg.FrlgGiftStage
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationStartGate
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationState
+import com.dedhapp3n.pokeldn.frlg.frlgFailureDiagnostics
 import com.dedhapp3n.pokeldn.ldn.LdnAdvertisementBuilder
 import com.dedhapp3n.pokeldn.ldn.LdnApTestPhase
 import com.dedhapp3n.pokeldn.ldn.LdnApTestState
@@ -863,18 +864,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         val detected = snapshot.detectedCartridge?.let { "$it detected" }
-        val diagnostics = buildString {
-            append("Counters: discovery=${snapshot.discoveryActivityCount}")
-            append(" station=${snapshot.stationJoins}/${snapshot.stationLeaves}")
-            append(" auth=${snapshot.authenticationRequests}/${snapshot.authenticationResponses}")
-            append(" participant=${snapshot.participantRegistered}")
-            append(" PIA=${snapshot.piaStage}")
-            append(" Reliable=${snapshot.reliableFramesReceived}/${snapshot.reliableFramesSent}")
-            append(" RFU=${snapshot.rfuConnected}")
-            append(" LinkPlayer=${snapshot.linkPlayerExchanged}")
-            snapshot.detectedCartridge?.let { append(" cartridge=$it") }
-            snapshot.giftStage?.let { append(" gift=$it") }
-        }
+        val diagnostics = frlgFailureDiagnostics(snapshot)
         return FrlgOperationState(phase, detected ?: snapshot.latestActivity, phase, diagnostics)
     }
 
