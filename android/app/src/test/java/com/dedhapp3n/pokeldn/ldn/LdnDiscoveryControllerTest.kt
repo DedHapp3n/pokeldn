@@ -294,6 +294,9 @@ class LdnDiscoveryControllerTest {
             ).hex()
         assertArrayEquals(expectedReply, sent.last())
 
+        transport.emit(managementData(LdnRawDataFrameTest.UPSTREAM_HYBRID_GROUP_ARP.hex()))
+        assertEquals(3, sent.size)
+
         val badMic = LdnRawDataFrameTest.UPSTREAM_GROUP_ARP.hex().also {
             it[it.lastIndex] = (it.last().toInt() xor 1).toByte()
         }
@@ -301,10 +304,11 @@ class LdnDiscoveryControllerTest {
         transport.emit(Esp32RadioEvent.StationLeft(participant.mac, 3))
 
         val snapshot = controller.currentSnapshot()
-        assertEquals(1, snapshot.rawDecoded)
+        assertEquals(2, snapshot.rawDecoded)
+        assertEquals(1, snapshot.rawDriverDecrypted)
         assertEquals(1, snapshot.rawDecryptFailures)
-        assertEquals(1, snapshot.arpFramesReceived)
-        assertEquals(1, snapshot.arpRepliesSent)
+        assertEquals(2, snapshot.arpFramesReceived)
+        assertEquals(2, snapshot.arpRepliesSent)
         controller.stop()
     }
 

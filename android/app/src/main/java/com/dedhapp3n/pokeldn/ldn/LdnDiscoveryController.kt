@@ -46,6 +46,7 @@ data class LdnDiscoverySnapshot(
     val rawProtectedPeerDataAfterRegistration: Long = 0,
     val firstPeerDataTrace: LdnRawDataTrace? = null,
     val rawDecoded: Long = 0,
+    val rawDriverDecrypted: Long = 0,
     val rawDecryptFailures: Long = 0,
     val arpFramesReceived: Long = 0,
     val arpRepliesSent: Long = 0,
@@ -109,6 +110,7 @@ class LdnDiscoveryController internal constructor(
     private val piaTransport: LdnPiaUdpTransport? = null,
     private val rawGroupDecoder: LdnRawGroupDecoder? = null,
     private val frlgHost: FrlgHostLink? = null,
+    private val activateApplicationData: (() -> Unit)? = null,
     private val subscribe: (Esp32RadioOperation, (Esp32RadioEvent) -> Unit) -> AutoCloseable,
     private val scheduler: LdnAdvertisementScheduler = ExecutorLdnAdvertisementScheduler(),
     private val onSnapshot: (LdnDiscoverySnapshot) -> Unit = {},
@@ -132,6 +134,10 @@ class LdnDiscoveryController internal constructor(
         piaTransport = LdnPiaUdpTransport(network.piaHost.hostIp, network.accessPoint.bssid),
         rawGroupDecoder = LdnRawGroupDecoder(network.accessPoint.wlanKey),
         frlgHost = FrlgHostLink(network.piaHost, network.parentSessionId, walkThroughWalls),
+        activateApplicationData = {
+            network.authenticationHost.setApplicationData(network.activeApplicationData)
+            network.piaHost.activateApplicationData(network.activeApplicationData)
+        },
         subscribe = session::addOperationEventListener,
         onSnapshot = onSnapshot,
         onFailure = onFailure,
@@ -145,6 +151,7 @@ class LdnDiscoveryController internal constructor(
     private var scheduled: LdnScheduledHandle? = null
     private var protocolScheduled: LdnScheduledHandle? = null
     private val associatedStations = mutableSetOf<String>()
+    private var applicationDataActivated = false
 
     fun start(): LdnDiscoverySnapshot {
         synchronized(lock) {
@@ -283,11 +290,14 @@ class LdnDiscoveryController internal constructor(
             } else snapshot.firstPeerDataTrace
             val specialGroupFrame = peerData && !event.toDs && !event.fromDs && event.protectedFrame
             var decoded = false
+            var driverDecrypted = false
             var decryptFailed = false
             if (specialGroupFrame && rawGroupDecoder != null) {
                 try {
-                    promoted = rawGroupDecoder.decode(event.frame)
+                    val result = rawGroupDecoder.decode(event.frame)
+                    promoted = result.ethernet
                     decoded = true
+                    driverDecrypted = result.driverDecrypted
                 } catch (_: Exception) {
                     decryptFailed = true
                 }
@@ -303,8 +313,10 @@ class LdnDiscoveryController internal constructor(
                     if (peerData && event.protectedFrame) 1 else 0,
                 firstPeerDataTrace = firstTrace,
                 rawDecoded = snapshot.rawDecoded + if (decoded) 1 else 0,
+                rawDriverDecrypted = snapshot.rawDriverDecrypted + if (driverDecrypted) 1 else 0,
                 rawDecryptFailures = snapshot.rawDecryptFailures + if (decryptFailed) 1 else 0,
                 latestActivity = when {
+                    driverDecrypted -> "Driver-decrypted group data normalized"
                     decoded -> "Encrypted group data decoded"
                     decryptFailed -> "Encrypted group data failed CCMP verification"
                     event.isLdnAction -> "Nintendo LDN action frame received"
@@ -465,6 +477,10 @@ class LdnDiscoveryController internal constructor(
 
     private fun updateFrlgSnapshotLocked() {
         val link = frlgHost?.snapshot() ?: return
+        if (link.linkPlayerExchanged && !applicationDataActivated) {
+            activateApplicationData?.invoke()
+            applicationDataActivated = true
+        }
         snapshot = snapshot.copy(
             rfuConnected = link.rfuConnected,
             rfuReady = link.rfuReady,

@@ -136,6 +136,7 @@ class FrlgOperationLifecycleTest {
                 rawPeerDataAfterRegistration = 3,
                 rawProtectedPeerDataAfterRegistration = 2,
                 rawDecoded = 2,
+                rawDriverDecrypted = 2,
                 rawDecryptFailures = 1,
                 arpFramesReceived = 2,
                 arpRepliesSent = 2,
@@ -172,6 +173,7 @@ class FrlgOperationLifecycleTest {
         assertTrue(diagnostics.contains("rawPeerData=3"))
         assertTrue(diagnostics.contains("rawProtected=2"))
         assertTrue(diagnostics.contains("rawDecoded=2"))
+        assertTrue(diagnostics.contains("rawNormalized=2"))
         assertTrue(diagnostics.contains("rawDecryptFail=1"))
         assertTrue(diagnostics.contains("arpRx=2"))
         assertTrue(diagnostics.contains("arpReply=2"))

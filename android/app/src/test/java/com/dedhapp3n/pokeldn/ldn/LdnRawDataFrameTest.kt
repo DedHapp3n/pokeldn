@@ -23,6 +23,22 @@ class LdnRawDataFrameTest {
     }
 
     @Test
+    fun upstreamDriverDecryptedRetainedCcmpFrameIsNormalizedWithoutSecondDecrypt() {
+        val result = LdnRawGroupDecoder(ByteArray(16) { 0x7f }).decode(UPSTREAM_HYBRID_GROUP_ARP.hex())
+
+        assertTrue(result.driverDecrypted)
+        assertArrayEquals(EXPECTED_ARP_ETHERNET.hex(), result.ethernet)
+    }
+
+    @Test
+    fun upstreamDriverDecryptedFrameWithoutCcmpEnvelopeIsNormalized() {
+        val result = LdnRawGroupDecoder(ByteArray(16)).decode(UPSTREAM_DRIVER_PLAINTEXT_GROUP_ARP.hex())
+
+        assertTrue(result.driverDecrypted)
+        assertArrayEquals(EXPECTED_ARP_ETHERNET.hex(), result.ethernet)
+    }
+
+    @Test
     fun qosTidIsUsedByUpstreamCcmpNonceAndAad() {
         val frame = LdnRawDataFrame.decode(UPSTREAM_QOS_GROUP_ARP.hex())
 
@@ -64,6 +80,14 @@ class LdnRawDataFrameTest {
         const val UPSTREAM_QOS_GROUP_ARP =
             "88400000ffffffffffff0a0b0c0d0e0f021122334455000005000605006004030201" +
                 "b27faac58b302293de171e5404d864cb4a891338be927d205e8457e243648d7d5762e230c38a98788a07b072"
+        const val DERIVED_KEY_ARP_ETHERNET =
+            "ffffffffffff0a0b0c0d0e0f080600010800060400010a0b0c0d0e0fa9fe2102000000000000a9fe2101"
+        const val UPSTREAM_HYBRID_GROUP_ARP =
+            "08400000ffffffffffff0a0b0c0d0e0f02112233445500000605006004030201" +
+                "aaaa03000000080600010800060400010a0b0c0d0e0fa9fe0e02000000000000a9fe0e01ed2d1459fc9c9fe7"
+        const val UPSTREAM_DRIVER_PLAINTEXT_GROUP_ARP =
+            "08400000ffffffffffff0a0b0c0d0e0f0211223344550000" +
+                "aaaa03000000080600010800060400010a0b0c0d0e0fa9fe0e02000000000000a9fe0e01"
     }
 }
 

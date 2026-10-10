@@ -33,6 +33,15 @@ class LdnAdvertisementTest {
         )
     }
 
+    @Test
+    fun activeApplicationDataMatchesVendoredUpstreamFixture() {
+        val inactive = LdnAdvertisementBuilder.buildDiscoveryApplicationData("12f1".hex())
+        assertEquals(
+            EXPECTED_ACTIVE_APP_DATA,
+            LdnAdvertisementBuilder.activateApplicationData(inactive, "12f1".hex()).toHex(),
+        )
+    }
+
     private class QueueRandomSource(vararg values: ByteArray) : LdnRandomSource {
         private val values = ArrayDeque(values.toList())
         override fun nextBytes(size: Int): ByteArray = values.removeFirst().also {
@@ -51,6 +60,8 @@ class LdnAdvertisementTest {
             "005c1600580000000000000000000000000000000001010000000701504f4b454c444e000000000000" +
                 "00000000000000000000000000000000000000000000000000000000000000000000000000000000" +
                 "00000000000000000000006346606c642e74673d6140524c5e71232323232323652323232323232323"
+        private const val EXPECTED_ACTIVE_APP_DATA =
+            "005c1600580000000000000000000000000000000001020000000701504f4b454c444e0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006346606c642e74673d61456f6e4b7123232323234e3c2823232323232323"
         private const val EXPECTED_ACTION_FRAME =
             "d0000000ffffffffffff021122334455ffffffffffff00007f0022aa040001010000000001006fa0233f" +
                 "80000000570f00000000404142434445464748494a4b4c4d4e4f040300d4606162636d594dce2b46" +

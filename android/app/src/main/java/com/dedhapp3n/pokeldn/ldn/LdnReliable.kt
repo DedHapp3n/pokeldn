@@ -65,6 +65,9 @@ internal class LdnReliableSession(
     val outstanding: Int get() = unacknowledged.values.count { !it.acknowledged }
     val receiveNext: Int get() = nextReceive
 
+    fun isOutstanding(sequence: Int): Boolean =
+        unacknowledged[sequence and 0xffff]?.acknowledged == false
+
     fun receiveAcknowledgementSent(sequence: Int): Boolean =
         lastReceiveAcknowledgement?.let { sequenceBefore(sequence and 0xffff, it) } == true
 

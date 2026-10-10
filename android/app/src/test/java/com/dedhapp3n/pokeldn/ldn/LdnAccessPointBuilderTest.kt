@@ -56,6 +56,28 @@ class LdnAccessPointBuilderTest {
     }
 
     @Test
+    fun protocolThreeUserspaceAndFirmwareKeysShareTheVendoredUpstreamFixture() {
+        val config = fixtureBuilder().build(
+            keys = LdnProdKeysParser.parse(KEY_TEXT.toByteArray()),
+            protocol = 3,
+            channel = 6,
+            bssid = "021122334455".hex(),
+            ssid = "404142434445464748494a4b4c4d4e4f".hex(),
+            serverRandom = "505152535455565758595a5b5c5d5e5f".hex(),
+            password = GBA_APP_PASSPHRASE.hex(),
+            maxParticipants = 6,
+        )
+        val upstreamKey = "760d603ffb6bc07c57f89651caaff05c".hex()
+        val apStartPayload = config.toEsp32AccessPointConfig().toPayload()
+        val decoded = LdnRawGroupDecoder(config.wlanKey).decode(UPSTREAM_DERIVED_KEY_GROUP_ARP.hex())
+
+        assertArrayEquals(upstreamKey, config.wlanKey)
+        assertArrayEquals(upstreamKey, apStartPayload.copyOfRange(39, 55))
+        assertArrayEquals(LdnRawDataFrameTest.DERIVED_KEY_ARP_ETHERNET.hex(), decoded.ethernet)
+        assertTrue(!decoded.driverDecrypted)
+    }
+
+    @Test
     fun diagnosticsIdentityUsesUpstreamShapeAndLocalUnicastBssid() {
         val source = QueueRandomSource(
             "000102030405060708090a0b0c0d0e0f".hex(),
@@ -80,6 +102,12 @@ class LdnAccessPointBuilderTest {
     }
 
     companion object {
+        private const val GBA_APP_PASSPHRASE =
+            "fcb6f6adb9dfea66aca9c326149d2b3b08a781895cbf78f720d78b85a57584a9" +
+                "9665d237797b2a41ddef14063ec28d259143af7832fb3cbcf2759cbfbdc81d8c"
+        private const val UPSTREAM_DERIVED_KEY_GROUP_ARP =
+            "08400000ffffffffffff0a0b0c0d0e0f02112233445500000605006004030201" +
+                "de6f4afeb96f0b63c3f3b5aba59778b505dea32a5ffeb23c8574111a4df6c970e28a519d3d7e9325520367dc"
         private val KEY_TEXT = """
             aes_kek_generation_source = 000102030405060708090a0b0c0d0e0f
             aes_key_generation_source = 101112131415161718191a1b1c1d1e1f

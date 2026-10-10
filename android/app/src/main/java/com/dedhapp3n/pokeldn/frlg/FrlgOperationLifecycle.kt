@@ -110,6 +110,7 @@ internal fun frlgFailureDiagnostics(snapshot: LdnDiscoverySnapshot): String = bu
     append(" rawPeerData=${snapshot.rawPeerDataAfterRegistration}")
     append(" rawProtected=${snapshot.rawProtectedPeerDataAfterRegistration}")
     append(" rawDecoded=${snapshot.rawDecoded}")
+    append(" rawNormalized=${snapshot.rawDriverDecrypted}")
     append(" rawDecryptFail=${snapshot.rawDecryptFailures}")
     append(" arpRx=${snapshot.arpFramesReceived}")
     append(" arpReply=${snapshot.arpRepliesSent}")

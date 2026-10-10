@@ -47,9 +47,10 @@ internal data class LdnAuthenticationOutcome(
 /** Host-side Nintendo LDN authentication and participant table, without Pia or IP traffic. */
 internal class LdnAuthenticationHost(
     private val keys: LdnProdKeys,
-    private val identity: LdnHostIdentity,
+    identity: LdnHostIdentity,
 ) {
     private val lock = Any()
+    private var identity = identity
     private val participants = linkedMapOf<String, LdnParticipant>()
     private var nonce = identity.advertisementNonce
     private var advertisement = encodeAdvertisement()
@@ -59,6 +60,13 @@ internal class LdnAuthenticationHost(
     internal val networkNumber: Int get() = identity.networkNumber
 
     fun currentAdvertisementFrame(): ByteArray = synchronized(lock) { advertisement.copyOf() }
+
+    fun setApplicationData(applicationData: ByteArray) = synchronized(lock) {
+        if (identity.applicationData.contentEquals(applicationData)) return@synchronized
+        identity = identity.copy(applicationData = applicationData.copyOf())
+        incrementAdvertisementNonce()
+        advertisement = encodeAdvertisement()
+    }
 
     fun process(source: ByteArray, payload: ByteArray): LdnAuthenticationOutcome = synchronized(lock) {
         val request = try {

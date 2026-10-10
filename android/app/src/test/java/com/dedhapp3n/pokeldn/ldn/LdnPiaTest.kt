@@ -63,6 +63,23 @@ class LdnPiaTest {
     }
 
     @Test
+    fun activePropertyUpdateMatchesVendoredUpstreamPayload() {
+        val host = host()
+        host.participantJoined(participant, 0)
+        host.receive(SESSION_JOIN.hex(), participant.ipAddress, 20)
+        host.receive(SESSION_ACK.hex(), participant.ipAddress, 30)
+        host.activateApplicationData(ACTIVE_APP_DATA.hex(), 31)
+
+        val packet = host.tick(31).single()
+        val decoded = PiaCrypto(ssid).decode(packet.payload, host.hostIp)
+        assertEquals(participant.ipAddress, packet.destinationIp)
+        assertEquals(1, decoded.messages.single().protocol)
+        assertArrayEquals(UPSTREAM_PROPERTY_UPDATE.hex(), decoded.messages.single().payload)
+        assertEquals(3, decoded.header.flags and 3)
+        assertEquals(1, host.snapshot().propertyUpdates)
+    }
+
+    @Test
     fun nativeNonceSequenceIncrementsAndWrapsForWholeSession() {
         val sequence = PiaNonceSequence("ffffffffffffffff".hex())
         assertArrayEquals("ffffffffffffffff".hex(), sequence.take())
@@ -124,6 +141,10 @@ class LdnPiaTest {
             "020d07010000000004040404ab3c06f7a93c000000c63c33006094930000c4930100010000"
         private const val UPSTREAM_UPDATE =
             "05000001000003ab3c06f7a93c000000c602000001000000000000ab3c06f7a93c000000c6a9fe580130390000000000000000000000000000000000000000000000000000000000000000000000000001010000000000000000000100000000000000000000000701504f4b454c444e3c33006094930000c493a9fe580230390100010000000000000000000000000000000000000000000000000000000000000000000001010000000000000000000100000000000000000000000301454d55"
+        private const val ACTIVE_APP_DATA =
+            "005c1600580000000000000000000000000000000001020000000701504f4b454c444e00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006346606c642e74673d6140524c5e712323752a6c4b7123232323234e502723232323232323"
+        private const val UPSTREAM_PROPERTY_UPDATE =
+            "0150007a00000001000000001e1d14d900020006000000000000570f01010000005c0000001e$ACTIVE_APP_DATA"
     }
 }
 

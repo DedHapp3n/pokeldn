@@ -27,10 +27,19 @@ internal data class LdnRawDataFrame(
             ciphertext = payload.copyOfRange(0, payload.size - CCMP_MIC_SIZE),
             tag = payload.copyOfRange(payload.size - CCMP_MIC_SIZE, payload.size),
         )
-        require(plaintext.size >= SNAP_HEADER_SIZE) { "Decrypted data frame is shorter than a SNAP header" }
-        require(plaintext.copyOfRange(0, 3).contentEquals(SNAP_PREFIX)) { "SNAP extension is required" }
-        val etherType = plaintext.copyOfRange(6, 8)
-        return target + source + etherType + plaintext.copyOfRange(SNAP_HEADER_SIZE, plaintext.size)
+        return snapToEthernet(plaintext)
+    }
+
+    /** Mirrors upstream accept_decrypted_ccmp for a driver-decrypted body with retained MIC. */
+    fun acceptDecryptedCcmpToEthernet(): ByteArray? {
+        if (!protectedFrame || payload.size < SNAP_HEADER_SIZE + CCMP_MIC_SIZE ||
+            !payload.copyOfRange(0, 3).contentEquals(SNAP_PREFIX)) return null
+        return snapToEthernet(payload.copyOfRange(0, payload.size - CCMP_MIC_SIZE))
+    }
+
+    fun plaintextToEthernet(): ByteArray {
+        require(!protectedFrame) { "Protected data frame requires CCMP processing" }
+        return snapToEthernet(payload)
     }
 
     private fun packetNumberBytes() = ByteArray(6) { index ->
@@ -53,6 +62,13 @@ internal data class LdnRawDataFrame(
         output.write(byteArrayOf(0, 0))
         if (qos) output.write(byteArrayOf(tid.toByte(), 0))
         return output.toByteArray()
+    }
+
+    private fun snapToEthernet(plaintext: ByteArray): ByteArray {
+        require(plaintext.size >= SNAP_HEADER_SIZE) { "Decrypted data frame is shorter than a SNAP header" }
+        require(plaintext.copyOfRange(0, 3).contentEquals(SNAP_PREFIX)) { "SNAP extension is required" }
+        val etherType = plaintext.copyOfRange(6, 8)
+        return target + source + etherType + plaintext.copyOfRange(SNAP_HEADER_SIZE, plaintext.size)
     }
 
     companion object {
@@ -84,9 +100,15 @@ internal data class LdnRawDataFrame(
                 tid = qosControl and 0x0f
                 offset += 2
             }
-            val protectedFrame = frameControl and IEEE80211_PROTECTED != 0
+            var protectedFrame = frameControl and IEEE80211_PROTECTED != 0
             var packetNumber = 0L
             var keyId = 0
+            // Upstream handles monitor drivers which clear neither the on-wire Protected bit nor
+            // the frame-control copy while removing the complete CCMP envelope.
+            if (protectedFrame && data.size >= offset + 3 &&
+                data.copyOfRange(offset, offset + 3).contentEquals(SNAP_PREFIX)) {
+                protectedFrame = false
+            }
             if (protectedFrame) {
                 require(data.size >= offset + CCMP_HEADER_SIZE) { "Protected data frame is missing its CCMP header" }
                 val extra = littleU16(data, offset + 2)
@@ -129,8 +151,19 @@ internal class LdnRawGroupDecoder(wlanKey: ByteArray) {
         require(key.size == 16) { "LDN WLAN key must be 16 bytes" }
     }
 
-    fun decode(frame: ByteArray): ByteArray = LdnRawDataFrame.decode(frame).decryptToEthernet(key)
+    fun decode(frame: ByteArray): LdnRawDecodeResult {
+        val decoded = LdnRawDataFrame.decode(frame)
+        if (!decoded.protectedFrame) {
+            return LdnRawDecodeResult(decoded.plaintextToEthernet(), driverDecrypted = true)
+        }
+        decoded.acceptDecryptedCcmpToEthernet()?.let {
+            return LdnRawDecodeResult(it, driverDecrypted = true)
+        }
+        return LdnRawDecodeResult(decoded.decryptToEthernet(key), driverDecrypted = false)
+    }
 }
+
+internal data class LdnRawDecodeResult(val ethernet: ByteArray, val driverDecrypted: Boolean)
 
 /** Minimal CCM with the L=2, 8-byte tag profile used by 802.11 CCMP. */
 private object AesCcm {

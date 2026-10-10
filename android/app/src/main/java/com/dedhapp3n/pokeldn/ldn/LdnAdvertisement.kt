@@ -15,6 +15,7 @@ class LdnDiscoveryNetwork internal constructor(
     internal val authenticationHost: LdnAuthenticationHost,
     internal val piaHost: LdnPiaHost,
     internal val parentSessionId: ByteArray,
+    internal val activeApplicationData: ByteArray,
 ) {
     init {
         require(accessPoint.bssid.contentEquals(authenticationHost.hostMac))
@@ -50,6 +51,7 @@ class LdnAdvertisementBuilder internal constructor(
             maxParticipants = MAX_PARTICIPANTS,
         )
         val applicationData = buildDiscoveryApplicationData(parentSessionId)
+        val activeApplicationData = activateApplicationData(applicationData, parentSessionId)
         val identity = LdnHostIdentity(
             bssid = bssid,
             ssid = ssid,
@@ -75,6 +77,7 @@ class LdnAdvertisementBuilder internal constructor(
             authenticationHost = authenticationHost,
             piaHost = piaHost,
             parentSessionId = parentSessionId,
+            activeApplicationData = activeApplicationData,
         )
     }
 
@@ -184,6 +187,17 @@ class LdnAdvertisementBuilder internal constructor(
             return header + base85Encode(record)
         }
 
+        /** Mirrors host_beacon.activate_trade_app_data for the post-LinkPlayer advertisement. */
+        internal fun activateApplicationData(applicationData: ByteArray, parentSessionId: ByteArray): ByteArray {
+            require(applicationData.size >= 0x5c && parentSessionId.size == 2)
+            val header = applicationData.copyOfRange(0, 0x5c).also { it[0x16] = 2 }
+            val record = base85Decode(applicationData.copyOfRange(0x5c, applicationData.size))
+                .copyOf(23)
+            parentSessionId.copyInto(record, 10)
+            record[17] = (record[17].toInt() or 0x80).toByte()
+            return header + base85Encode(record)
+        }
+
         private fun wrapActionFrame(source: ByteArray, advertisement: ByteArray): ByteArray =
             byteArrayOf(0xd0.toByte(), 0, 0, 0) + ByteArray(6) { 0xff.toByte() } + source +
                 ByteArray(6) { 0xff.toByte() } + byteArrayOf(0, 0) + advertisement
@@ -200,6 +214,25 @@ class LdnAdvertisementBuilder internal constructor(
                     output.write(encoded)
                     value /= 85
                 }
+            }
+            return output.toByteArray()
+        }
+
+        private fun base85Decode(input: ByteArray): ByteArray {
+            require(input.size % 5 == 0) { "FRLG Base85 input must contain complete groups" }
+            val output = ByteArrayOutputStream()
+            for (offset in input.indices step 5) {
+                var value = 0L
+                var multiplier = 1L
+                repeat(5) { index ->
+                    var encoded = input[offset + index].toInt() and 0xff
+                    if (encoded > 0x5c) encoded--
+                    val digit = encoded - 0x23
+                    require(digit in 0..84) { "Invalid FRLG Base85 digit" }
+                    value += digit * multiplier
+                    multiplier *= 85
+                }
+                output.write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(value.toInt()).array())
             }
             return output.toByteArray()
         }
