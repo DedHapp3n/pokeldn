@@ -154,13 +154,20 @@ private fun DiagnosticDevicePanel(
     onStopLdnApTest: () -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
+    val ldnActive = ldnApTestState.phase in setOf(
+        LdnApTestPhase.ADVERTISING,
+        LdnApTestPhase.CONSOLE_ACTIVITY,
+        LdnApTestPhase.AUTH_REQUEST,
+        LdnApTestPhase.AUTH_RESPONSE_SENT,
+        LdnApTestPhase.AUTHENTICATION_REJECTED,
+        LdnApTestPhase.PARTICIPANT_REGISTERED,
+        LdnApTestPhase.STATION_ASSOCIATED,
+    )
     val ldnBusy = ldnApTestState.phase in setOf(
         LdnApTestPhase.PREPARING,
         LdnApTestPhase.STARTING_AP,
-        LdnApTestPhase.ADVERTISING,
-        LdnApTestPhase.CONSOLE_ACTIVITY,
         LdnApTestPhase.STOPPING,
-    )
+    ) || ldnActive
     ShellPanel(device.productName ?: "USB device") {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.weight(1f)) {
@@ -253,14 +260,20 @@ private fun DiagnosticDevicePanel(
                             LdnApTestPhase.CLEANUP_REQUIRED,
                         )) ErrorText(it) else Text(it)
                 }
-                if (ldnApTestState.phase in setOf(
-                        LdnApTestPhase.ADVERTISING,
-                        LdnApTestPhase.CONSOLE_ACTIVITY,
-                    )) {
+                if (ldnActive) {
                     DetailLine("AP", "Active")
                     ldnApTestState.channel?.let { DetailLine("Channel", it.toString()) }
                     DetailLine("Advertisements sent", ldnApTestState.advertisementsSent.toString())
                     DetailLine("Discovery activity", ldnApTestState.discoveryActivityCount.toString())
+                    DetailLine("Authentication requests", ldnApTestState.authenticationRequests.toString())
+                    DetailLine("Authentication responses", ldnApTestState.authenticationResponses.toString())
+                    if (ldnApTestState.authenticationFailures > 0) {
+                        DetailLine("Authentication rejected", ldnApTestState.authenticationFailures.toString())
+                    }
+                    DetailLine(
+                        "Participant",
+                        if (ldnApTestState.participantRegistered) "Registered" else "Not registered",
+                    )
                     DetailLine(
                         "Station",
                         if (ldnApTestState.stationDetected) "Associated" else "Not detected",
@@ -270,10 +283,7 @@ private fun DiagnosticDevicePanel(
                     Text("Import your own prod.keys before starting the hardware lifecycle test.")
                     DeviceButton("Import prod.keys", onImportProdKeys, Modifier.fillMaxWidth())
                 }
-                if (ldnApTestState.phase in setOf(
-                        LdnApTestPhase.ADVERTISING,
-                        LdnApTestPhase.CONSOLE_ACTIVITY,
-                    )) {
+                if (ldnActive) {
                     DeviceButton("Stop LDN AP", onStopLdnApTest, Modifier.fillMaxWidth())
                 } else {
                     DeviceButton(
@@ -417,7 +427,10 @@ private fun Esp32HandshakePhase.toStatusTone(): StatusTone = when (this) {
 
 private fun LdnApTestPhase.toStatusTone(): StatusTone = when (this) {
     LdnApTestPhase.READY, LdnApTestPhase.ADVERTISING,
-    LdnApTestPhase.CONSOLE_ACTIVITY -> StatusTone.POSITIVE
+    LdnApTestPhase.CONSOLE_ACTIVITY, LdnApTestPhase.AUTH_REQUEST,
+    LdnApTestPhase.AUTH_RESPONSE_SENT, LdnApTestPhase.PARTICIPANT_REGISTERED,
+    LdnApTestPhase.STATION_ASSOCIATED -> StatusTone.POSITIVE
+    LdnApTestPhase.AUTHENTICATION_REJECTED -> StatusTone.WARNING
     LdnApTestPhase.PREPARING, LdnApTestPhase.STARTING_AP,
     LdnApTestPhase.STOPPING -> StatusTone.WARNING
     LdnApTestPhase.FAILED, LdnApTestPhase.CLEANUP_REQUIRED -> StatusTone.ERROR

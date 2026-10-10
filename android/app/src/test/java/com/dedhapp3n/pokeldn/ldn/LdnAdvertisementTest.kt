@@ -15,6 +15,7 @@ class LdnAdvertisementTest {
             "0102030405060708".hex(),
             byteArrayOf(33),
             byteArrayOf(0xb7.toByte()),
+            "1112131415161718".hex(),
         )
         val network = LdnAdvertisementBuilder(random).buildDiscoveryNetwork(keys())
         assertEquals(LdnAdvertisementBuilder.LOCAL_COMMUNICATION_ID, network.localCommunicationId)

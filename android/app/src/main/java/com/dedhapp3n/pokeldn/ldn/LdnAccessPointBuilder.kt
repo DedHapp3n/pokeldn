@@ -84,6 +84,9 @@ internal class LdnKeyDerivation(
     fun deriveDataKey(serverRandom: ByteArray, password: ByteArray): ByteArray =
         deriveKey(serverRandom + password, AUTHENTICATION_SOURCE)
 
+    fun deriveAuthenticationKey(clientRandom: ByteArray): ByteArray =
+        deriveKey(clientRandom, AUTHENTICATION_SOURCE)
+
     fun deriveAdvertiseKey(networkId: ByteArray): ByteArray =
         deriveKey(networkId, ADVERTISEMENT_SOURCE)
 

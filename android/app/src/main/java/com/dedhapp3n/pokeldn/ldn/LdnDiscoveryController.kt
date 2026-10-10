@@ -18,6 +18,11 @@ data class LdnDiscoverySnapshot(
     val stationJoins: Long = 0,
     val stationLeaves: Long = 0,
     val stationDetected: Boolean = false,
+    val authenticationRequests: Long = 0,
+    val authenticationResponses: Long = 0,
+    val authenticationFailures: Long = 0,
+    val participantRegistered: Boolean = false,
+    val registeredParticipant: LdnParticipant? = null,
     val latestActivity: String? = null,
 )
 
@@ -51,8 +56,11 @@ private class ExecutorLdnAdvertisementScheduler : LdnAdvertisementScheduler {
 
 class LdnDiscoveryController internal constructor(
     private val operation: Esp32RadioOperation,
-    private val advertisementFrame: ByteArray,
+    private val advertisementFrame: () -> ByteArray,
     private val sendRaw: (Esp32RadioOperation, ByteArray) -> Boolean,
+    private val sendEthernet: (Esp32RadioOperation, ByteArray) -> Boolean = { _, _ -> true },
+    private val authenticate: (ByteArray, ByteArray) -> LdnAuthenticationOutcome? = { _, _ -> null },
+    private val removeParticipant: (ByteArray) -> LdnParticipant? = { null },
     private val subscribe: (Esp32RadioOperation, (Esp32RadioEvent) -> Unit) -> AutoCloseable,
     private val scheduler: LdnAdvertisementScheduler = ExecutorLdnAdvertisementScheduler(),
     private val onSnapshot: (LdnDiscoverySnapshot) -> Unit = {},
@@ -61,13 +69,16 @@ class LdnDiscoveryController internal constructor(
     constructor(
         session: Esp32RadioSession,
         operation: Esp32RadioOperation,
-        advertisementFrame: ByteArray,
+        network: LdnDiscoveryNetwork,
         onSnapshot: (LdnDiscoverySnapshot) -> Unit = {},
         onFailure: (Throwable) -> Unit = {},
     ) : this(
         operation = operation,
-        advertisementFrame = advertisementFrame,
+        advertisementFrame = network.authenticationHost::currentAdvertisementFrame,
         sendRaw = session::sendRaw,
+        sendEthernet = session::sendEthernet,
+        authenticate = network.authenticationHost::process,
+        removeParticipant = network.authenticationHost::removeParticipant,
         subscribe = session::addOperationEventListener,
         onSnapshot = onSnapshot,
         onFailure = onFailure,
@@ -108,7 +119,7 @@ class LdnDiscoveryController internal constructor(
     private fun transmitAdvertisement() {
         val next = synchronized(lock) {
             if (!running) return
-            if (!sendRaw(operation, advertisementFrame)) return
+            if (!sendRaw(operation, advertisementFrame())) return
             snapshot = snapshot.copy(advertisementsSent = snapshot.advertisementsSent + 1)
             snapshot
         }
@@ -116,6 +127,10 @@ class LdnDiscoveryController internal constructor(
     }
 
     private fun onEvent(event: Esp32RadioEvent) {
+        if (event is Esp32RadioEvent.LdnControlEthernet && handleAuthentication(event)) return
+        val removedParticipant = if (event is Esp32RadioEvent.StationLeft) {
+            removeParticipant(event.mac)
+        } else null
         val next = synchronized(lock) {
             if (!running) return
             if (event is Esp32RadioEvent.StationJoined) associatedStations += event.mac.formatMac()
@@ -153,6 +168,8 @@ class LdnDiscoveryController internal constructor(
                     discoveryActivityCount = snapshot.discoveryActivityCount + 1,
                     stationLeaves = snapshot.stationLeaves + 1,
                     stationDetected = associatedStations.isNotEmpty(),
+                    participantRegistered = if (removedParticipant != null) false else snapshot.participantRegistered,
+                    registeredParticipant = if (removedParticipant != null) null else snapshot.registeredParticipant,
                     latestActivity = "Station left: ${event.mac.formatMac()}",
                 )
                 else -> return
@@ -163,6 +180,52 @@ class LdnDiscoveryController internal constructor(
             next.discoveryActivityCount == 1L || next.discoveryActivityCount % 10L == 0L) {
             onSnapshot(next)
         }
+    }
+
+    private fun handleAuthentication(event: Esp32RadioEvent.LdnControlEthernet): Boolean {
+        val outcome = try {
+            authenticate(event.source, event.payload) ?: return false
+        } catch (error: Throwable) {
+            fail(error)
+            return true
+        }
+        val received = synchronized(lock) {
+            if (!running) return true
+            snapshot = snapshot.copy(
+                discoveryActivityCount = snapshot.discoveryActivityCount + 1,
+                ldnControlFrames = snapshot.ldnControlFrames + 1,
+                authenticationRequests = snapshot.authenticationRequests + 1,
+                latestActivity = "Authentication request received",
+            )
+            snapshot
+        }
+        onSnapshot(received)
+        val response = ethernetFrame(event.source, event.target, outcome.response)
+        val sent = try {
+            synchronized(lock) {
+                if (!running) return true
+                if (!sendEthernet(operation, response)) {
+                    throw IllegalStateException("ESP32 transmit queue rejected the authentication response")
+                }
+                snapshot = snapshot.copy(
+                    authenticationResponses = snapshot.authenticationResponses + 1,
+                    authenticationFailures = snapshot.authenticationFailures + if (outcome.statusCode == 0) 0 else 1,
+                    participantRegistered = snapshot.participantRegistered || outcome.participant != null,
+                    registeredParticipant = outcome.participant ?: snapshot.registeredParticipant,
+                    latestActivity = if (outcome.participant != null) {
+                        "Participant registered: ${outcome.participant.mac.formatMac()}"
+                    } else {
+                        "Authentication response sent (status ${outcome.statusCode})"
+                    },
+                )
+                snapshot
+            }
+        } catch (error: Throwable) {
+            fail(error)
+            return true
+        }
+        onSnapshot(sent)
+        return true
     }
 
     private fun fail(error: Throwable) {
@@ -194,6 +257,11 @@ class LdnDiscoveryController internal constructor(
     override fun close() = stop()
 
     companion object {
+        private fun ethernetFrame(target: ByteArray, source: ByteArray, payload: ByteArray): ByteArray {
+            require(target.size == 6 && source.size == 6)
+            return target + source + byteArrayOf(0x88.toByte(), 0xb7.toByte()) + payload
+        }
+
         private fun managementSubtypeName(subtype: Int): String = when (subtype) {
             0 -> "association request"
             2 -> "reassociation request"

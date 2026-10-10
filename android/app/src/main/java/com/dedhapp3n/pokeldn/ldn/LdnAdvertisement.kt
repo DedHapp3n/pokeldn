@@ -7,11 +7,12 @@ import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-data class LdnDiscoveryNetwork(
+class LdnDiscoveryNetwork internal constructor(
     val accessPoint: LdnAccessPointConfiguration,
     val advertisementFrame: ByteArray,
     val localCommunicationId: Long,
     val sceneId: Int,
+    internal val authenticationHost: LdnAuthenticationHost,
 )
 
 /** Minimum protocol-3 host advertisement used by upstream's FRLG discovery-only probe. */
@@ -28,6 +29,7 @@ class LdnAdvertisementBuilder internal constructor(
         val challenge = random.nextBytes(8)
         val networkNumber = ((random.nextBytes(1)[0].toInt() and 0x7f).coerceAtLeast(1))
         val parentSessionId = byteArrayOf(random.nextBytes(1)[0], 0xf1.toByte())
+        val deviceId = ByteBuffer.wrap(random.nextBytes(8)).order(ByteOrder.BIG_ENDIAN).long
         val accessPoint = LdnAccessPointBuilder(random).build(
             keys = keys,
             protocol = LDN_PROTOCOL,
@@ -39,82 +41,24 @@ class LdnAdvertisementBuilder internal constructor(
             maxParticipants = MAX_PARTICIPANTS,
         )
         val applicationData = buildDiscoveryApplicationData(parentSessionId)
-        val advertisement = encodeAdvertisement(
-            keys = keys,
+        val identity = LdnHostIdentity(
             bssid = bssid,
             ssid = ssid,
             serverRandom = serverRandom,
-            nonce = nonce,
-            challenge = challenge,
+            advertisementNonce = ByteBuffer.wrap(nonce).order(ByteOrder.BIG_ENDIAN).int,
+            challengeToken = ByteBuffer.wrap(challenge).order(ByteOrder.BIG_ENDIAN).long,
             networkNumber = networkNumber,
+            deviceId = deviceId,
             applicationData = applicationData,
         )
+        val authenticationHost = LdnAuthenticationHost(keys, identity)
         return LdnDiscoveryNetwork(
             accessPoint = accessPoint,
-            advertisementFrame = wrapActionFrame(bssid, advertisement),
+            advertisementFrame = authenticationHost.currentAdvertisementFrame(),
             localCommunicationId = LOCAL_COMMUNICATION_ID,
             sceneId = SCENE_ID,
+            authenticationHost = authenticationHost,
         )
-    }
-
-    private fun encodeAdvertisement(
-        keys: LdnProdKeys,
-        bssid: ByteArray,
-        ssid: ByteArray,
-        serverRandom: ByteArray,
-        nonce: ByteArray,
-        challenge: ByteArray,
-        networkNumber: Int,
-        applicationData: ByteArray,
-    ): ByteArray {
-        val networkId = ByteArrayOutputStream().apply {
-            writeU64(LOCAL_COMMUNICATION_ID)
-            write(ByteArray(2))
-            writeU16(SCENE_ID)
-            write(ByteArray(4))
-            write(ssid)
-        }.toByteArray()
-        val plaintext = ByteArrayOutputStream().apply {
-            write(serverRandom)
-            write(challenge)
-            write(SECURITY_MODE_PROD)
-            write(ACCEPT_ALL)
-            writeU16(APP_VERSION)
-            write(ByteArray(8))
-            writeU16((BAND_2_4_GHZ shl 10) or CHANNEL)
-            write(MAX_PARTICIPANTS)
-            write(1)
-            write(byteArrayOf(169.toByte(), 254.toByte(), networkNumber.toByte(), 1))
-            write(bssid)
-            write(0)
-            write(PLATFORM_NX)
-            write(HOST_NAME)
-            write(ByteArray(32 - HOST_NAME.size))
-            write(ByteArray(4))
-            writeU16(applicationData.size)
-            write(applicationData)
-        }.toByteArray()
-        val authenticatedHeader = ByteArrayOutputStream().apply {
-            write(networkId)
-            write(NETWORK_VERSION)
-            write(ADVERTISE_FORMAT_AES_GCM)
-            writeU16(plaintext.size)
-            write(nonce)
-        }.toByteArray()
-        val key = LdnKeyDerivation(keys, LDN_PROTOCOL).deriveAdvertiseKey(networkId)
-        val encrypted = Cipher.getInstance("AES/GCM/NoPadding").run {
-            init(
-                Cipher.ENCRYPT_MODE,
-                SecretKeySpec(key, "AES"),
-                GCMParameterSpec(128, nonce + ByteArray(8)),
-            )
-            updateAAD(authenticatedHeader)
-            doFinal(plaintext)
-        }
-        val ciphertextSize = encrypted.size - GCM_TAG_SIZE
-        val ciphertext = encrypted.copyOfRange(0, ciphertextSize)
-        val tag = encrypted.copyOfRange(ciphertextSize, encrypted.size)
-        return ADVERTISEMENT_PREFIX + authenticatedHeader + tag + ciphertext
     }
 
     companion object {
@@ -124,7 +68,7 @@ class LdnAdvertisementBuilder internal constructor(
         const val SCENE_ID = 22287
         const val APP_VERSION = 88
         const val ADVERTISEMENT_INTERVAL_MS = 100L
-        private const val LDN_PROTOCOL = 3
+        internal const val LDN_PROTOCOL = 3
         private const val NETWORK_VERSION = 4
         private const val ADVERTISE_FORMAT_AES_GCM = 3
         private const val SECURITY_MODE_PROD = 1
@@ -145,6 +89,68 @@ class LdnAdvertisementBuilder internal constructor(
             ).hexToBytes()
         private val DEFAULT_DISCOVERY_RECORD =
             "2288cac9c5bfc6bec8ff0000000000009515000000000000".hexToBytes()
+
+        internal fun encodeActionFrame(
+            keys: LdnProdKeys,
+            identity: LdnHostIdentity,
+            nonce: Int,
+            participants: List<LdnAdvertisedParticipant>,
+        ): ByteArray {
+            val networkId = ByteArrayOutputStream().apply {
+                writeU64(LOCAL_COMMUNICATION_ID)
+                write(ByteArray(2))
+                writeU16(SCENE_ID)
+                write(ByteArray(4))
+                write(identity.ssid)
+            }.toByteArray()
+            val plaintext = ByteArrayOutputStream().apply {
+                write(identity.serverRandom)
+                write(ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(identity.challengeToken).array())
+                write(SECURITY_MODE_PROD)
+                write(ACCEPT_ALL)
+                writeU16(APP_VERSION)
+                write(ByteArray(8))
+                writeU16((BAND_2_4_GHZ shl 10) or CHANNEL)
+                write(MAX_PARTICIPANTS)
+                write(participants.size)
+                participants.forEach { participant ->
+                    require(participant.ipAddress.size == 4 && participant.mac.size == 6)
+                    require(participant.name.size <= 32)
+                    write(participant.ipAddress)
+                    write(participant.mac)
+                    write(participant.index)
+                    write(participant.platform)
+                    write(participant.name)
+                    write(ByteArray(32 - participant.name.size))
+                    write(ByteArray(4))
+                }
+                writeU16(identity.applicationData.size)
+                write(identity.applicationData)
+            }.toByteArray()
+            val nonceBytes = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(nonce).array()
+            val authenticatedHeader = ByteArrayOutputStream().apply {
+                write(networkId)
+                write(NETWORK_VERSION)
+                write(ADVERTISE_FORMAT_AES_GCM)
+                writeU16(plaintext.size)
+                write(nonceBytes)
+            }.toByteArray()
+            val key = LdnKeyDerivation(keys, LDN_PROTOCOL).deriveAdvertiseKey(networkId)
+            val encrypted = Cipher.getInstance("AES/GCM/NoPadding").run {
+                init(
+                    Cipher.ENCRYPT_MODE,
+                    SecretKeySpec(key, "AES"),
+                    GCMParameterSpec(128, nonceBytes + ByteArray(8)),
+                )
+                updateAAD(authenticatedHeader)
+                doFinal(plaintext)
+            }
+            val ciphertextSize = encrypted.size - GCM_TAG_SIZE
+            val advertisement = ADVERTISEMENT_PREFIX + authenticatedHeader +
+                encrypted.copyOfRange(ciphertextSize, encrypted.size) +
+                encrypted.copyOfRange(0, ciphertextSize)
+            return wrapActionFrame(identity.bssid, advertisement)
+        }
 
         internal fun buildDiscoveryApplicationData(parentSessionId: ByteArray): ByteArray {
             require(parentSessionId.size == 2) { "FRLG discovery parent id must be two bytes" }

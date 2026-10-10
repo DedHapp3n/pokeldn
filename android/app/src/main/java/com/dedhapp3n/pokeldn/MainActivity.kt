@@ -586,6 +586,11 @@ class MainActivity : ComponentActivity() {
                 LdnApTestPhase.STARTING_AP,
                 LdnApTestPhase.ADVERTISING,
                 LdnApTestPhase.CONSOLE_ACTIVITY,
+                LdnApTestPhase.AUTH_REQUEST,
+                LdnApTestPhase.AUTH_RESPONSE_SENT,
+                LdnApTestPhase.AUTHENTICATION_REJECTED,
+                LdnApTestPhase.PARTICIPANT_REGISTERED,
+                LdnApTestPhase.STATION_ASSOCIATED,
                 LdnApTestPhase.STOPPING,
             )) return
         val testId = synchronized(ldnTestLock) {
@@ -614,7 +619,7 @@ class MainActivity : ComponentActivity() {
                 controller = LdnDiscoveryController(
                     session = session,
                     operation = activeOperation,
-                    advertisementFrame = network.advertisementFrame,
+                    network = network,
                     onSnapshot = { snapshot ->
                         runOnUiThread {
                             val current = synchronized(ldnTestLock) {
@@ -712,16 +717,24 @@ class MainActivity : ComponentActivity() {
 
     private fun discoveryState(channel: Int, snapshot: LdnDiscoverySnapshot): LdnApTestState =
         LdnApTestState(
-            phase = if (snapshot.discoveryActivityCount > 0) {
-                LdnApTestPhase.CONSOLE_ACTIVITY
-            } else {
-                LdnApTestPhase.ADVERTISING
+            phase = when {
+                snapshot.stationDetected -> LdnApTestPhase.STATION_ASSOCIATED
+                snapshot.participantRegistered -> LdnApTestPhase.PARTICIPANT_REGISTERED
+                snapshot.authenticationFailures > 0 -> LdnApTestPhase.AUTHENTICATION_REJECTED
+                snapshot.authenticationResponses > 0 -> LdnApTestPhase.AUTH_RESPONSE_SENT
+                snapshot.authenticationRequests > 0 -> LdnApTestPhase.AUTH_REQUEST
+                snapshot.discoveryActivityCount > 0 -> LdnApTestPhase.CONSOLE_ACTIVITY
+                else -> LdnApTestPhase.ADVERTISING
             },
             detail = snapshot.latestActivity ?: "Waiting for console discovery activity",
             channel = channel,
             advertisementsSent = snapshot.advertisementsSent,
             discoveryActivityCount = snapshot.discoveryActivityCount,
             stationDetected = snapshot.stationDetected,
+            authenticationRequests = snapshot.authenticationRequests,
+            authenticationResponses = snapshot.authenticationResponses,
+            authenticationFailures = snapshot.authenticationFailures,
+            participantRegistered = snapshot.participantRegistered,
             latestActivity = snapshot.latestActivity,
         )
 
