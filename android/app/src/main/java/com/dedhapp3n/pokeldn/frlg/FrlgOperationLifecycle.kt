@@ -6,7 +6,9 @@ enum class FrlgOperationPhase(val label: String) {
     STARTING_NETWORK("Starting wireless network"),
     WAITING_FOR_CONSOLE("Waiting for console"),
     CONSOLE_DETECTED("Console detected"),
+    STATION_ASSOCIATED("Station associated"),
     AUTHENTICATING("Authenticating"),
+    PARTICIPANT_REGISTERED("Participant registered"),
     ESTABLISHING_PIA("Establishing PIA session"),
     ESTABLISHING_RELIABLE("Establishing reliable link"),
     ESTABLISHING_RFU("Establishing RFU"),
@@ -25,8 +27,57 @@ enum class FrlgOperationPhase(val label: String) {
 data class FrlgOperationState(
     val phase: FrlgOperationPhase = FrlgOperationPhase.IDLE,
     val detail: String? = null,
+    val lastReached: FrlgOperationPhase? = null,
+    val diagnostics: String? = null,
 ) {
     val running: Boolean get() = phase in FrlgOperationPhase.PREPARING_ESP32..FrlgOperationPhase.RETURNING_TO_READY
+
+    fun recordProgress(next: FrlgOperationState): FrlgOperationState {
+        val previousRank = lastReached?.progressRank() ?: -1
+        val nextRank = next.lastReached?.progressRank() ?: -1
+        return next.copy(
+            lastReached = if (nextRank >= previousRank) next.lastReached else lastReached,
+            diagnostics = next.diagnostics ?: diagnostics,
+        )
+    }
+}
+
+data class FrlgStartAvailability(val enabled: Boolean, val reason: String? = null)
+
+object FrlgOperationStartGate {
+    fun evaluate(
+        keysAvailable: Boolean,
+        handshakeVerified: Boolean,
+        radioReady: Boolean,
+        frlgOperationOwned: Boolean,
+        otherRadioOperationOwned: Boolean,
+        radioDetail: String? = null,
+    ): FrlgStartAvailability = when {
+        frlgOperationOwned -> FrlgStartAvailability(false, "A Walk Through Walls operation is still active or cleaning up")
+        otherRadioOperationOwned -> FrlgStartAvailability(false, "Diagnostics currently owns the ESP32 radio")
+        !keysAvailable -> FrlgStartAvailability(false, "Valid prod.keys are required")
+        !handshakeVerified -> FrlgStartAvailability(false, "ESP32 verification is required")
+        !radioReady -> FrlgStartAvailability(false, radioDetail ?: "ESP32 radio is not Ready")
+        else -> FrlgStartAvailability(true)
+    }
+}
+
+private fun FrlgOperationPhase.progressRank(): Int = when (this) {
+    FrlgOperationPhase.WAITING_FOR_CONSOLE -> 0
+    FrlgOperationPhase.CONSOLE_DETECTED -> 1
+    FrlgOperationPhase.STATION_ASSOCIATED -> 2
+    FrlgOperationPhase.AUTHENTICATING -> 3
+    FrlgOperationPhase.PARTICIPANT_REGISTERED -> 4
+    FrlgOperationPhase.ESTABLISHING_PIA -> 5
+    FrlgOperationPhase.ESTABLISHING_RELIABLE -> 6
+    FrlgOperationPhase.ESTABLISHING_RFU -> 7
+    FrlgOperationPhase.ESTABLISHING_GAME_LINK -> 8
+    FrlgOperationPhase.READING_CARTRIDGE -> 9
+    FrlgOperationPhase.PREPARING_BOOST -> 10
+    FrlgOperationPhase.SENDING_BOOST -> 11
+    FrlgOperationPhase.WAITING_FOR_CLOSE -> 12
+    FrlgOperationPhase.CLOSING_LINK -> 13
+    else -> -1
 }
 
 /** Pure lifecycle gate used by the future LDN operation runner. */

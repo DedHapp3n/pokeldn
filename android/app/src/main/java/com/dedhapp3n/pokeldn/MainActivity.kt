@@ -28,6 +28,7 @@ import com.dedhapp3n.pokeldn.esp32.Esp32IncompatibleProtocolException
 import com.dedhapp3n.pokeldn.esp32.Esp32RadioOperation
 import com.dedhapp3n.pokeldn.esp32.Esp32RadioPhase
 import com.dedhapp3n.pokeldn.esp32.Esp32RadioSession
+import com.dedhapp3n.pokeldn.esp32.Esp32RadioState
 import com.dedhapp3n.pokeldn.esp32.RawCapturePhase
 import com.dedhapp3n.pokeldn.esp32.RawCaptureState
 import com.dedhapp3n.pokeldn.esp32.RawReadBufferMode
@@ -37,6 +38,7 @@ import com.dedhapp3n.pokeldn.frlg.ProdKeysStore
 import com.dedhapp3n.pokeldn.frlg.ProdKeysPhase
 import com.dedhapp3n.pokeldn.frlg.FrlgGiftStage
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase
+import com.dedhapp3n.pokeldn.frlg.FrlgOperationStartGate
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationState
 import com.dedhapp3n.pokeldn.ldn.LdnAdvertisementBuilder
 import com.dedhapp3n.pokeldn.ldn.LdnApTestPhase
@@ -77,6 +79,7 @@ class MainActivity : ComponentActivity() {
     private var prodKeysState by mutableStateOf(ProdKeysState())
     private var ldnApTestState by mutableStateOf(LdnApTestState())
     private var frlgOperationState by mutableStateOf(FrlgOperationState())
+    private var radioState by mutableStateOf(Esp32RadioState())
     private var pendingDeviceId: Int? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var permissionTimeout: Runnable? = null
@@ -90,6 +93,7 @@ class MainActivity : ComponentActivity() {
     private var rawCaptureTimeout: Future<*>? = null
     private val radioSessionLock = Any()
     @Volatile private var radioSession: Esp32RadioSession? = null
+    private var radioStateSubscription: AutoCloseable? = null
     private val ldnTestLock = Any()
     @Volatile private var activeLdnTest: ActiveLdnTest? = null
     @Volatile private var ldnTestId = 0
@@ -181,6 +185,7 @@ class MainActivity : ComponentActivity() {
                     onStartLdnApTest = ::startLdnApTest,
                     onStopLdnApTest = ::stopLdnApTest,
                     frlgOperationState = frlgOperationState,
+                    radioState = radioState,
                     onStartWalkThroughWalls = ::startWalkThroughWalls,
                     onCancelWalkThroughWalls = ::cancelWalkThroughWalls,
                     modifier = Modifier.fillMaxSize(),
@@ -735,16 +740,25 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startWalkThroughWalls() {
-        if (prodKeysState.phase != ProdKeysPhase.AVAILABLE) {
-            frlgOperationState = FrlgOperationState(FrlgOperationPhase.FAILED, "Valid prod.keys are required")
-            return
-        }
         val session = radioSession
-        if (esp32State.phase != Esp32HandshakePhase.VERIFIED || session?.state?.phase != Esp32RadioPhase.READY) {
-            frlgOperationState = FrlgOperationState(FrlgOperationPhase.FAILED, "ESP32 radio is not Ready")
+        if (session?.state?.phase == Esp32RadioPhase.READY) releaseStaleRadioOwnership(session)
+        val availability = FrlgOperationStartGate.evaluate(
+            keysAvailable = prodKeysState.phase == ProdKeysPhase.AVAILABLE,
+            handshakeVerified = esp32State.phase == Esp32HandshakePhase.VERIFIED,
+            radioReady = session?.state?.phase == Esp32RadioPhase.READY,
+            frlgOperationOwned = activeFrlgOperation != null,
+            otherRadioOperationOwned = activeLdnTest != null,
+            radioDetail = session?.state?.let { "ESP32 radio is ${it.phase.name.lowercase().replace('_', ' ')}${it.detail?.let { detail -> ": $detail" } ?: ""}" },
+        )
+        if (!availability.enabled || session == null) {
+            frlgOperationState = FrlgOperationState(
+                FrlgOperationPhase.FAILED,
+                availability.reason ?: "ESP32 radio session is unavailable",
+                lastReached = frlgOperationState.lastReached,
+                diagnostics = frlgOperationState.diagnostics,
+            )
             return
         }
-        if (activeLdnTest != null || activeFrlgOperation != null) return
         val jobId = synchronized(frlgOperationLock) { ++frlgOperationId }
         frlgOperationState = FrlgOperationState(FrlgOperationPhase.PREPARING_ESP32)
         ldnOperationWorker.execute {
@@ -771,7 +785,7 @@ class MainActivity : ComponentActivity() {
                                 jobId == frlgOperationId && activeFrlgOperation?.discovery === controller
                             }
                             if (!current) return@runOnUiThread
-                            frlgOperationState = frlgState(snapshot)
+                            frlgOperationState = frlgOperationState.recordProgress(frlgState(snapshot))
                             when {
                                 snapshot.giftStage == FrlgGiftStage.COMPLETED ->
                                     finishFrlgOperation(jobId, FrlgOperationPhase.COMPLETED,
@@ -821,10 +835,7 @@ class MainActivity : ComponentActivity() {
                 synchronized(frlgOperationLock) {
                     if (activeFrlgOperation?.discovery === discovery) activeFrlgOperation = null
                 }
-                runOnUiThread {
-                    if (jobId == frlgOperationId) frlgOperationState = FrlgOperationState(
-                        FrlgOperationPhase.FAILED, error.message ?: "Could not start FRLG operation")
-                }
+                runOnUiThread { finishFrlgStartupFailure(jobId, error) }
             }
         }
     }
@@ -844,13 +855,37 @@ class MainActivity : ComponentActivity() {
                 snapshot.rfuConnected -> FrlgOperationPhase.ESTABLISHING_RFU
                 snapshot.reliableEstablished -> FrlgOperationPhase.ESTABLISHING_RELIABLE
                 snapshot.piaStage == LdnPiaStage.ESTABLISHED -> FrlgOperationPhase.ESTABLISHING_PIA
-                snapshot.authenticationRequests > 0 || snapshot.participantRegistered -> FrlgOperationPhase.AUTHENTICATING
+                snapshot.participantRegistered -> FrlgOperationPhase.PARTICIPANT_REGISTERED
+                snapshot.authenticationRequests > 0 -> FrlgOperationPhase.AUTHENTICATING
+                snapshot.stationDetected -> FrlgOperationPhase.STATION_ASSOCIATED
                 snapshot.discoveryActivityCount > 0 -> FrlgOperationPhase.CONSOLE_DETECTED
                 else -> FrlgOperationPhase.WAITING_FOR_CONSOLE
             }
         }
         val detected = snapshot.detectedCartridge?.let { "$it detected" }
-        return FrlgOperationState(phase, detected ?: snapshot.latestActivity)
+        val diagnostics = buildString {
+            append("Counters: discovery=${snapshot.discoveryActivityCount}")
+            append(" station=${snapshot.stationJoins}/${snapshot.stationLeaves}")
+            append(" auth=${snapshot.authenticationRequests}/${snapshot.authenticationResponses}")
+            append(" participant=${snapshot.participantRegistered}")
+            append(" PIA=${snapshot.piaStage}")
+            append(" Reliable=${snapshot.reliableFramesReceived}/${snapshot.reliableFramesSent}")
+            append(" RFU=${snapshot.rfuConnected}")
+            append(" LinkPlayer=${snapshot.linkPlayerExchanged}")
+            snapshot.detectedCartridge?.let { append(" cartridge=$it") }
+            snapshot.giftStage?.let { append(" gift=$it") }
+        }
+        return FrlgOperationState(phase, detected ?: snapshot.latestActivity, phase, diagnostics)
+    }
+
+    private fun releaseStaleRadioOwnership(session: Esp32RadioSession) {
+        val staleFrlg = synchronized(frlgOperationLock) {
+            activeFrlgOperation?.takeIf { it.session === session }?.also { activeFrlgOperation = null }
+        }
+        staleFrlg?.discovery?.stop()
+        synchronized(ldnTestLock) {
+            activeLdnTest?.takeIf { it.session === session }?.also { activeLdnTest = null }
+        }?.discovery?.stop()
     }
 
     private fun cancelWalkThroughWalls() {
@@ -866,8 +901,13 @@ class MainActivity : ComponentActivity() {
             if (id != frlgOperationId) return
             activeFrlgOperation?.also { activeFrlgOperation = null } ?: return
         }
-        frlgOperationState = FrlgOperationState(FrlgOperationPhase.RETURNING_TO_READY,
-            "Returning adapter to Ready")
+        val progress = frlgOperationState
+        frlgOperationState = FrlgOperationState(
+            FrlgOperationPhase.RETURNING_TO_READY,
+            detail,
+            progress.lastReached,
+            progress.diagnostics,
+        )
         ldnOperationWorker.execute {
             val error = try {
                 active.discovery.stop()
@@ -876,11 +916,29 @@ class MainActivity : ComponentActivity() {
             } catch (failure: Exception) { failure }
             runOnUiThread {
                 if (id != frlgOperationId) return@runOnUiThread
-                frlgOperationState = if (error == null) FrlgOperationState(terminal, detail) else
-                    FrlgOperationState(FrlgOperationPhase.FAILED,
-                        error.message ?: "Adapter cleanup failed; reconnect before retrying")
+                frlgOperationState = if (error == null) {
+                    FrlgOperationState(terminal, detail, progress.lastReached, progress.diagnostics)
+                } else {
+                    FrlgOperationState(
+                        FrlgOperationPhase.FAILED,
+                        "$detail; adapter cleanup failed: ${error.message ?: "reconnect the ESP32 before retrying"}",
+                        progress.lastReached,
+                        progress.diagnostics,
+                    )
+                }
             }
         }
+    }
+
+    private fun finishFrlgStartupFailure(id: Int, error: Exception) {
+        if (id != frlgOperationId) return
+        val progress = frlgOperationState
+        frlgOperationState = FrlgOperationState(
+            FrlgOperationPhase.FAILED,
+            error.message ?: "Could not start FRLG operation",
+            progress.lastReached,
+            progress.diagnostics,
+        )
     }
 
     private fun invalidateFrlgOperation() {
@@ -980,10 +1038,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun installRadioSession(session: Esp32RadioSession) {
+        try { radioStateSubscription?.close() } catch (_: Exception) { }
         val previous = synchronized(radioSessionLock) {
             val current = radioSession
             radioSession = session
             current
+        }
+        radioStateSubscription = session.addStateListener { next ->
+            runOnUiThread { if (radioSession === session) radioState = next }
         }
         if (previous !== session) {
             try { previous?.close() } catch (_: Exception) { /* The USB device may already be detached. */ }
@@ -995,6 +1057,11 @@ class MainActivity : ComponentActivity() {
             val current = radioSession
             if (expected != null && current !== expected) null
             else current.also { radioSession = null }
+        }
+        if (session != null) {
+            try { radioStateSubscription?.close() } catch (_: Exception) { }
+            radioStateSubscription = null
+            runOnUiThread { radioState = Esp32RadioState() }
         }
         try { session?.close() } catch (_: Exception) { /* The USB device may already be detached. */ }
     }

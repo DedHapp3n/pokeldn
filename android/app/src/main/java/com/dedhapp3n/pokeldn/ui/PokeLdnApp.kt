@@ -37,7 +37,10 @@ import com.dedhapp3n.pokeldn.esp32.Esp32HandshakePhase
 import com.dedhapp3n.pokeldn.esp32.Esp32HandshakeState
 import com.dedhapp3n.pokeldn.esp32.RawCaptureState
 import com.dedhapp3n.pokeldn.esp32.RawReadBufferMode
+import com.dedhapp3n.pokeldn.esp32.Esp32RadioPhase
+import com.dedhapp3n.pokeldn.esp32.Esp32RadioState
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationState
+import com.dedhapp3n.pokeldn.frlg.FrlgOperationStartGate
 import com.dedhapp3n.pokeldn.frlg.ProdKeysPhase
 import com.dedhapp3n.pokeldn.frlg.ProdKeysState
 import com.dedhapp3n.pokeldn.frlg.WalkThroughWallsPreset
@@ -106,6 +109,7 @@ fun PokeLdnApp(
     onStartLdnApTest: () -> Unit,
     onStopLdnApTest: () -> Unit,
     frlgOperationState: FrlgOperationState,
+    radioState: Esp32RadioState,
     onStartWalkThroughWalls: () -> Unit,
     onCancelWalkThroughWalls: () -> Unit,
     modifier: Modifier = Modifier,
@@ -135,6 +139,7 @@ fun PokeLdnApp(
                     esp32State = esp32State,
                     keysState = prodKeysState,
                     operationState = frlgOperationState,
+                    radioState = radioState,
                     onImportKeys = onImportProdKeys,
                     onStart = onStartWalkThroughWalls,
                     onCancel = onCancelWalkThroughWalls,
@@ -565,14 +570,23 @@ private fun WalkThroughWallsScreen(
     esp32State: Esp32HandshakeState,
     keysState: ProdKeysState,
     operationState: FrlgOperationState,
+    radioState: Esp32RadioState,
     onImportKeys: () -> Unit,
     onStart: () -> Unit,
     onCancel: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val availability = FrlgOperationStartGate.evaluate(
+        keysAvailable = keysState.phase == ProdKeysPhase.AVAILABLE,
+        handshakeVerified = esp32State.phase == Esp32HandshakePhase.VERIFIED,
+        radioReady = radioState.phase == Esp32RadioPhase.READY,
+        frlgOperationOwned = operationState.running,
+        otherRadioOperationOwned = false,
+        radioDetail = radioState.detail ?: "ESP32 radio is ${radioState.phase.name.lowercase().replace('_', ' ')}",
+    )
     val adapterReady = connectionState.phase == SerialConnectionPhase.CONNECTED &&
-        esp32State.phase == Esp32HandshakePhase.VERIFIED
+        esp32State.phase == Esp32HandshakePhase.VERIFIED && radioState.phase == Esp32RadioPhase.READY
     CenteredDeviceList(modifier) {
         item { DeviceScreenTitle("FRLG / Game Boost", "Walk Through Walls", "Existing upstream noclip resident hook") }
         item { DeviceButton("Back to operations", onBack, Modifier.fillMaxWidth()) }
@@ -587,6 +601,10 @@ private fun WalkThroughWallsScreen(
                     },
                 )
                 operationState.detail?.let { Text(it, color = ScreenMuted) }
+                operationState.lastReached?.let {
+                    Text("Last reached: ${it.label}", style = MaterialTheme.typography.bodySmall, color = ScreenMuted)
+                }
+                operationState.diagnostics?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = ScreenMuted) }
                 Text("Game: FireRed / LeafGreen", color = ScreenMuted)
                 Text("Activation: hold ${WalkThroughWallsPreset.ACTIVATION_BUTTON}", color = ScreenMuted)
                 DisplayStatus(if (adapterReady) "ESP32 ready" else "ESP32 not ready", if (adapterReady) StatusTone.POSITIVE else StatusTone.ERROR)
@@ -619,8 +637,11 @@ private fun WalkThroughWallsScreen(
                         "Start",
                         onStart,
                         Modifier.fillMaxWidth(),
-                        enabled = adapterReady && keysState.phase == ProdKeysPhase.AVAILABLE,
+                        enabled = connectionState.phase == SerialConnectionPhase.CONNECTED && availability.enabled,
                     )
+                    if (!availability.enabled) {
+                        Text(availability.reason.orEmpty(), style = MaterialTheme.typography.bodySmall, color = ScreenMuted)
+                    }
                 }
             }
         }
