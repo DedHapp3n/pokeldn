@@ -9,6 +9,7 @@ internal data class FrlgHostLinkSnapshot(
     val linkPlayerExchanged: Boolean,
     val cartridge: FrlgCartridge?,
     val gift: FrlgGiftSnapshot?,
+    val operationStage: FrlgGiftStage?,
     val linkExchange: FrlgLinkExchangeSnapshot,
     val echoBacklog: Int,
     val echoPeak: Int,
@@ -37,6 +38,7 @@ internal class FrlgHostLink(
     private var disconnectSent = false
     private var linkWireInit = 0L
     private var linkWireFragments = 0L
+    private var peerDepartureStage: FrlgGiftStage? = null
 
     fun tick(nowMillis: Long): List<LdnPiaDatagram> {
         pia.drainReliableDeliveries().forEach { delivery ->
@@ -89,24 +91,39 @@ internal class FrlgHostLink(
         return listOfNotNull(datagram)
     }
 
-    fun snapshot() = FrlgHostLinkSnapshot(
-        rfuConnected = rfu.state != FrlgRfuState.WAIT_CONNECT && rfu.state != FrlgRfuState.DISCONNECTED,
-        rfuReady = rfu.state == FrlgRfuState.UNI,
-        linkPlayerExchanged = link.stage == FrlgLinkStage.ESTABLISHED,
-        cartridge = gift?.snapshot()?.cartridge ?: link.child?.cartridge,
-        gift = gift?.snapshot(),
-        linkExchange = link.snapshot(),
-        echoBacklog = rfu.echoBacklog,
-        echoPeak = rfu.echoBacklogPeak,
-        echoDropped = rfu.echoDropped,
-        echoCoalesced = rfu.echoCoalesced,
-        rfuUniIn = rfu.uniIn,
-        rfuUniOut = rfu.uniOut,
-        reliableOutstanding = pia.reliableOutstanding,
-        linkWireInit = linkWireInit,
-        linkWireFragments = linkWireFragments,
-        detail = gift?.snapshot()?.detail ?: detail,
-    )
+    fun snapshot(): FrlgHostLinkSnapshot {
+        val giftSnapshot = gift?.snapshot()
+        return FrlgHostLinkSnapshot(
+            rfuConnected = rfu.state != FrlgRfuState.WAIT_CONNECT && rfu.state != FrlgRfuState.DISCONNECTED,
+            rfuReady = rfu.state == FrlgRfuState.UNI,
+            linkPlayerExchanged = link.stage == FrlgLinkStage.ESTABLISHED,
+            cartridge = giftSnapshot?.cartridge ?: link.child?.cartridge,
+            gift = giftSnapshot,
+            operationStage = giftSnapshot?.stage ?: peerDepartureStage,
+            linkExchange = link.snapshot(),
+            echoBacklog = rfu.echoBacklog,
+            echoPeak = rfu.echoBacklogPeak,
+            echoDropped = rfu.echoDropped,
+            echoCoalesced = rfu.echoCoalesced,
+            rfuUniIn = rfu.uniIn,
+            rfuUniOut = rfu.uniOut,
+            reliableOutstanding = pia.reliableOutstanding,
+            linkWireInit = linkWireInit,
+            linkWireFragments = linkWireFragments,
+            detail = giftSnapshot?.detail ?: detail,
+        )
+    }
+
+    fun onPeerLeft() {
+        val activeGift = gift
+        if (activeGift != null) {
+            activeGift.onPeerLeft()
+            detail = activeGift.snapshot().detail
+        } else {
+            peerDepartureStage = FrlgGiftStage.FAILED
+            detail = "Console disconnected before the operation completed"
+        }
+    }
 
     fun close(nowMillis: Long): LdnPiaDatagram? = rfu.disconnect()?.let { pia.sendReliable(it, nowMillis) }
 

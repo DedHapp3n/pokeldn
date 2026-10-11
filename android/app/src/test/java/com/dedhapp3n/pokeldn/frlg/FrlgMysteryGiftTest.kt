@@ -36,30 +36,49 @@ class FrlgMysteryGiftTest {
         }
     }
 
-    @Test fun `buffer script Mystery Gift reaches verified close`() {
-        val engine = FrlgMysteryGiftEngine(FrlgCartridge("LeafGreen", "German", 0x4005, 5))
-        repeat(20) { engine.receive(ByteArray(14)) }
-        assertEquals(FrlgGiftStage.READING_CARTRIDGE, engine.snapshot().stage)
-        repeat(300) { engine.tick() }
+    @Test fun `successful close completes when console leaves first`() {
+        val engine = closingSuccessfulEngine()
+        val closing = engine.snapshot()
+        assertTrue(closing.installSucceeded)
+        assertTrue(closing.closePhaseEntered)
+        assertTrue(!closing.closeHandshakeConfirmed)
 
-        val gameData = ByteArray(0x64).also {
-            put32(it, 0, 0x101); put16(it, 4, 1); put32(it, 8, 1); put16(it, 12, 1)
-            put32(it, 16, 2); "BPGD".encodeToByteArray().copyInto(it, 0x5c)
-        }
-        sendMessage(engine, 17, gameData)
-        assertEquals("BPGD", engine.snapshot().gameCode)
-        repeat(4_000) { engine.tick() }
-        assertEquals(FrlgGiftStage.WAITING_RESULT, engine.snapshot().stage)
+        engine.onPeerLeft()
 
-        sendMessage(engine, 19, byteArrayOf(1, 0, 0, 0))
-        repeat(1_000) { engine.tick() }
-        sendMessage(engine, 20, ByteArray(1024))
-        assertEquals(FrlgGiftStage.CLOSING, engine.snapshot().stage)
+        assertEquals(FrlgGiftStage.COMPLETED, engine.snapshot().stage)
+        assertEquals("Walk Through Walls installed", engine.snapshot().detail)
+    }
+
+    @Test fun `successful close completes when Android initiates disconnect`() {
+        val engine = closingSuccessfulEngine()
         engine.receive(FrlgRfu.serialize(intArrayOf(FrlgRfu.READY_CLOSE_LINK, 1)))
+        assertTrue(engine.snapshot().closeHandshakeConfirmed)
         repeat(300) { engine.tick() }
         assertTrue(engine.snapshot().disconnectRequested)
         engine.markDisconnected()
         assertEquals(FrlgGiftStage.COMPLETED, engine.snapshot().stage)
+    }
+
+    @Test fun `console departure before install success fails`() {
+        val engine = preparedEngine()
+        engine.onPeerLeft()
+        assertEquals(FrlgGiftStage.FAILED, engine.snapshot().stage)
+        assertTrue(engine.snapshot().detail!!.contains("disconnected"))
+    }
+
+    @Test fun `console departure during early RFU client stage fails`() {
+        val engine = FrlgMysteryGiftEngine(FrlgCartridge("LeafGreen", "German", 0x4005, 5))
+        engine.onPeerLeft()
+        assertEquals(FrlgGiftStage.FAILED, engine.snapshot().stage)
+        assertTrue(!engine.snapshot().installSucceeded)
+    }
+
+    @Test fun `completed result survives later participant cleanup`() {
+        val engine = closingSuccessfulEngine()
+        engine.onPeerLeft()
+        engine.onPeerLeft()
+        assertEquals(FrlgGiftStage.COMPLETED, engine.snapshot().stage)
+        assertEquals("Walk Through Walls installed", engine.snapshot().detail)
     }
 
     @Test fun `unsupported cartridge is rejected before boost bytes are queued`() {
@@ -99,6 +118,13 @@ class FrlgMysteryGiftTest {
         repeat(4_000) { engine.tick() }
         assertEquals(FrlgGiftStage.WAITING_RESULT, engine.snapshot().stage)
         return engine
+    }
+
+    private fun closingSuccessfulEngine(): FrlgMysteryGiftEngine = preparedEngine().also { engine ->
+        sendMessage(engine, 19, byteArrayOf(1, 0, 0, 0))
+        repeat(1_000) { engine.tick() }
+        sendMessage(engine, 20, ByteArray(1024))
+        assertEquals(FrlgGiftStage.CLOSING, engine.snapshot().stage)
     }
 
     private fun sendMessage(engine: FrlgMysteryGiftEngine, ident: Int, payload: ByteArray) {

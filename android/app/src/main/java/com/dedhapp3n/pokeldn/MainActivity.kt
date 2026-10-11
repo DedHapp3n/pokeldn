@@ -794,9 +794,6 @@ class MainActivity : ComponentActivity() {
                                 snapshot.giftStage == FrlgGiftStage.FAILED ->
                                     finishFrlgOperation(jobId, FrlgOperationPhase.FAILED,
                                         snapshot.latestActivity ?: "Mystery Gift transfer failed")
-                                snapshot.stationLeaves > 0 && snapshot.giftStage != FrlgGiftStage.COMPLETED ->
-                                    finishFrlgOperation(jobId, FrlgOperationPhase.FAILED,
-                                        "Console disconnected before the operation completed")
                             }
                         }
                     },

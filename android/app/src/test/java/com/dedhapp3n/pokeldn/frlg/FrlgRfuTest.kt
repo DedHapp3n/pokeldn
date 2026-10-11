@@ -1,5 +1,6 @@
 package com.dedhapp3n.pokeldn.frlg
 
+import com.dedhapp3n.pokeldn.ldn.LdnPiaHost
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -7,6 +8,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FrlgRfuTest {
+    @Test fun `peer departure during early RFU setup is a protocol failure`() {
+        val pia = LdnPiaHost(ByteArray(32), byteArrayOf(2, 0, 0, 0, 0, 1), 14, 6)
+        val host = FrlgHostLink(pia, byteArrayOf(1, 0xf1.toByte()), runWalkThroughWalls = true)
+
+        host.onPeerLeft()
+
+        assertEquals(FrlgGiftStage.FAILED, host.snapshot().operationStage)
+        assertTrue(host.snapshot().detail!!.contains("disconnected"))
+    }
+
     @Test fun `connect accept and link state match upstream fixture`() {
         val leader = FrlgRfuLeader(byteArrayOf(0xb7.toByte(), 0xf1.toByte()))
         assertEquals("connect", leader.receive(hex("574302008084")))

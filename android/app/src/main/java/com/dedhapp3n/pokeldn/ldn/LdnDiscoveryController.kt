@@ -76,6 +76,9 @@ data class LdnDiscoverySnapshot(
     val linkPlayerWireFragments: Long = 0,
     val detectedCartridge: String? = null,
     val giftStage: com.dedhapp3n.pokeldn.frlg.FrlgGiftStage? = null,
+    val giftInstallSucceeded: Boolean = false,
+    val giftClosePhaseEntered: Boolean = false,
+    val giftCloseHandshakeConfirmed: Boolean = false,
     val latestActivity: String? = null,
 )
 
@@ -230,6 +233,7 @@ class LdnDiscoveryController internal constructor(
             if (!running) return
             if (event is Esp32RadioEvent.StationJoined) associatedStations += event.mac.formatMac()
             if (event is Esp32RadioEvent.StationLeft) associatedStations -= event.mac.formatMac()
+            if (event is Esp32RadioEvent.StationLeft && removedParticipant != null) frlgHost?.onPeerLeft()
             if (event is Esp32RadioEvent.StationLeft) piaHost?.participantLeft(event.mac)
             snapshot = when (event) {
                 is Esp32RadioEvent.ManagementFrame -> error("Management frames are handled before this branch")
@@ -277,6 +281,7 @@ class LdnDiscoveryController internal constructor(
                 } ?: return
                 else -> return
             }
+            if (event is Esp32RadioEvent.StationLeft && removedParticipant != null) updateFrlgSnapshotLocked()
             snapshot
         }
         if (event is Esp32RadioEvent.StationJoined || event is Esp32RadioEvent.StationLeft ||
@@ -522,7 +527,11 @@ class LdnDiscoveryController internal constructor(
             linkPlayerWireInit = link.linkWireInit,
             linkPlayerWireFragments = link.linkWireFragments,
             detectedCartridge = link.cartridge?.let { "${it.game} / ${it.language}" },
-            giftStage = link.gift?.stage,
+            giftStage = link.operationStage,
+            giftInstallSucceeded = link.gift?.installSucceeded ?: snapshot.giftInstallSucceeded,
+            giftClosePhaseEntered = link.gift?.closePhaseEntered ?: snapshot.giftClosePhaseEntered,
+            giftCloseHandshakeConfirmed = link.gift?.closeHandshakeConfirmed
+                ?: snapshot.giftCloseHandshakeConfirmed,
             latestActivity = link.detail ?: snapshot.latestActivity,
         )
     }

@@ -11,6 +11,9 @@ internal data class FrlgGiftSnapshot(
     val gameCode: String?,
     val detail: String?,
     val disconnectRequested: Boolean,
+    val installSucceeded: Boolean,
+    val closePhaseEntered: Boolean,
+    val closeHandshakeConfirmed: Boolean,
 )
 
 /** Exact upstream buffer-script Mystery Gift flow used by the noclip resident installer. */
@@ -35,6 +38,8 @@ internal class FrlgMysteryGiftEngine(
     private var detectedCartridge: FrlgCartridge? = null
     private var closeRetry = 0
     private var closeGrace: Int? = null
+    private var closePhaseEntered = false
+    private var closeHandshakeConfirmed = false
     var disconnectRequested = false
         private set
     private var operationSucceeded = false
@@ -56,7 +61,10 @@ internal class FrlgMysteryGiftEngine(
         if (op == FrlgRfu.READY_CLOSE_LINK) {
             val count = if (slot.size >= 4) le16Mg(slot, 2) else 0
             repeat(4) { words += intArrayOf(FrlgRfu.READY_CLOSE_LINK, count, 0, 0, 0, 0, 0) }
-            if (stage == FrlgGiftStage.CLOSING && closeGrace == null) closeGrace = 300
+            if (stage == FrlgGiftStage.CLOSING) {
+                closeHandshakeConfirmed = true
+                if (closeGrace == null) closeGrace = 300
+            }
             return
         }
         receiver.receive(slot)?.let(::onRfuBlock)
@@ -94,7 +102,10 @@ internal class FrlgMysteryGiftEngine(
         return IntArray(7)
     }
 
-    fun snapshot() = FrlgGiftSnapshot(stage, detectedCartridge ?: linkCartridge, gameCode, detail, disconnectRequested)
+    fun snapshot() = FrlgGiftSnapshot(
+        stage, detectedCartridge ?: linkCartridge, gameCode, detail, disconnectRequested,
+        operationSucceeded, closePhaseEntered, closeHandshakeConfirmed,
+    )
 
     private fun beginGameData() {
         stage = FrlgGiftStage.READING_CARTRIDGE
@@ -167,6 +178,7 @@ internal class FrlgMysteryGiftEngine(
     }
 
     private fun beginClose() {
+        closePhaseEntered = true
         stage = FrlgGiftStage.CLOSING
         detail = "Closing Mystery Gift link"
         queueClose()
@@ -181,10 +193,18 @@ internal class FrlgMysteryGiftEngine(
     }
     private fun fail(message: String) { stage = FrlgGiftStage.FAILED; detail = message }
 
-    fun markDisconnected() {
-        stage = if (operationSucceeded) FrlgGiftStage.COMPLETED else FrlgGiftStage.FAILED
-        detail = terminalDetail ?: detail
+    fun onPeerLeft() {
+        if (stage == FrlgGiftStage.COMPLETED || stage == FrlgGiftStage.FAILED) return
+        if (operationSucceeded && closePhaseEntered) {
+            stage = FrlgGiftStage.COMPLETED
+            detail = terminalDetail ?: "Walk Through Walls installed"
+        } else {
+            stage = FrlgGiftStage.FAILED
+            detail = terminalDetail ?: "Console disconnected before the operation completed"
+        }
     }
+
+    fun markDisconnected() = onPeerLeft()
 
     companion object {
         private val CLIENT_SEND_GAME_DATA = hexMg("0800000000000000030000000000000002000000100000000400000000000000")
