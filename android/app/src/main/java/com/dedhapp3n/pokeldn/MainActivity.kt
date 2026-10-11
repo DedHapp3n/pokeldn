@@ -40,7 +40,7 @@ import com.dedhapp3n.pokeldn.frlg.FrlgGiftStage
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationStartGate
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationState
-import com.dedhapp3n.pokeldn.frlg.frlgFailureDiagnostics
+import com.dedhapp3n.pokeldn.frlg.frlgProtocolDiagnostics
 import com.dedhapp3n.pokeldn.ldn.LdnAdvertisementBuilder
 import com.dedhapp3n.pokeldn.ldn.LdnApTestPhase
 import com.dedhapp3n.pokeldn.ldn.LdnApTestState
@@ -861,7 +861,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         val detected = snapshot.detectedCartridge?.let { "$it detected" }
-        val diagnostics = frlgFailureDiagnostics(snapshot)
+        val diagnostics = frlgProtocolDiagnostics(snapshot)
         return FrlgOperationState(phase, detected ?: snapshot.latestActivity, phase, diagnostics)
     }
 

@@ -30,6 +30,7 @@ import com.dedhapp3n.pokeldn.esp32.RawReadBufferMode
 import com.dedhapp3n.pokeldn.esp32.formatMac
 import com.dedhapp3n.pokeldn.frlg.ProdKeysPhase
 import com.dedhapp3n.pokeldn.frlg.ProdKeysState
+import com.dedhapp3n.pokeldn.frlg.FrlgOperationState
 import com.dedhapp3n.pokeldn.ldn.LdnApTestPhase
 import com.dedhapp3n.pokeldn.ldn.LdnApTestState
 import com.dedhapp3n.pokeldn.ui.theme.CreamPanel
@@ -50,6 +51,7 @@ import com.dedhapp3n.pokeldn.usb.usbIdHex
 private val diagnosticBaudRates = listOf(115200, 230400, 460800, 921600)
 
 @Composable
+@Suppress("DEPRECATION")
 internal fun DiagnosticsScreen(
     result: UsbScanResult?,
     connectionState: SerialConnectionState,
@@ -68,10 +70,12 @@ internal fun DiagnosticsScreen(
     prodKeysState: ProdKeysState,
     onImportProdKeys: () -> Unit,
     ldnApTestState: LdnApTestState,
+    frlgOperationState: FrlgOperationState,
     onStartLdnApTest: () -> Unit,
     onStopLdnApTest: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val clipboard = LocalClipboardManager.current
     val devices = (result as? UsbScanResult.Devices)?.items.orEmpty()
     val busy = connectionState.phase in setOf(
         SerialConnectionPhase.REQUESTING_PERMISSION,
@@ -82,6 +86,35 @@ internal fun DiagnosticsScreen(
     CenteredDeviceList(modifier) {
         item {
             DeviceScreenTitle(null, "Diagnostics", "USB, serial, protocol, and capture controls")
+        }
+        frlgOperationState.diagnostics?.let { diagnostics ->
+            item {
+                ShellPanel("FRLG operation diagnostics") {
+                    DetailLine("Stage", frlgOperationState.phase.label)
+                    frlgOperationState.detail?.let { DetailLine("Result", it) }
+                    DeviceButton(
+                        "Copy FRLG diagnostics",
+                        { clipboard.setText(AnnotatedString(diagnostics)) },
+                        Modifier.fillMaxWidth(),
+                        style = DeviceButtonStyle.SECONDARY,
+                    )
+                    SelectionContainer {
+                        Surface(
+                            color = ScreenBlack,
+                            contentColor = ScreenText,
+                            shape = RoundedCornerShape(9.dp),
+                            border = BorderStroke(2.dp, DeviceBezel),
+                        ) {
+                            Text(
+                                diagnostics,
+                                fontFamily = FontFamily.Monospace,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(12.dp),
+                            )
+                        }
+                    }
+                }
+            }
         }
         item {
             ShellPanel("USB scanner") {

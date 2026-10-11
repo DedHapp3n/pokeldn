@@ -181,6 +181,7 @@ fun PokeLdnApp(
                 prodKeysState = prodKeysState,
                 onImportProdKeys = onImportProdKeys,
                 ldnApTestState = ldnApTestState,
+                frlgOperationState = frlgOperationState,
                 onStartLdnApTest = onStartLdnApTest,
                 onStopLdnApTest = onStopLdnApTest,
                 modifier = Modifier.padding(innerPadding),
@@ -621,7 +622,6 @@ private fun WalkThroughWallsScreen(
                 operationState.lastReached?.let {
                     Text("Last reached: ${it.label}", style = MaterialTheme.typography.bodySmall, color = ScreenMuted)
                 }
-                operationState.diagnostics?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = ScreenMuted) }
                 Text("Game: FireRed / LeafGreen", color = ScreenMuted)
                 Text("Activation: hold ${WalkThroughWallsPreset.ACTIVATION_BUTTON}", color = ScreenMuted)
                 DisplayStatus(if (adapterReady) "ESP32 ready" else "ESP32 not ready", if (adapterReady) StatusTone.POSITIVE else StatusTone.ERROR)

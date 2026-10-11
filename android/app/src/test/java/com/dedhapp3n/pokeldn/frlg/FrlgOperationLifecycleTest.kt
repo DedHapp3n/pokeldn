@@ -105,8 +105,8 @@ class FrlgOperationLifecycleTest {
     }
 
     @Test
-    fun failureDiagnosticsIncludePreservedPostAuthenticationEvidence() {
-        val diagnostics = frlgFailureDiagnostics(
+    fun protocolDiagnosticsIncludePreservedPostAuthenticationEvidence() {
+        val diagnostics = frlgProtocolDiagnostics(
             LdnDiscoverySnapshot(
                 discoveryActivityCount = 7,
                 ethernetFrames = 3,
@@ -158,6 +158,9 @@ class FrlgOperationLifecycleTest {
                 reliableOutstanding = 6,
                 linkPlayerWireInit = 4,
                 linkPlayerWireFragments = 31,
+                giftInstallSucceeded = true,
+                giftClosePhaseEntered = true,
+                giftCloseHandshakeConfirmed = false,
                 firstPeerDataTrace = LdnRawDataTrace(
                     toDs = true,
                     fromDs = false,
@@ -213,6 +216,9 @@ class FrlgOperationLifecycleTest {
         assertTrue(diagnostics.contains("relOutstanding=6"))
         assertTrue(diagnostics.contains("lpWireInit=4"))
         assertTrue(diagnostics.contains("lpWireFrag=31"))
+        assertTrue(diagnostics.contains("installOk=true"))
+        assertTrue(diagnostics.contains("closeEntered=true"))
+        assertTrue(diagnostics.contains("closeAck=false"))
         assertTrue(
             diagnostics.contains(
                 "rawFirst=toDS:1/fromDS:0/protected:1/src:0a:0b:0c:0d:0e:0f/" +

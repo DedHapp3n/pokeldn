@@ -83,7 +83,7 @@ private fun FrlgOperationPhase.progressRank(): Int = when (this) {
     else -> -1
 }
 
-internal fun frlgFailureDiagnostics(snapshot: LdnDiscoverySnapshot): String = buildString {
+internal fun frlgProtocolDiagnostics(snapshot: LdnDiscoverySnapshot): String = buildString {
     append("Counters: discovery=${snapshot.discoveryActivityCount}")
     append(" station=${snapshot.stationJoins}/${snapshot.stationLeaves}")
     append(" auth=${snapshot.authenticationRequests}/${snapshot.authenticationResponses}")
@@ -147,9 +147,12 @@ internal fun frlgFailureDiagnostics(snapshot: LdnDiscoverySnapshot): String = bu
     append(" lpWireFrag=${snapshot.linkPlayerWireFragments}")
     snapshot.detectedCartridge?.let { append(" cartridge=$it") }
     snapshot.giftStage?.let { append(" gift=$it") }
+    append(" installOk=${snapshot.giftInstallSucceeded}")
+    append(" closeEntered=${snapshot.giftClosePhaseEntered}")
+    append(" closeAck=${snapshot.giftCloseHandshakeConfirmed}")
 }
 
-/** Pure lifecycle gate used by the future LDN operation runner. */
+/** Pure lifecycle gate for single-use FRLG operations. */
 class FrlgOperationLifecycle {
     var state = FrlgOperationState()
         private set

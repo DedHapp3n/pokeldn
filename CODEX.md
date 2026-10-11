@@ -184,6 +184,21 @@ For each ported subsystem:
 
 Do not rely only on a live Switch for correctness.
 
+## Android verification status
+
+### Physically verified
+
+- **FRLG Walk Through Walls is physically verified end-to-end** through Android USB OTG, the upstream ESP32 firmware, Nintendo LDN, PIA, Reliable, RFU, LinkPlayer and Mystery Gift.
+- The verified cartridge is **Pokémon LeafGreen / German**.
+- The resident Walk Through Walls boost installs successfully and works on the console with the configured R-button activation.
+- A console-initiated network departure after the successful Mystery Gift close phase is valid completion behavior. Android must preserve the confirmed install result and report the operation as completed.
+
+### Unit-tested or not yet physically verified
+
+- Protocol fixtures and edge cases for raw group CCMP receive, ARP, PIA, Reliable, RFU, LinkPlayer block delivery and Mystery Gift lifecycle are covered by Android unit tests.
+- Other FRLG cartridge and language variants represented by payload fixtures have not yet been physically verified through the Android workflow.
+- Other FRLG operations and other games remain planned or incomplete unless a later milestone records physical verification here.
+
 ## Repository structure
 
 Do not commit to a final Android directory layout until the first architecture pass is complete.
