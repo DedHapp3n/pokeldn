@@ -140,6 +140,15 @@ class FrlgOperationLifecycleTest {
                 rawDecryptFailures = 1,
                 arpFramesReceived = 2,
                 arpRepliesSent = 2,
+                linkPlayerChildBlock = true,
+                linkPlayerMpId = 1,
+                linkPlayerHostInitCount = 4,
+                linkPlayerHostFragments = "0x2,1x2,2x1",
+                linkPlayerHostBlockComplete = false,
+                linkPlayerStandbyReceived = true,
+                linkPlayerStandbyLatched = true,
+                linkPlayerStandbyEchoes = 4,
+                linkPlayerBarrierComplete = false,
                 firstPeerDataTrace = LdnRawDataTrace(
                     toDs = true,
                     fromDs = false,
@@ -177,6 +186,15 @@ class FrlgOperationLifecycleTest {
         assertTrue(diagnostics.contains("rawDecryptFail=1"))
         assertTrue(diagnostics.contains("arpRx=2"))
         assertTrue(diagnostics.contains("arpReply=2"))
+        assertTrue(diagnostics.contains("lpChild=true"))
+        assertTrue(diagnostics.contains("mpId=1"))
+        assertTrue(diagnostics.contains("lpInit=4"))
+        assertTrue(diagnostics.contains("lpFrag=0x2,1x2,2x1"))
+        assertTrue(diagnostics.contains("lpHostDone=false"))
+        assertTrue(diagnostics.contains("standby=true"))
+        assertTrue(diagnostics.contains("latched=true"))
+        assertTrue(diagnostics.contains("echoes=4"))
+        assertTrue(diagnostics.contains("barrier=false"))
         assertTrue(
             diagnostics.contains(
                 "rawFirst=toDS:1/fromDS:0/protected:1/src:0a:0b:0c:0d:0e:0f/" +

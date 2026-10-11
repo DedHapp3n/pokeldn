@@ -6,6 +6,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FrlgMysteryGiftTest {
+    @Test fun `post barrier client startup waits twenty idle frames without duplicate standby echoes`() {
+        val engine = FrlgMysteryGiftEngine(
+            FrlgCartridge("LeafGreen", "German", 0x4005, 5),
+            startupStandbyCount = 7,
+            echoStartupStandby = false,
+        )
+        assertTrue(engine.tick().all { it == 0 })
+        repeat(19) { engine.receive(ByteArray(14)) }
+        assertEquals(FrlgGiftStage.WAITING_CLIENT, engine.snapshot().stage)
+        engine.receive(ByteArray(14))
+        assertEquals(FrlgGiftStage.READING_CARTRIDGE, engine.snapshot().stage)
+    }
+
     @Test fun `upstream noclip fixture is selected for exact cartridge`() {
         val payload = WalkThroughWallsPayloads.forGameCode("BPGD")!!
         assertEquals(452, payload.size)

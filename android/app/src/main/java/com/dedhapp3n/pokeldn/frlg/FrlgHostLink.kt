@@ -9,6 +9,7 @@ internal data class FrlgHostLinkSnapshot(
     val linkPlayerExchanged: Boolean,
     val cartridge: FrlgCartridge?,
     val gift: FrlgGiftSnapshot?,
+    val linkExchange: FrlgLinkExchangeSnapshot,
     val detail: String?,
 )
 
@@ -76,13 +77,16 @@ internal class FrlgHostLink(
         linkPlayerExchanged = link.stage == FrlgLinkStage.ESTABLISHED,
         cartridge = gift?.snapshot()?.cartridge ?: link.child?.cartridge,
         gift = gift?.snapshot(),
+        linkExchange = link.snapshot(),
         detail = gift?.snapshot()?.detail ?: detail,
     )
 
     fun close(nowMillis: Long): LdnPiaDatagram? = rfu.disconnect()?.let { pia.sendReliable(it, nowMillis) }
 
     private fun ensureGift() {
-        if (!runWalkThroughWalls || gift != null || link.stage != FrlgLinkStage.ESTABLISHED) return
-        link.child?.cartridge?.let { gift = FrlgMysteryGiftEngine(it, link.standbyCount ?: 0) }
+        if (!runWalkThroughWalls || gift != null || !link.readyForGift) return
+        link.child?.cartridge?.let {
+            gift = FrlgMysteryGiftEngine(it, link.standbyCount ?: 0, echoStartupStandby = false)
+        }
     }
 }

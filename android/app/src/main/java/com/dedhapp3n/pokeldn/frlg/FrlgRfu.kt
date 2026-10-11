@@ -116,6 +116,12 @@ internal class FrlgRfuLeader(
     private val pending = ArrayDeque<ByteArray>()
     private val echo = ArrayDeque<ByteArray>()
     private val echoSet = mutableSetOf<List<Byte>>()
+    var echoBacklogPeak = 0
+        private set
+    var echoCoalesced = 0
+        private set
+    var echoDropped = 0
+        private set
     private val seenNi = mutableSetOf<List<Byte>>()
     private val childNi = ChildNiReceiver()
     private val parentNi = ParentNiSender()
@@ -173,7 +179,16 @@ internal class FrlgRfuLeader(
         if (state != FrlgRfuState.UNI || slot.size < 2 + FrlgRfu.SLOT_SIZE) return "uni_early"
         childCommand = slot.copyOfRange(2, 2 + FrlgRfu.SLOT_SIZE).also { it[0] = (it[0].u8() and 31).toByte() }
         val key = childCommand.toList()
-        if (echoSet.add(key)) echo += childCommand.copyOf()
+        if (!echoSet.add(key)) {
+            echoCoalesced++
+        } else {
+            echo += childCommand.copyOf()
+            echoBacklogPeak = maxOf(echoBacklogPeak, echo.size)
+            while (echo.size > ECHO_MAX) {
+                echoSet.remove(echo.removeFirst().toList())
+                echoDropped++
+            }
+        }
         return "uni"
     }
 
@@ -211,6 +226,10 @@ internal class FrlgRfuLeader(
         pending += wrap(FrlgRfu.parentSlot(fields.state, 0, ack = 1, n = fields.n, phase = fields.phase))
     }
     private fun wrap(slot: ByteArray) = FrlgGbaFrame.parentT(slot, timestamp++)
+
+    companion object {
+        private const val ECHO_MAX = 64
+    }
 }
 
 private class ChildNiReceiver {

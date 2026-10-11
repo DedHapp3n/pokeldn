@@ -58,10 +58,68 @@ class FrlgRfuTest {
         assertEquals("German", exchange.child!!.cartridge!!.language)
         assertEquals(FrlgLinkStage.SENDING_HOST, exchange.stage)
         repeat(4) { assertEquals(FrlgRfu.SEND_BLOCK_INIT, exchange.tick()[0] and FrlgRfu.MASK) }
-        repeat(17) { index -> assertEquals(index, exchange.tick()[0] and 31) }
+        val hostWire = ArrayList<Byte>()
+        repeat(17) { index ->
+            repeat(2) {
+                val words = exchange.tick()
+                assertEquals(index, words[0] and 31)
+                if (it == 0) hostWire += FrlgRfu.serialize(words).drop(2)
+            }
+        }
+        assertArrayEquals(UPSTREAM_HOST_BLOCK.copyOf(204), hostWire.toByteArray())
         assertEquals(FrlgLinkStage.WAITING_STANDBY, exchange.stage)
         exchange.receive(FrlgRfu.serialize(intArrayOf(FrlgRfu.READY_EXIT_STANDBY, 3)))
         assertEquals(FrlgLinkStage.ESTABLISHED, exchange.stage)
+        assertTrue(!exchange.readyForGift)
+        repeat(4) { assertEquals(FrlgRfu.READY_EXIT_STANDBY, exchange.tick()[0] and FrlgRfu.MASK) }
+        assertTrue(exchange.readyForGift)
+        val diagnostics = exchange.snapshot()
+        assertTrue(diagnostics.childBlockReceived)
+        assertEquals(1, diagnostics.childMpId)
+        assertEquals(4, diagnostics.hostInitCount)
+        assertEquals((0..16).joinToString(",") { "${it}x2" }, diagnostics.hostFragmentIndexes)
+        assertTrue(diagnostics.hostBlockComplete)
+        assertTrue(diagnostics.standbyReceived)
+        assertEquals(4, diagnostics.standbyEchoesSent)
+        assertTrue(diagnostics.barrierComplete)
+    }
+
+    @Test fun `standby during host block is latched until every repeated fragment completes`() {
+        val exchange = exchangeWithChildBlock()
+        repeat(4) { exchange.tick() }
+        repeat(5) { exchange.tick() }
+
+        exchange.receive(FrlgRfu.serialize(intArrayOf(FrlgRfu.READY_EXIT_STANDBY, 7)))
+        assertEquals(FrlgLinkStage.SENDING_HOST, exchange.stage)
+        assertTrue(exchange.snapshot().standbyLatched)
+        repeat(4) { assertEquals(FrlgRfu.READY_EXIT_STANDBY, exchange.tick()[0] and FrlgRfu.MASK) }
+        while (!exchange.snapshot().hostBlockComplete) exchange.tick()
+
+        assertEquals(FrlgLinkStage.ESTABLISHED, exchange.stage)
+        assertTrue(exchange.readyForGift)
+        assertTrue(!exchange.snapshot().standbyLatched)
+    }
+
+    @Test fun `repeated child block commands cannot rewind the active host sender`() {
+        val exchange = exchangeWithChildBlock()
+        assertEquals(FrlgLinkStage.SENDING_HOST, exchange.stage)
+        exchange.receive(FrlgRfu.serialize(intArrayOf(FrlgRfu.SEND_BLOCK_INIT, 17, 0x81)))
+        exchange.receive(FrlgRfu.serialize(FrlgRfu.blockFragment(16, ByteArray(12))))
+
+        assertEquals(FrlgLinkStage.SENDING_HOST, exchange.stage)
+        assertEquals(FrlgRfu.SEND_BLOCK_INIT, exchange.tick()[0] and FrlgRfu.MASK)
+    }
+
+    @Test fun `premature standby is echoed but cannot satisfy the LinkPlayer barrier`() {
+        val exchange = FrlgLinkPlayerExchange()
+        exchange.receive(FrlgRfu.serialize(intArrayOf(FrlgRfu.READY_EXIT_STANDBY, 1)))
+        repeat(4) { exchange.tick() }
+        repeat(9) { exchange.tick() }
+        feedChildBlock(exchange)
+        repeat(4 + 17 * 2) { exchange.tick() }
+
+        assertEquals(FrlgLinkStage.WAITING_STANDBY, exchange.stage)
+        assertTrue(!exchange.snapshot().standbyLatched)
     }
 
     @Test fun `invalid LinkPlayer magic is rejected`() {
@@ -79,6 +137,20 @@ class FrlgRfuTest {
         putLe16Test(body, 0, version); putLe16Test(body, 2, 0x8000)
         putLe16Test(body, 26, language)
         return magic + body + magic
+    }
+
+    private fun exchangeWithChildBlock() = FrlgLinkPlayerExchange().also { exchange ->
+        repeat(9) { exchange.tick() }
+        feedChildBlock(exchange)
+    }
+
+    private fun feedChildBlock(exchange: FrlgLinkPlayerExchange) {
+        val block = childLinkPlayer(version = 0x4005, language = 5).copyOf(204)
+        exchange.receive(FrlgRfu.serialize(intArrayOf(FrlgRfu.SEND_BLOCK_INIT, 17, 0x81)))
+        repeat(17) { index ->
+            exchange.receive(FrlgRfu.serialize(FrlgRfu.blockFragment(index,
+                block.copyOfRange(index * 12, index * 12 + 12))))
+        }
     }
 
     private fun gameData(version: Int, language: Int): ByteArray {
@@ -118,4 +190,11 @@ class FrlgRfuTest {
     private fun hex(value: String) = value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
     private fun le16Test(data: ByteArray, offset: Int) = (data[offset].toInt() and 255) or ((data[offset + 1].toInt() and 255) shl 8)
     private fun putLe16Test(data: ByteArray, offset: Int, value: Int) { data[offset] = value.toByte(); data[offset + 1] = (value ushr 8).toByte() }
+
+    companion object {
+        private val UPSTREAM_HOST_BLOCK = hexStatic(
+            "47616d65467265616b20696e632e0000044000802288ed47bfc7cfffffffffff" +
+                "0000000000000000020047616d65467265616b20696e632e0000").copyOf(200)
+        private fun hexStatic(value: String) = value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+    }
 }

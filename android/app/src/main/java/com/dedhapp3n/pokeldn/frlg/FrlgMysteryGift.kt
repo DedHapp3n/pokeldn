@@ -17,6 +17,7 @@ internal data class FrlgGiftSnapshot(
 internal class FrlgMysteryGiftEngine(
     private val linkCartridge: FrlgCartridge,
     startupStandbyCount: Int = 0,
+    echoStartupStandby: Boolean = true,
 ) {
     var stage = FrlgGiftStage.WAITING_CLIENT
         private set
@@ -40,7 +41,9 @@ internal class FrlgMysteryGiftEngine(
     private var terminalDetail: String? = null
 
     init {
-        repeat(4) { words += intArrayOf(FrlgRfu.READY_EXIT_STANDBY, startupStandbyCount, 0, 0, 0, 0, 0) }
+        if (echoStartupStandby) {
+            repeat(4) { words += intArrayOf(FrlgRfu.READY_EXIT_STANDBY, startupStandbyCount, 0, 0, 0, 0, 0) }
+        }
     }
 
     fun receive(slot: ByteArray) {

@@ -127,6 +127,15 @@ internal fun frlgFailureDiagnostics(snapshot: LdnDiscoverySnapshot): String = bu
     append(" Reliable=${snapshot.reliableFramesReceived}/${snapshot.reliableFramesSent}")
     append(" RFU=${snapshot.rfuConnected}")
     append(" LinkPlayer=${snapshot.linkPlayerExchanged}")
+    append(" lpChild=${snapshot.linkPlayerChildBlock}")
+    snapshot.linkPlayerMpId?.let { append(" mpId=$it") }
+    append(" lpInit=${snapshot.linkPlayerHostInitCount}")
+    if (snapshot.linkPlayerHostFragments.isNotEmpty()) append(" lpFrag=${snapshot.linkPlayerHostFragments}")
+    append(" lpHostDone=${snapshot.linkPlayerHostBlockComplete}")
+    append(" standby=${snapshot.linkPlayerStandbyReceived}")
+    append(" latched=${snapshot.linkPlayerStandbyLatched}")
+    append(" echoes=${snapshot.linkPlayerStandbyEchoes}")
+    append(" barrier=${snapshot.linkPlayerBarrierComplete}")
     snapshot.detectedCartridge?.let { append(" cartridge=$it") }
     snapshot.giftStage?.let { append(" gift=$it") }
 }
