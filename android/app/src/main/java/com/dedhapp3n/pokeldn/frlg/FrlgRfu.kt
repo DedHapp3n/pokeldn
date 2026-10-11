@@ -122,6 +122,11 @@ internal class FrlgRfuLeader(
         private set
     var echoDropped = 0
         private set
+    var uniIn = 0L
+        private set
+    var uniOut = 0L
+        private set
+    val echoBacklog: Int get() = echo.size
     private val seenNi = mutableSetOf<List<Byte>>()
     private val childNi = ChildNiReceiver()
     private val parentNi = ParentNiSender()
@@ -177,6 +182,7 @@ internal class FrlgRfuLeader(
             return "child_ni"
         }
         if (state != FrlgRfuState.UNI || slot.size < 2 + FrlgRfu.SLOT_SIZE) return "uni_early"
+        uniIn++
         childCommand = slot.copyOfRange(2, 2 + FrlgRfu.SLOT_SIZE).also { it[0] = (it[0].u8() and 31).toByte() }
         val key = childCommand.toList()
         if (!echoSet.add(key)) {
@@ -213,6 +219,7 @@ internal class FrlgRfuLeader(
         val table = ByteArray(FrlgRfu.TABLE_SIZE)
         parent.copyInto(table, 0, 0, FrlgRfu.SLOT_SIZE)
         child.copyInto(table, FrlgRfu.SLOT_SIZE, 0, FrlgRfu.SLOT_SIZE)
+        uniOut++
         return wrap(FrlgRfu.parentSlot(FrlgRfu.UNI, table.size) + table)
     }
 

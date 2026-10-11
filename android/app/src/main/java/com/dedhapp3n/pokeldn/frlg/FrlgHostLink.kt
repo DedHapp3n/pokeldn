@@ -10,6 +10,15 @@ internal data class FrlgHostLinkSnapshot(
     val cartridge: FrlgCartridge?,
     val gift: FrlgGiftSnapshot?,
     val linkExchange: FrlgLinkExchangeSnapshot,
+    val echoBacklog: Int,
+    val echoPeak: Int,
+    val echoDropped: Int,
+    val echoCoalesced: Int,
+    val rfuUniIn: Long,
+    val rfuUniOut: Long,
+    val reliableOutstanding: Int,
+    val linkWireInit: Long,
+    val linkWireFragments: Long,
     val detail: String?,
 )
 
@@ -26,6 +35,8 @@ internal class FrlgHostLink(
     private var detail: String? = null
     private var gift: FrlgMysteryGiftEngine? = null
     private var disconnectSent = false
+    private var linkWireInit = 0L
+    private var linkWireFragments = 0L
 
     fun tick(nowMillis: Long): List<LdnPiaDatagram> {
         pia.drainReliableDeliveries().forEach { delivery ->
@@ -60,6 +71,7 @@ internal class FrlgHostLink(
             return listOf(pia.sendReliable(payload, nowMillis))
         }
         if (pia.reliableOutstanding >= 6) return emptyList()
+        val linkPlayerWirePhase = gift == null && link.stage == FrlgLinkStage.SENDING_HOST
         val parentWords = if (rfu.state == FrlgRfuState.UNI) {
             gift?.tick() ?: link.tick().also { ensureGift() }
         } else null
@@ -68,6 +80,12 @@ internal class FrlgHostLink(
             localReliableOpened = true
             pia.openReliable(payload, nowMillis)
         } else pia.sendReliable(payload, nowMillis)
+        if (datagram != null && parentWords != null && linkPlayerWirePhase) {
+            when (parentWords[0] and FrlgRfu.MASK) {
+                FrlgRfu.SEND_BLOCK_INIT -> linkWireInit++
+                FrlgRfu.SEND_BLOCK -> linkWireFragments++
+            }
+        }
         return listOfNotNull(datagram)
     }
 
@@ -78,6 +96,15 @@ internal class FrlgHostLink(
         cartridge = gift?.snapshot()?.cartridge ?: link.child?.cartridge,
         gift = gift?.snapshot(),
         linkExchange = link.snapshot(),
+        echoBacklog = rfu.echoBacklog,
+        echoPeak = rfu.echoBacklogPeak,
+        echoDropped = rfu.echoDropped,
+        echoCoalesced = rfu.echoCoalesced,
+        rfuUniIn = rfu.uniIn,
+        rfuUniOut = rfu.uniOut,
+        reliableOutstanding = pia.reliableOutstanding,
+        linkWireInit = linkWireInit,
+        linkWireFragments = linkWireFragments,
         detail = gift?.snapshot()?.detail ?: detail,
     )
 

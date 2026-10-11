@@ -196,7 +196,7 @@ internal class FrlgLinkPlayerExchange {
         // Upstream LinkPlayer(name="EMU", FireRed, English), padded to the 200-byte RFU buffer.
         private val HOST_BLOCK_200 = hexLp(
             "47616d65467265616b20696e632e0000044000802288ed47bfc7cfffffffffff" +
-                "0000000000000000020047616d65467265616b20696e632e0000").copyOf(200)
+                "00000000000000000000020047616d65467265616b20696e632e0000").copyOf(200)
 
         private fun validMagic(data: ByteArray, offset: Int): Boolean =
             data.size >= offset + MAGIC.size && data.copyOfRange(offset, offset + MAGIC.size).contentEquals(MAGIC)

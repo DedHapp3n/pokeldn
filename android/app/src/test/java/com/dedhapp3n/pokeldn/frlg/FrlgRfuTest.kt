@@ -67,6 +67,7 @@ class FrlgRfuTest {
             }
         }
         assertArrayEquals(UPSTREAM_HOST_BLOCK.copyOf(204), hostWire.toByteArray())
+        assertArrayEquals(hex("47616d65467265616b20696e632e0000"), hostWire.toByteArray().copyOfRange(44, 60))
         assertEquals(FrlgLinkStage.WAITING_STANDBY, exchange.stage)
         exchange.receive(FrlgRfu.serialize(intArrayOf(FrlgRfu.READY_EXIT_STANDBY, 3)))
         assertEquals(FrlgLinkStage.ESTABLISHED, exchange.stage)
@@ -82,6 +83,51 @@ class FrlgRfuTest {
         assertTrue(diagnostics.standbyReceived)
         assertEquals(4, diagnostics.standbyEchoesSent)
         assertTrue(diagnostics.barrierComplete)
+    }
+
+    @Test fun `integrated RFU rows preserve child echoes while upstream host block reaches wire`() {
+        val leader = leaderInUni()
+        val exchange = FrlgLinkPlayerExchange()
+        val childBlock = childLinkPlayer(0x4005, 5).copyOf(204)
+        val childCommands = buildList {
+            add(FrlgRfu.serialize(intArrayOf(FrlgRfu.SEND_BLOCK_INIT, 17, 0x81)))
+            repeat(17) { index ->
+                add(FrlgRfu.serialize(FrlgRfu.blockFragment(index,
+                    childBlock.copyOfRange(index * 12, index * 12 + 12))))
+            }
+        }
+        var timestamp = 1_000L
+        val wireCommands = mutableListOf<ByteArray>()
+        val echoCommands = mutableListOf<ByteArray>()
+
+        childCommands.forEach { childCommand ->
+            assertEquals("uni", leader.receive(childT(
+                childSlot(FrlgRfu.UNI, 0, 0, payload = childCommand), timestamp++)))
+            exchange.receive(leader.childCommand)
+            val parentWords = exchange.tick()
+            val rows = parentRows(leader.tick(parentWords)!!)
+            wireCommands += rows.first
+            echoCommands += rows.second
+        }
+        while (!exchange.snapshot().hostBlockComplete) {
+            val parentWords = exchange.tick()
+            val rows = parentRows(leader.tick(parentWords)!!)
+            wireCommands += rows.first
+            echoCommands += rows.second
+        }
+
+        val blockWire = wireCommands.filter {
+            le16Test(it, 0) and FrlgRfu.MASK in setOf(FrlgRfu.SEND_BLOCK_INIT, FrlgRfu.SEND_BLOCK)
+        }
+        assertEquals(4 + 17 * 2, blockWire.size)
+        assertEquals(List(4) { FrlgRfu.SEND_BLOCK_INIT }, blockWire.take(4).map { le16Test(it, 0) and FrlgRfu.MASK })
+        assertEquals((0..16).flatMap { listOf(it, it) }, blockWire.drop(4).map { le16Test(it, 0) and 31 })
+        assertEquals(0, leader.echoDropped)
+        assertTrue(leader.echoBacklogPeak > 0)
+        assertTrue(echoCommands.any { le16Test(it, 0) and FrlgRfu.MASK == FrlgRfu.SEND_BLOCK_INIT })
+        repeat(leader.echoBacklog) { leader.tick(IntArray(7)) }
+        val persisted = parentRows(leader.tick(IntArray(7))!!).second
+        assertEquals(FrlgRfu.SEND_BLOCK or 16, le16Test(persisted, 0))
     }
 
     @Test fun `standby during host block is latched until every repeated fragment completes`() {
@@ -161,6 +207,35 @@ class FrlgRfuTest {
         return out
     }
 
+    private fun leaderInUni(): FrlgRfuLeader {
+        val leader = FrlgRfuLeader(byteArrayOf(1, 0xf1.toByte()))
+        leader.receive(childFrame(FrlgGbaFrame.C, byteArrayOf(0x67, 0x79)))
+        leader.tick(); leader.tick()
+        childNi(gameData(5, 5)).forEachIndexed { index, slot ->
+            leader.receive(childT(slot, index + 1L))
+            if (FrlgRfu.childFields(slot).state != FrlgRfu.NULL) leader.tick()
+        }
+        leader.tick() // queued link-state frame
+        while (leader.state != FrlgRfuState.UNI) {
+            val frame = leader.tick()!!
+            val bodySize = le16Test(frame, 2)
+            val body = frame.copyOfRange(4, 4 + bodySize)
+            val slotLength = body[4].toInt() and 0xff
+            val parentSlot = body.copyOfRange(8, 8 + slotLength)
+            val fields = FrlgRfu.parentFields(parentSlot)
+            if (fields.state != FrlgRfu.NULL) {
+                leader.receive(childT(childSlot(fields.state, fields.n, fields.phase, ack = 1), 500))
+            }
+        }
+        return leader
+    }
+
+    private fun parentRows(frame: ByteArray): Pair<ByteArray, ByteArray> {
+        val slot = frame.copyOfRange(12, frame.size)
+        assertEquals(FrlgRfu.UNI, FrlgRfu.parentFields(slot).state)
+        return slot.copyOfRange(3, 17) to slot.copyOfRange(17, 31)
+    }
+
     private fun childNi(data: ByteArray): List<ByteArray> {
         val header = byteArrayOf(1, 12, 0, data.size.toByte(), 0, 0, 0)
         return listOf(
@@ -194,7 +269,7 @@ class FrlgRfuTest {
     companion object {
         private val UPSTREAM_HOST_BLOCK = hexStatic(
             "47616d65467265616b20696e632e0000044000802288ed47bfc7cfffffffffff" +
-                "0000000000000000020047616d65467265616b20696e632e0000").copyOf(200)
+                "00000000000000000000020047616d65467265616b20696e632e0000").copyOf(200)
         private fun hexStatic(value: String) = value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
     }
 }

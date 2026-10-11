@@ -149,6 +149,15 @@ class FrlgOperationLifecycleTest {
                 linkPlayerStandbyLatched = true,
                 linkPlayerStandbyEchoes = 4,
                 linkPlayerBarrierComplete = false,
+                echoBacklog = 3,
+                echoPeak = 7,
+                echoDropped = 1,
+                echoCoalesced = 5,
+                rfuUniIn = 42,
+                rfuUniOut = 41,
+                reliableOutstanding = 6,
+                linkPlayerWireInit = 4,
+                linkPlayerWireFragments = 31,
                 firstPeerDataTrace = LdnRawDataTrace(
                     toDs = true,
                     fromDs = false,
@@ -195,6 +204,15 @@ class FrlgOperationLifecycleTest {
         assertTrue(diagnostics.contains("latched=true"))
         assertTrue(diagnostics.contains("echoes=4"))
         assertTrue(diagnostics.contains("barrier=false"))
+        assertTrue(diagnostics.contains("echoBacklog=3"))
+        assertTrue(diagnostics.contains("echoPeak=7"))
+        assertTrue(diagnostics.contains("echoDrop=1"))
+        assertTrue(diagnostics.contains("echoCoal=5"))
+        assertTrue(diagnostics.contains("rfuUniIn=42"))
+        assertTrue(diagnostics.contains("rfuUniOut=41"))
+        assertTrue(diagnostics.contains("relOutstanding=6"))
+        assertTrue(diagnostics.contains("lpWireInit=4"))
+        assertTrue(diagnostics.contains("lpWireFrag=31"))
         assertTrue(
             diagnostics.contains(
                 "rawFirst=toDS:1/fromDS:0/protected:1/src:0a:0b:0c:0d:0e:0f/" +

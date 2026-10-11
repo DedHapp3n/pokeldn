@@ -136,6 +136,15 @@ internal fun frlgFailureDiagnostics(snapshot: LdnDiscoverySnapshot): String = bu
     append(" latched=${snapshot.linkPlayerStandbyLatched}")
     append(" echoes=${snapshot.linkPlayerStandbyEchoes}")
     append(" barrier=${snapshot.linkPlayerBarrierComplete}")
+    append(" echoBacklog=${snapshot.echoBacklog}")
+    append(" echoPeak=${snapshot.echoPeak}")
+    append(" echoDrop=${snapshot.echoDropped}")
+    append(" echoCoal=${snapshot.echoCoalesced}")
+    append(" rfuUniIn=${snapshot.rfuUniIn}")
+    append(" rfuUniOut=${snapshot.rfuUniOut}")
+    append(" relOutstanding=${snapshot.reliableOutstanding}")
+    append(" lpWireInit=${snapshot.linkPlayerWireInit}")
+    append(" lpWireFrag=${snapshot.linkPlayerWireFragments}")
     snapshot.detectedCartridge?.let { append(" cartridge=$it") }
     snapshot.giftStage?.let { append(" gift=$it") }
 }
