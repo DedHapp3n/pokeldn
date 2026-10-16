@@ -189,6 +189,7 @@ class Esp32RadioSession internal constructor(
         private set
 
     private var written = 0L
+    private var sendingBytes: Long = 0
     private var credited = 0L
     private var writtenOff = 0L
     private var creditSeenNanos = 0L
@@ -495,12 +496,16 @@ class Esp32RadioSession internal constructor(
                 awaitCredit(item)
                 if (item.token?.cancelled == true ||
                     (item.generation != null && item.generation != activeGeneration)) continue
+                synchronized(outboundMonitor) {
+                    sendingBytes = item.frame.size.toLong()
+                }
                 serial.write(item.frame, WRITE_TIMEOUT_MS)
                 if (item.type == Esp32Protocol.CMD_ETH_TX) {
                     publishEvent(Esp32RadioEvent.EthernetCommandWritten(item.frame.size))
                 }
                 synchronized(outboundMonitor) {
                     written += item.frame.size
+                    sendingBytes = 0
                     if (item.type == Esp32Protocol.CMD_HELLO) {
                         written = 0
                         credited = 0
@@ -566,8 +571,9 @@ class Esp32RadioSession internal constructor(
             val count = ByteBuffer.wrap(frame.payload).order(ByteOrder.LITTLE_ENDIAN).int.toLong() and 0xffffffffL
             synchronized(outboundMonitor) {
                 creditSeenNanos = System.nanoTime()
-                if (count <= written) {
-                    writtenOff = minOf(writtenOff, written - count)
+                val sent = written + sendingBytes
+                if (count <= sent) {
+                    writtenOff = minOf(writtenOff, sent - count)
                     credited = maxOf(credited, count + writtenOff)
                     flowEnabled = true
                     outboundMonitor.notifyAll()

@@ -153,6 +153,32 @@ class Esp32RadioSessionTest {
     }
 
     @Test
+    fun creditDuringWriteIsAcceptedAgainstWrittenPlusSendingBytes() {
+        val serial = FakeSerial()
+        session(serial).use { runtime ->
+            runtime.verifyAndPrepare()
+            val operation = runtime.startAccessPoint(config())
+            val events = mutableListOf<Esp32RadioEvent>()
+            runtime.addOperationEventListener(operation) { events += it }
+
+            // Start a write that will take time
+            val writeThread = Thread {
+                runtime.sendEthernet(operation, ByteArray(1024))
+            }.also { it.start() }
+
+            // Wait for the write to start (serial.write is called)
+            await { serial.commandCount(Esp32Protocol.CMD_ETH_TX) == 1 }
+
+            // Now send credit while the write is still in progress
+            // The credit should be accepted against (written + sendingBytes)
+            serial.emitCredit(512)
+
+            // Wait for the write to complete
+            writeThread.join(500)
+        }
+    }
+
+    @Test
     fun aliveStartsAndStopsOnceForOperation() {
         val serial = FakeSerial()
         val scheduler = FakeAliveScheduler()
