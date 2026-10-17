@@ -1,6 +1,7 @@
 package com.dedhapp3n.pokeldn
 
 import android.app.PendingIntent
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -8,6 +9,7 @@ import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Bundle
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.OpenableColumns
@@ -53,6 +55,9 @@ import com.dedhapp3n.pokeldn.frlg.FrlgSaveCloseResult
 import com.dedhapp3n.pokeldn.frlg.FrlgSave
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveRestoreStage
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveRestoreUiState
+import com.dedhapp3n.pokeldn.frlg.FrlgForegroundKind
+import com.dedhapp3n.pokeldn.frlg.FrlgForegroundProgress
+import com.dedhapp3n.pokeldn.frlg.FrlgOperationService
 import com.dedhapp3n.pokeldn.frlg.finishAfterPersistence
 import com.dedhapp3n.pokeldn.frlg.frlgProtocolDiagnostics
 import com.dedhapp3n.pokeldn.ldn.LdnAdvertisementBuilder
@@ -80,7 +85,7 @@ import java.time.ZoneId
 class MainActivity : ComponentActivity() {
     private val usbManager by lazy { getSystemService(UsbManager::class.java) }
     private val scanner by lazy { UsbDeviceScanner(this) }
-    private val transport by lazy { UsbSerialTransport(usbManager) }
+    private lateinit var transport: UsbSerialTransport
     private val prodKeysStore by lazy { ProdKeysStore(this) }
     private val backupFolder by lazy { AndroidFrlgBackupFolder(this) }
     private val backupStore by lazy {
@@ -118,6 +123,7 @@ class MainActivity : ComponentActivity() {
     private val radioSessionLock = Any()
     @Volatile private var radioSession: Esp32RadioSession? = null
     private var radioStateSubscription: AutoCloseable? = null
+    private var foregroundOperationSubscription: AutoCloseable? = null
     private val ldnTestLock = Any()
     @Volatile private var activeLdnTest: ActiveLdnTest? = null
     @Volatile private var ldnTestId = 0
@@ -150,9 +156,14 @@ class MainActivity : ComponentActivity() {
             } catch (error: Exception) {
                 FrlgSaveRestoreUiState(validationDetail=error.message ?: "Invalid FRLG save")
             }
-            runOnUiThread { saveRestoreState = next }
+            runOnUiThread {
+                saveRestoreState = next
+                FrlgOperationService.rememberRestoreSelection(next)
+            }
         }
     }
+
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     private val prodKeysPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@registerForActivityResult
@@ -224,9 +235,11 @@ class MainActivity : ComponentActivity() {
                     operationId++
                     esp32State = Esp32HandshakeState()
                     invalidateLdnApTest()
-                    invalidateFrlgOperation("ESP32 disconnected before the save backup completed")
+                    if (FrlgOperationService.isActive()) {
+                        FrlgOperationService.finish(FrlgOperationPhase.FAILED, "ESP32 disconnected during the operation")
+                    } else invalidateFrlgOperation("ESP32 disconnected before the operation completed")
                     connectionState = SerialConnectionState(device.deviceName, SerialConnectionPhase.DISCONNECTED)
-                    serialWorker.execute { closeRadioAndTransport() }
+                    if (!FrlgOperationService.isActive()) serialWorker.execute { closeRadioAndTransport() }
                 }
             }
             scanDevices()
@@ -235,6 +248,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        transport = FrlgOperationService.ownedTransport() ?: UsbSerialTransport(usbManager)
+        FrlgOperationService.restoreSelection()?.let { saveRestoreState = it }
+        FrlgOperationService.ownedSession()?.let {
+            installRadioSession(it)
+            connectionState = SerialConnectionState(phase = SerialConnectionPhase.CONNECTED)
+            esp32State = Esp32HandshakeState(Esp32HandshakePhase.VERIFIED, detail = "ESP32 operation active")
+        }
+        foregroundOperationSubscription = FrlgOperationService.subscribe(::onForegroundOperationProgress)
         prodKeysState = prodKeysStore.state()
         restoreLatestBackup()
         refreshBackupStorageState()
@@ -305,9 +326,11 @@ class MainActivity : ComponentActivity() {
         cancelHello()
         cancelRawCapture()
         invalidateLdnApTest()
-        invalidateFrlgOperation()
+        foregroundOperationSubscription?.close()
+        foregroundOperationSubscription = null
+        if (!FrlgOperationService.isActive()) invalidateFrlgOperation()
         operationId++
-        serialWorker.execute { closeRadioAndTransport() }
+        if (!FrlgOperationService.owns(radioSession)) serialWorker.execute { closeRadioAndTransport() }
         serialWorker.shutdown()
         helloWorker.shutdownNow()
         ldnOperationWorker.shutdownNow()
@@ -327,9 +350,11 @@ class MainActivity : ComponentActivity() {
             operationId++
             esp32State = Esp32HandshakeState()
             invalidateLdnApTest()
-            invalidateFrlgOperation()
+            if (FrlgOperationService.isActive()) {
+                FrlgOperationService.finish(FrlgOperationPhase.FAILED, "ESP32 disconnected during the operation")
+            } else invalidateFrlgOperation()
             connectionState = SerialConnectionState(name, SerialConnectionPhase.DISCONNECTED)
-            serialWorker.execute { closeRadioAndTransport() }
+            if (!FrlgOperationService.isActive()) serialWorker.execute { closeRadioAndTransport() }
         } else if (device != null && connectionState.phase in setOf(
                 SerialConnectionPhase.READY, SerialConnectionPhase.PERMISSION_REQUIRED,
                 SerialConnectionPhase.DEVICE_DETECTED,
@@ -874,6 +899,16 @@ class MainActivity : ComponentActivity() {
             return
         }
         val jobId = synchronized(frlgOperationLock) { ++frlgOperationId }
+        val foregroundKind = when {
+            saveRestore -> FrlgForegroundKind.SAVE_RESTORE
+            saveBackup -> FrlgForegroundKind.SAVE_BACKUP
+            else -> FrlgForegroundKind.WALK_THROUGH_WALLS
+        }
+        requestOperationNotificationPermission()
+        FrlgOperationService.begin(
+            this,
+            FrlgForegroundProgress(foregroundKind, FrlgOperationPhase.PREPARING_ESP32, "Preparing ESP32"),
+        )
         if (saveRestore) {
             saveRestoreState = saveRestoreState.copy(operation = FrlgOperationState(FrlgOperationPhase.PREPARING_ESP32), sectorsWritten=0,totalSectors=0,failureMask=null,loadResult=null,cartridge=null)
         } else if (saveBackup) {
@@ -902,41 +937,11 @@ class MainActivity : ComponentActivity() {
                     saveBackup = saveBackup,
                     restoreSave = restoreSave,
                     persistSaveBackup = if (saveBackup) ::persistCompletedBackup else { _ -> },
-                    onSnapshot = { snapshot ->
-                        runOnUiThread {
-                            val current = synchronized(frlgOperationLock) {
-                                jobId == frlgOperationId && activeFrlgOperation?.discovery === controller
-                            }
-                            if (!current) return@runOnUiThread
-                            if (saveRestore) updateSaveRestoreState(snapshot)
-                            else if (saveBackup) updateSaveBackupState(snapshot)
-                            else frlgOperationState = frlgOperationState.recordProgress(frlgState(snapshot))
-                            when {
-                                !saveBackup && !saveRestore && snapshot.giftStage == FrlgGiftStage.COMPLETED ->
-                                    finishFrlgOperation(jobId, FrlgOperationPhase.COMPLETED,
-                                        "Walk Through Walls installed. Hold R while moving.")
-                                !saveBackup && !saveRestore && snapshot.giftStage == FrlgGiftStage.FAILED ->
-                                    finishFrlgOperation(jobId, FrlgOperationPhase.FAILED,
-                                        snapshot.latestActivity ?: "Mystery Gift transfer failed")
-                                saveBackup && snapshot.saveBackupStage == FrlgSaveBackupStage.COMPLETED ->
-                                    finishFrlgOperation(jobId, FrlgOperationPhase.COMPLETED,
-                                        snapshot.latestActivity ?: "Save backup complete")
-                                saveBackup && snapshot.saveBackupStage == FrlgSaveBackupStage.FAILED ->
-                                    finishFrlgOperation(jobId, FrlgOperationPhase.FAILED,
-                                        snapshot.latestActivity ?: "Save backup failed")
-                                saveRestore && snapshot.saveRestoreStage == FrlgSaveRestoreStage.COMPLETED ->
-                                    finishFrlgOperation(jobId, FrlgOperationPhase.COMPLETED, "Save restored successfully")
-                                saveRestore && snapshot.saveRestoreStage in setOf(FrlgSaveRestoreStage.FAILED, FrlgSaveRestoreStage.REFUSED) ->
-                                    finishFrlgOperation(jobId, FrlgOperationPhase.FAILED, snapshot.latestActivity ?: "Save restore failed")
-                            }
-                        }
-                    },
+                    onSnapshot = FrlgOperationService::updateFromSnapshot,
                     onFailure = { error ->
                         Log.e(ESP32_LOG_TAG, "FRLG operation failed: ${error::class.java.name}", error)
-                        runOnUiThread {
-                            finishFrlgOperation(jobId, FrlgOperationPhase.FAILED,
-                                error.message ?: "FRLG wireless operation failed")
-                        }
+                        FrlgOperationService.finish(FrlgOperationPhase.FAILED,
+                            error.message ?: "FRLG wireless operation failed")
                     },
                 )
                 discovery = controller
@@ -951,6 +956,12 @@ class MainActivity : ComponentActivity() {
                     try { session.stopAccessPoint(activeOperation) } catch (_: Exception) { }
                     return@execute
                 }
+                FrlgOperationService.adopt(
+                    this,
+                    FrlgOperationService.OwnedOperation(
+                        transport, session, activeOperation, controller, foregroundKind, connectionState.deviceName,
+                    ),
+                )
                 controller.start()
                 runOnUiThread {
                     if (jobId == frlgOperationId) setOperationState(saveBackup, saveRestore, FrlgOperationState(
@@ -969,6 +980,58 @@ class MainActivity : ComponentActivity() {
                     if (activeFrlgOperation?.discovery === discovery) activeFrlgOperation = null
                 }
                 runOnUiThread { finishFrlgStartupFailure(jobId, error, saveBackup, saveRestore) }
+                FrlgOperationService.finish(FrlgOperationPhase.FAILED, error.message ?: "Could not start FRLG operation")
+            }
+        }
+    }
+
+    private fun requestOperationNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    private fun onForegroundOperationProgress(progress: FrlgForegroundProgress) {
+        runOnUiThread {
+            progress.snapshot?.let { snapshot ->
+                when (progress.kind) {
+                    FrlgForegroundKind.SAVE_RESTORE -> updateSaveRestoreState(snapshot)
+                    FrlgForegroundKind.SAVE_BACKUP -> updateSaveBackupState(snapshot)
+                    FrlgForegroundKind.WALK_THROUGH_WALLS ->
+                        frlgOperationState = frlgOperationState.recordProgress(frlgState(snapshot))
+                }
+            }
+            if (progress.phase == FrlgOperationPhase.RETURNING_TO_READY) {
+                setOperationState(
+                    progress.kind == FrlgForegroundKind.SAVE_BACKUP,
+                    progress.kind == FrlgForegroundKind.SAVE_RESTORE,
+                    activeOperationState(
+                        progress.kind == FrlgForegroundKind.SAVE_BACKUP,
+                        progress.kind == FrlgForegroundKind.SAVE_RESTORE,
+                    ).copy(phase = FrlgOperationPhase.RETURNING_TO_READY, detail = progress.detail),
+                )
+            }
+            if (progress.terminal) {
+                synchronized(frlgOperationLock) { activeFrlgOperation = null }
+                val saveBackup = progress.kind == FrlgForegroundKind.SAVE_BACKUP
+                val saveRestore = progress.kind == FrlgForegroundKind.SAVE_RESTORE
+                val previous = activeOperationState(saveBackup, saveRestore)
+                if (saveBackup && saveBackupState.dataAvailable) {
+                    saveBackupState = saveBackupState.finishAfterPersistence(
+                        progress.detail ?: "Save backup complete",
+                        if (progress.phase == FrlgOperationPhase.COMPLETED) FrlgSaveCloseResult.NORMAL
+                        else FrlgSaveCloseResult.TRANSPORT_FAILURE,
+                    )
+                    return@runOnUiThread
+                }
+                setOperationState(saveBackup, saveRestore, FrlgOperationState(
+                    progress.phase,
+                    progress.detail,
+                    previous.lastReached,
+                    progress.snapshot?.let(::frlgProtocolDiagnostics) ?: previous.diagnostics,
+                ))
             }
         }
     }
@@ -1038,12 +1101,13 @@ class MainActivity : ComponentActivity() {
             FrlgSaveRestoreStage.LOADING -> FrlgOperationPhase.LOADING_RESTORED_SAVE
             FrlgSaveRestoreStage.CLOSING -> FrlgOperationPhase.CLOSING_LINK
             FrlgSaveRestoreStage.COMPLETED -> FrlgOperationPhase.COMPLETED
-            FrlgSaveRestoreStage.REFUSED, FrlgSaveRestoreStage.FAILED -> FrlgOperationPhase.FAILED
+            FrlgSaveRestoreStage.REFUSED -> FrlgOperationPhase.REFUSED
+            FrlgSaveRestoreStage.FAILED -> FrlgOperationPhase.FAILED
             null -> saveBackupOperationState(snapshot).phase
         }
         val next = FrlgOperationState(phase, userOperationDetail(phase, snapshot), phase, frlgProtocolDiagnostics(snapshot))
         saveRestoreState = saveRestoreState.copy(
-            operation=saveRestoreState.operation.recordProgress(next),cartridge=snapshot.detectedCartridge,
+            operation=saveRestoreState.operation.recordProgress(next),cartridge=snapshot.detectedCartridge ?: saveRestoreState.cartridge,
             sectorsWritten=snapshot.saveRestoreSectors,totalSectors=snapshot.saveRestoreTotalSectors,
             failureMask=snapshot.saveRestoreFailureMask,loadResult=snapshot.saveRestoreLoadResult,
         )
@@ -1093,6 +1157,7 @@ class MainActivity : ComponentActivity() {
                 it.contains("RFU", ignoreCase = true) ||
                 it.contains("LinkPlayer", ignoreCase = true)
         } ?: "Operation failed. See Diagnostics for technical details."
+        FrlgOperationPhase.REFUSED -> snapshot.latestActivity ?: "The cartridge refused this restore."
         else -> snapshot.latestActivity
     }
 
@@ -1107,6 +1172,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun cancelWalkThroughWalls() {
+        if (FrlgOperationService.progress()?.takeIf { !it.terminal }?.kind == FrlgForegroundKind.WALK_THROUGH_WALLS) {
+            FrlgOperationService.cancel("Operation cancelled")
+            return
+        }
         val id = synchronized(frlgOperationLock) {
             if (activeFrlgOperation?.saveBackup != false || activeFrlgOperation?.saveRestore == true) return
             frlgOperationId
@@ -1115,6 +1184,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun cancelSaveBackup() {
+        if (FrlgOperationService.progress()?.takeIf { !it.terminal }?.kind == FrlgForegroundKind.SAVE_BACKUP) {
+            FrlgOperationService.cancel("Save backup cancelled")
+            return
+        }
         val id = synchronized(frlgOperationLock) {
             if (activeFrlgOperation?.saveBackup != true) return
             frlgOperationId
@@ -1123,6 +1196,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun cancelSaveRestore() {
+        if (FrlgOperationService.progress()?.takeIf { !it.terminal }?.kind == FrlgForegroundKind.SAVE_RESTORE) {
+            FrlgOperationService.cancel("Save restore cancelled")
+            return
+        }
         val id = synchronized(frlgOperationLock) {
             if (activeFrlgOperation?.saveRestore != true) return
             frlgOperationId
@@ -1190,55 +1267,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun finishFrlgOperation(id: Int, terminal: FrlgOperationPhase, detail: String) {
-        val active = synchronized(frlgOperationLock) {
-            if (id != frlgOperationId) return
-            activeFrlgOperation?.also { activeFrlgOperation = null } ?: return
-        }
-        val progress = activeOperationState(active.saveBackup, active.saveRestore)
-        setOperationState(active.saveBackup, active.saveRestore, FrlgOperationState(
-            FrlgOperationPhase.RETURNING_TO_READY,
-            detail,
-            progress.lastReached,
-            progress.diagnostics,
-        ))
-        ldnOperationWorker.execute {
-            val error = try {
-                active.discovery.stop()
-                active.session.stopAccessPoint(active.operation)
-                null
-            } catch (failure: Exception) { failure }
-            runOnUiThread {
-                if (id != frlgOperationId) return@runOnUiThread
-                val completedBackup = active.saveBackup && saveBackupState.dataAvailable
-                if (completedBackup) {
-                    val existing = saveBackupState.closeResult
-                    val closeResult = when {
-                        error != null -> FrlgSaveCloseResult.CLEANUP_WARNING
-                        existing != null && existing != FrlgSaveCloseResult.PENDING -> existing
-                        terminal == FrlgOperationPhase.COMPLETED -> FrlgSaveCloseResult.CLEANUP_WARNING
-                        else -> FrlgSaveCloseResult.TRANSPORT_FAILURE
-                    }
-                    val finalDetail = when {
-                        error != null -> "Backup saved; adapter cleanup warning: ${error.message ?: "reconnect the ESP32 before retrying"}"
-                        terminal == FrlgOperationPhase.COMPLETED -> detail
-                        else -> "Backup saved; connection warning: $detail"
-                    }
-                    saveBackupState = saveBackupState.finishAfterPersistence(finalDetail, closeResult)
-                    return@runOnUiThread
-                }
-                val finished = if (error == null) {
-                    FrlgOperationState(terminal, detail, progress.lastReached, progress.diagnostics)
-                } else {
-                    FrlgOperationState(
-                        FrlgOperationPhase.FAILED,
-                        "$detail; adapter cleanup failed: ${error.message ?: "reconnect the ESP32 before retrying"}",
-                        progress.lastReached,
-                        progress.diagnostics,
-                    )
-                }
-                setOperationState(active.saveBackup, active.saveRestore, finished)
-            }
-        }
+        if (id != frlgOperationId || !FrlgOperationService.isActive()) return
+        FrlgOperationService.finish(terminal, detail)
     }
 
     private fun finishFrlgStartupFailure(id: Int, error: Exception, saveBackup: Boolean, saveRestore: Boolean = false) {
@@ -1400,6 +1430,7 @@ class MainActivity : ComponentActivity() {
             else current.also { radioSession = null }
         }
         if (session != null) {
+            FrlgOperationService.releaseRetained(session)
             try { radioStateSubscription?.close() } catch (_: Exception) { }
             radioStateSubscription = null
             runOnUiThread { radioState = Esp32RadioState() }

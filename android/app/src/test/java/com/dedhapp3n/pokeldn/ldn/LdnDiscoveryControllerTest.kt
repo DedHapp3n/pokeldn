@@ -2,6 +2,8 @@ package com.dedhapp3n.pokeldn.ldn
 
 import com.dedhapp3n.pokeldn.esp32.Esp32RadioEvent
 import com.dedhapp3n.pokeldn.esp32.Esp32RadioOperation
+import com.dedhapp3n.pokeldn.frlg.FrlgGiftStage
+import com.dedhapp3n.pokeldn.frlg.FrlgHostLink
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -9,6 +11,37 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LdnDiscoveryControllerTest {
+    @Test
+    fun stationLeaveTerminatesKnownFrlgPeerWhenParticipantBookkeepingIsAlreadyGone() {
+        val transport = FakeTransport()
+        val participant = LdnParticipant(
+            1, "169.254.33.2", "0a0b0c0d0e0f".hex(), "Console".toByteArray(), 88, 0,
+        )
+        val pia = LdnPiaHost(
+            ssid = ByteArray(16), hostMac = "021122334455".hex(), networkNumber = 33,
+            maxParticipants = 6, randomBytes = { ByteArray(it) },
+        )
+        val controller = LdnDiscoveryController(
+            operation = Esp32RadioOperation(44), advertisementFrame = { ByteArray(24) },
+            sendRaw = { _, _ -> true }, sendEthernet = { _, _ -> true },
+            authenticate = { _, _ -> LdnAuthenticationOutcome(byteArrayOf(1), 0, true, participant) },
+            removeParticipant = { null },
+            piaHost = pia,
+            frlgHost = FrlgHostLink(pia, byteArrayOf(1, 0xf1.toByte()), runWalkThroughWalls = true),
+            subscribe = transport::subscribe, scheduler = FakeScheduler(),
+        )
+        controller.start()
+        transport.emit(Esp32RadioEvent.StationJoined(participant.mac, 1, 0, true))
+        transport.emit(Esp32RadioEvent.LdnControlEthernet(ByteArray(6), participant.mac, byteArrayOf(1)))
+        transport.emit(Esp32RadioEvent.StationLeft(participant.mac, 3))
+
+        val snapshot = controller.currentSnapshot()
+        assertEquals(1, snapshot.stationLeaves)
+        assertEquals(FrlgGiftStage.FAILED, snapshot.giftStage)
+        assertTrue(snapshot.latestActivity!!.contains("disconnected", ignoreCase = true))
+        controller.stop()
+    }
+
     @Test
     fun advertisementStartsOnceAndStopsBeforeSubscriberDetaches() {
         val scheduler = FakeScheduler()
@@ -378,7 +411,7 @@ class LdnDiscoveryControllerTest {
         private var task: (() -> Unit)? = null
 
         override fun schedule(periodMillis: Long, task: () -> Unit): LdnScheduledHandle {
-            assertEquals(LdnAdvertisementBuilder.ADVERTISEMENT_INTERVAL_MS, periodMillis)
+            assertTrue(periodMillis == LdnAdvertisementBuilder.ADVERTISEMENT_INTERVAL_MS || periodMillis == 17L)
             scheduled++
             this.task = task
             return LdnScheduledHandle {

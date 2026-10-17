@@ -101,6 +101,7 @@ data class LdnDiscoverySnapshot(
     val saveRestoreFailureMask: Long? = null,
     val saveRestoreLoadResult: Int? = null,
     val saveRestoreSucceeded: Boolean = false,
+    val saveRestoreTransferDiagnostics: String = "",
     val latestActivity: String? = null,
 )
 
@@ -205,6 +206,7 @@ class LdnDiscoveryController internal constructor(
     private var protocolScheduled: LdnScheduledHandle? = null
     private val associatedStations = mutableSetOf<String>()
     private var applicationDataActivated = false
+    private var peerLeaveDelivered = false
 
     fun start(): LdnDiscoverySnapshot {
         synchronized(lock) {
@@ -254,6 +256,9 @@ class LdnDiscoveryController internal constructor(
         if (event is Esp32RadioEvent.LdnControlEthernet && handleAuthentication(event)) return
         if (event is Esp32RadioEvent.Ethernet && handleIpTraffic(event.frame)) return
         if (event is Esp32RadioEvent.ManagementFrame) {
+            if (event.frameType == 0 && event.subtype in setOf(10, 12)) {
+                notePeerDeparture(event.source)
+            }
             handleManagementFrame(event)?.let(::handleIpTraffic)
             return
         }
@@ -263,9 +268,10 @@ class LdnDiscoveryController internal constructor(
         } else null
         val next = synchronized(lock) {
             if (!running) return
+            val knownPeerLeft = event is Esp32RadioEvent.StationLeft && isKnownPeerLocked(event.mac)
             if (event is Esp32RadioEvent.StationJoined) associatedStations += event.mac.formatMac()
             if (event is Esp32RadioEvent.StationLeft) associatedStations -= event.mac.formatMac()
-            if (event is Esp32RadioEvent.StationLeft && removedParticipant != null) frlgHost?.onPeerLeft()
+            if (event is Esp32RadioEvent.StationLeft && knownPeerLeft) deliverPeerLeaveLocked()
             if (event is Esp32RadioEvent.StationLeft) piaHost?.participantLeft(event.mac)
             snapshot = when (event) {
                 is Esp32RadioEvent.ManagementFrame -> error("Management frames are handled before this branch")
@@ -289,8 +295,8 @@ class LdnDiscoveryController internal constructor(
                     discoveryActivityCount = snapshot.discoveryActivityCount + 1,
                     stationLeaves = snapshot.stationLeaves + 1,
                     stationDetected = associatedStations.isNotEmpty(),
-                    participantRegistered = if (removedParticipant != null) false else snapshot.participantRegistered,
-                    registeredParticipant = if (removedParticipant != null) null else snapshot.registeredParticipant,
+                    participantRegistered = if (knownPeerLeft) false else snapshot.participantRegistered,
+                    registeredParticipant = if (knownPeerLeft) null else snapshot.registeredParticipant,
                     piaStage = deepestPiaStage(snapshot.piaStage, piaBeforeLeave?.stage),
                     piaNetRequests = maxOf(snapshot.piaNetRequests, piaBeforeLeave?.netRequestsSent ?: 0),
                     piaSessionRequests = maxOf(snapshot.piaSessionRequests, piaBeforeLeave?.sessionRequests ?: 0),
@@ -313,7 +319,7 @@ class LdnDiscoveryController internal constructor(
                 } ?: return
                 else -> return
             }
-            if (event is Esp32RadioEvent.StationLeft && removedParticipant != null) updateFrlgSnapshotLocked()
+            if (event is Esp32RadioEvent.StationLeft && knownPeerLeft) updateFrlgSnapshotLocked()
             snapshot
         }
         if (event is Esp32RadioEvent.StationJoined || event is Esp32RadioEvent.StationLeft ||
@@ -322,6 +328,35 @@ class LdnDiscoveryController internal constructor(
             (event is Esp32RadioEvent.TxDone && next.ethernetTxCompleted == 1L)) {
             onSnapshot(next)
         }
+    }
+
+    private fun notePeerDeparture(mac: ByteArray) {
+        val next = synchronized(lock) {
+            if (!running || !isKnownPeerLocked(mac)) return
+            associatedStations -= mac.formatMac()
+            deliverPeerLeaveLocked()
+            piaHost?.participantLeft(mac)
+            snapshot = snapshot.copy(
+                stationLeaves = snapshot.stationLeaves + 1,
+                stationDetected = associatedStations.isNotEmpty(),
+                participantRegistered = false,
+                latestActivity = "Console disconnected",
+            )
+            updateFrlgSnapshotLocked()
+            snapshot
+        }
+        onSnapshot(next)
+    }
+
+    private fun isKnownPeerLocked(mac: ByteArray): Boolean =
+        associatedStations.contains(mac.formatMac()) ||
+            snapshot.registeredParticipant?.mac?.contentEquals(mac) == true ||
+            (snapshot.participantRegistered && snapshot.registeredParticipant == null)
+
+    private fun deliverPeerLeaveLocked() {
+        if (peerLeaveDelivered) return
+        peerLeaveDelivered = true
+        frlgHost?.onPeerLeft()
     }
 
     private fun handleManagementFrame(event: Esp32RadioEvent.ManagementFrame): ByteArray? {
@@ -583,6 +618,24 @@ class LdnDiscoveryController internal constructor(
             saveRestoreFailureMask = link.restore?.failureMask ?: snapshot.saveRestoreFailureMask,
             saveRestoreLoadResult = link.restore?.loadResult ?: snapshot.saveRestoreLoadResult,
             saveRestoreSucceeded = link.restore?.successful ?: snapshot.saveRestoreSucceeded,
+            saveRestoreTransferDiagnostics = link.restore?.transferDiagnostics?.joinToString("\n") { item ->
+                buildString {
+                    append("restoreWrite=${item.planIndex}/${item.total}")
+                    append(" physical=${item.physicalSector}")
+                    append(" sectorId=${item.sectorId ?: "none"}")
+                    append(" kind=${item.kind.name.lowercase()}")
+                    append(" tokens=${item.tokenBytes}")
+                    append(" messages=${item.messageCount}")
+                    append(" chunks=${item.blockCount}")
+                    append(" started=${item.startedAtMillis}")
+                    append(" response=${item.responseAtMillis ?: "waiting"}")
+                    append(" durationMs=${item.durationMillis ?: "waiting"}")
+                    append(" failMask=${item.failureMask?.let { "0x" + it.toString(16).padStart(8, '0') } ?: "none"}")
+                    append(" relOutstanding=${item.reliableOutstanding}")
+                    append(" rfu=${item.rfuIn}/${item.rfuOut}")
+                    append(" status=${item.status}")
+                }
+            } ?: snapshot.saveRestoreTransferDiagnostics,
             latestActivity = link.detail ?: snapshot.latestActivity,
         )
     }

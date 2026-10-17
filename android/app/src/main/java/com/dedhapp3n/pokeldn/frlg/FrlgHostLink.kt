@@ -89,6 +89,8 @@ internal class FrlgHostLink(
             restore?.markDisconnected()
             return pia.sendReliable(payload, nowMillis)
         }
+        restore?.updateTransportCounters(pia.reliableOutstanding, rfu.uniIn, rfu.uniOut)
+        restore?.checkLiveness()
         if (pia.reliableOutstanding >= 6) return emptyList()
         val linkPlayerWirePhase = gift == null && backup == null && restore == null && link.stage == FrlgLinkStage.SENDING_HOST
         val parentWords = if (rfu.state == FrlgRfuState.UNI) {

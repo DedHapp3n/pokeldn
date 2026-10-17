@@ -58,6 +58,97 @@ class FrlgSaveRestoreTest {
         val bad=FrlgSaveRestoreEngine(malformed);runEngine(bad,loadResult=1);assertFalse(bad.writesStarted);assertEquals(FrlgSaveRestoreEngine.Stage.REFUSED,bad.snapshot().stage)
     }
 
+    @Test fun `every interrupted plan prefix leaves a whole loadable save`() {
+        val wanted=FrlgSaveTest.syntheticSave(4,5,FrlgSave.Layout.LATIN)
+        val original=FrlgSaveTest.syntheticSave(100,101,FrlgSave.Layout.LATIN)
+        val originalNewest=requireNotNull(FrlgSave.describe(original).newest)
+        val plan=FrlgSave.sectorsToWrite(wanted,footers(original))
+        for(cut in 0..plan.size){
+            val interrupted=original.copyOf()
+            plan.take(cut).forEach{it.data.copyInto(interrupted,it.physicalSector*FrlgSave.SECTOR_SIZE)}
+            val summary=FrlgSave.describe(interrupted)
+            assertTrue("cut $cut has no whole save",summary.sound)
+            val old=FrlgSave.slot(interrupted,originalNewest.index)
+            assertTrue("cut $cut damaged original slot",old.sound)
+            assertEquals(originalNewest.counter,old.counter)
+            if(cut<=12)assertEquals("partial target outranked original at cut $cut",originalNewest.index,summary.newest!!.index)
+            if(summary.newest!!.index!=originalNewest.index)assertTrue(summary.newest!!.sound)
+        }
+    }
+
+    @Test fun `noisy sectors fit buffers reconstruct exactly and write twelve transitions cleanly to thirteen`() {
+        val wanted=noisySave()
+        val plan=FrlgSave.sectorsToWrite(wanted,footers(FrlgSaveTest.syntheticSave(100,101,FrlgSave.Layout.LATIN)))
+        plan.forEachIndexed{index,item->
+            val messages=FrlgSaveRestoreEngine.dataMessages(item.physicalSector,item.data)
+            assertTrue("plan ${index+1} has no messages",messages.isNotEmpty())
+            assertTrue("plan ${index+1} client script overflow",FrlgSaveRestoreEngine.sectorScript(messages.size).size<=1024)
+            assertTrue(messages.all{it.size<=1024})
+            assertEquals(1,messages.count{it[6].toInt()==1})
+            assertEquals(1,messages.last()[6].toInt())
+            val rebuilt=ByteArray(FrlgSave.SECTOR_SIZE);var expectedOffset=0
+            messages.forEach{message->
+                assertEquals(expectedOffset,u16(message,8))
+                expectedOffset=FrlgSave.inflate(message.copyOfRange(12,12+u16(message,10)),rebuilt,expectedOffset)
+            }
+            assertEquals(FrlgSave.SECTOR_SIZE,expectedOffset)
+            assertArrayEquals(item.data,rebuilt)
+        }
+        val engine=FrlgSaveRestoreEngine(wanted,"LeafGreen","German")
+        val seen=mutableListOf<Int>();var guard=0
+        while(engine.action !is FrlgSaveRestoreEngine.Action.Done&&guard++<30000){
+            when(val action=engine.action){
+                is FrlgSaveRestoreEngine.Action.Send->engine.onSent()
+                is FrlgSaveRestoreEngine.Action.Receive->when(action.ident){
+                    FrlgSaveRestoreEngine.GAME_DATA->engine.onReceived(action.ident,gameData())
+                    FrlgSaveRestoreEngine.READY_END->engine.onReceived(action.ident,byteArrayOf())
+                    else->{val snapshot=engine.snapshot();when(snapshot.stage){
+                        FrlgSaveRestoreEngine.Stage.READING_FOOTERS->engine.onReceived(action.ident,footers(FrlgSaveTest.syntheticSave(100,101,FrlgSave.Layout.LATIN)))
+                        FrlgSaveRestoreEngine.Stage.WRITING->{seen+=requireNotNull(snapshot.currentWrite).index;engine.onReceived(action.ident,ByteArray(4))}
+                        FrlgSaveRestoreEngine.Stage.LOADING->engine.onReceived(action.ident,ByteArray(8).also{it[4]=1})
+                        else->error("unexpected receive ${snapshot.stage}")
+                    }}
+                }
+                FrlgSaveRestoreEngine.Action.Done->Unit
+            }
+        }
+        assertEquals((1..19).toList(),seen)
+        assertEquals(listOf(12,13),seen.slice(11..12))
+    }
+
+    @Test fun `connection loss is terminal and preserves restore progress`() {
+        val engine=FrlgSaveRestoreEngine(FrlgSaveTest.syntheticSave(8,9,FrlgSave.Layout.LATIN),"LeafGreen","German")
+        var guard=0
+        while(engine.snapshot().sectorsWritten<12&&guard++<20000){
+            when(val action=engine.action){
+                is FrlgSaveRestoreEngine.Action.Send->engine.onSent()
+                is FrlgSaveRestoreEngine.Action.Receive->when(action.ident){
+                    FrlgSaveRestoreEngine.GAME_DATA->engine.onReceived(action.ident,gameData())
+                    FrlgSaveRestoreEngine.RESPONSE->engine.onReceived(action.ident,if(engine.snapshot().stage==FrlgSaveRestoreEngine.Stage.READING_FOOTERS)footers(FrlgSaveTest.syntheticSave(100,101,FrlgSave.Layout.LATIN))else ByteArray(4))
+                    else->error("unexpected receive")
+                }
+                FrlgSaveRestoreEngine.Action.Done->Unit
+            }
+        }
+        assertEquals(12,engine.snapshot().sectorsWritten)
+        engine.failConnection("Connection lost while restoring")
+        assertEquals(FrlgSaveRestoreEngine.Stage.FAILED,engine.snapshot().stage)
+        assertEquals(12,engine.snapshot().sectorsWritten)
+        assertTrue(engine.action is FrlgSaveRestoreEngine.Action.Done)
+    }
+
+    private fun noisySave():ByteArray{
+        val save=FrlgSaveTest.syntheticSave(8,9,FrlgSave.Layout.LATIN)
+        repeat(28){physical->
+            val at=physical*FrlgSave.SECTOR_SIZE;val id=FrlgSave.footer(save,physical).id
+            val size=FrlgSave.chunkSize(FrlgSave.Layout.LATIN,id)
+            for(i in 0 until size){if(i%((physical%11)+7)==0)save[at+i]=((i*31+physical*17)and 255).toByte()}
+            val checksum=FrlgSave.sectorChecksum(save.copyOfRange(at,at+FrlgSave.SECTOR_SIZE),size)
+            put16(save,at+FrlgSave.SECTOR_CHECKSUM_OFFSET,checksum)
+        }
+        return save
+    }
+
     private fun runEngine(e:FrlgSaveRestoreEngine,writeFailureAt:Int?=null,loadResult:Int):List<Int>{val sent=mutableListOf<Int>();var writes=0;var guard=0
         while(e.action !is FrlgSaveRestoreEngine.Action.Done&&guard++<20000)when(val a=e.action){is FrlgSaveRestoreEngine.Action.Send->{sent+=a.ident;e.onSent()};is FrlgSaveRestoreEngine.Action.Receive->when(a.ident){FrlgSaveRestoreEngine.GAME_DATA->e.onReceived(a.ident,gameData());FrlgSaveRestoreEngine.READY_END->e.onReceived(a.ident,byteArrayOf());else->{val s=e.snapshot();val response=when(s.stage){FrlgSaveRestoreEngine.Stage.READING_FOOTERS->footers(FrlgSaveTest.syntheticSave(100,101,FrlgSave.Layout.LATIN));FrlgSaveRestoreEngine.Stage.WRITING->{writes++;ByteArray(4).also{if(writeFailureAt==writes)it[0]=0x40}};FrlgSaveRestoreEngine.Stage.LOADING->ByteArray(8).also{it[4]=loadResult.toByte()};else->ByteArray(4)};e.onReceived(a.ident,response)}};FrlgSaveRestoreEngine.Action.Done->Unit}
         assertTrue("restore engine did not terminate",guard<20000);return sent}

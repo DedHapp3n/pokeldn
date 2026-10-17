@@ -29,6 +29,7 @@ enum class FrlgOperationPhase(val label: String) {
     COMPLETED("Completed"),
     FAILED("Failed"),
     CANCELLED("Cancelled"),
+    REFUSED("Refused"),
 }
 
 data class FrlgOperationState(
@@ -171,6 +172,10 @@ internal fun frlgProtocolDiagnostics(snapshot: LdnDiscoverySnapshot): String = b
         snapshot.saveRestoreFailureMask?.let { append(" restoreFail=0x${it.toString(16).padStart(8, '0')}") }
         snapshot.saveRestoreLoadResult?.let { append(" restoreLoad=$it") }
     }
+    if (snapshot.saveRestoreTransferDiagnostics.isNotEmpty()) {
+        append('\n')
+        append(snapshot.saveRestoreTransferDiagnostics)
+    }
 }
 
 /** Pure lifecycle gate for single-use FRLG operations. */
@@ -197,7 +202,7 @@ class FrlgOperationLifecycle {
     }
 
     fun adapterReady(terminal: FrlgOperationPhase, detail: String? = null) {
-        require(terminal in setOf(FrlgOperationPhase.COMPLETED, FrlgOperationPhase.FAILED, FrlgOperationPhase.CANCELLED))
+        require(terminal in setOf(FrlgOperationPhase.COMPLETED, FrlgOperationPhase.FAILED, FrlgOperationPhase.CANCELLED, FrlgOperationPhase.REFUSED))
         check(state.phase == FrlgOperationPhase.RETURNING_TO_READY) {
             "Adapter cannot become ready before cleanup"
         }

@@ -743,19 +743,21 @@ private fun SaveRestoreScreen(
                     when {
                         state.operation.phase == com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.COMPLETED -> "Restore complete"
                         state.operation.phase == com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.FAILED -> "Restore failed"
+                        state.operation.phase == com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.REFUSED -> "Restore refused"
                         state.running -> state.operation.phase.label
                         else -> "Ready to connect"
                     },
                     when {
                         state.operation.phase == com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.COMPLETED -> StatusTone.POSITIVE
                         state.operation.phase == com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.FAILED -> StatusTone.ERROR
+                        state.operation.phase == com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.REFUSED -> StatusTone.ERROR
                         state.running -> StatusTone.WARNING
                         else -> StatusTone.NEUTRAL
                     },
                 )
                 OverviewRow(
                     "3. Cartridge",
-                    state.cartridge ?: if (radioState.phase == Esp32RadioPhase.READY) "Waiting for cartridge" else "ESP32 disconnected",
+                    restoreCartridgeLabel(state.cartridge, state.operation.phase, state.running),
                     when {
                         state.totalSectors > 0 -> StatusTone.POSITIVE
                         state.operation.phase == com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.FAILED -> StatusTone.ERROR
@@ -765,6 +767,9 @@ private fun SaveRestoreScreen(
                 if (state.totalSectors > 0) DisplayStatus("Save and cartridge compatible", StatusTone.POSITIVE)
                 state.operation.detail?.let { Text(it, color = ScreenMuted) }
                 if (state.totalSectors > 0) Text("Progress: ${state.sectorsWritten} / ${state.totalSectors} sectors", color = ScreenMuted)
+                if (state.operation.phase == com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.FAILED && state.totalSectors > 0) {
+                    Text("Last completed: ${state.sectorsWritten} / ${state.totalSectors} sectors", color = ScreenMuted)
+                }
             }
         }
         item {
@@ -790,6 +795,16 @@ private fun SaveRestoreScreen(
             }
         }
     }
+}
+
+internal fun restoreCartridgeLabel(
+    cartridge: String?,
+    phase: com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase,
+    running: Boolean,
+): String = cartridge ?: when {
+    phase == com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.FAILED -> "Connection lost"
+    running -> "Waiting for console"
+    else -> "Not detected"
 }
 
 @Composable

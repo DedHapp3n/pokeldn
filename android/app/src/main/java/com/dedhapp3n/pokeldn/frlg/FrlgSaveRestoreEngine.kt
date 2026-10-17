@@ -6,9 +6,20 @@ internal class FrlgSaveRestoreEngine(
     private val expectedGame: String? = null,
     private val expectedLanguage: String? = null,
 ) {
+    enum class WriteKind { ERASE, NORMAL, ID0, EXTRA }
+    data class WritePlanInfo(
+        val index: Int,
+        val total: Int,
+        val physicalSector: Int,
+        val sectorId: Int?,
+        val kind: WriteKind,
+        val tokenBytes: Int,
+        val messageCount: Int,
+        val blockCount: Int,
+    )
     enum class Stage { REQUESTING_GAME_DATA, VALIDATING, READING_FOOTERS, WRITING, LOADING, ENDING, COMPLETED, REFUSED, FAILED }
     sealed interface Action { data class Send(val ident:Int,val payload:ByteArray):Action; data class Receive(val ident:Int):Action; data object Done:Action }
-    data class Snapshot(val stage:Stage,val gameCode:String?,val game:String?,val language:String?,val sectorsWritten:Int,val totalSectors:Int,val failureMask:Long?,val loadResult:Int?,val detail:String?)
+    data class Snapshot(val stage:Stage,val gameCode:String?,val game:String?,val language:String?,val sectorsWritten:Int,val totalSectors:Int,val failureMask:Long?,val loadResult:Int?,val detail:String?,val currentWrite:WritePlanInfo?)
 
     val save = FrlgSave.normalize(input)
     val inputSummary = FrlgSave.describe(save)
@@ -17,11 +28,12 @@ internal class FrlgSaveRestoreEngine(
     private var written=0; private var total=0; private var failureMask:Long?=null; private var loadResult:Int?=null; private var detail:String?="Requesting cartridge data"
     private val sends=ArrayDeque<Action.Send>(); private var afterSends:(()->Unit)?=null; private var receiver:((ByteArray)->Unit)?=null
     private var plan:List<FrlgSave.SectorWrite> = emptyList(); private var planAt=0
+    private var currentWrite: WritePlanInfo? = null
     var writesStarted=false; private set
     private var terminalStage: Stage? = null
     val successful get()=stage==Stage.COMPLETED
 
-    fun snapshot()=Snapshot(stage,gameCode,game,language,written,total,failureMask,loadResult,detail)
+    fun snapshot()=Snapshot(stage,gameCode,game,language,written,total,failureMask,loadResult,detail,currentWrite)
     fun onSent(){ val sent=action as? Action.Send ?: return fail("onSent called without a send in flight"); if(stage==Stage.REQUESTING_GAME_DATA&&sent.ident==CLIENT_SCRIPT){receive(GAME_DATA,::acceptGameData)}else advanceSend() }
     fun onReceived(ident:Int,payload:ByteArray){ val wanted=(action as? Action.Receive)?.ident ?: return fail("onReceived called without a receive in flight"); if(ident!=wanted)return fail("Expected Mystery Gift ident $wanted, received $ident"); val callback=receiver; receiver=null; try{ callback?.invoke(payload) ?: fail("Unexpected restore response") }catch(e:IllegalArgumentException){ fail(e.message?:"Invalid restore response") } }
 
@@ -37,10 +49,12 @@ internal class FrlgSaveRestoreEngine(
     }
     private fun acceptFooters(bytes:ByteArray){ plan=FrlgSave.sectorsToWrite(save,bytes); total=plan.size; planAt=0; stage=Stage.WRITING; detail="Restoring sector 1 of $total"; writeNext() }
     private fun writeNext(){ if(planAt>=plan.size)return finishWrites(); val item=plan[planAt]; val messages=dataMessages(item.physicalSector,item.data); val script=sectorScript(messages.size)
+        val erased=item.data.all{it==0xff.toByte()};val id=if(erased||item.physicalSector>=28)null else FrlgSave.footer(item.data,0).id
+        currentWrite=WritePlanInfo(planAt+1,total,item.physicalSector,id,when{item.physicalSector>=28->WriteKind.EXTRA;erased->WriteKind.ERASE;id==0->WriteKind.ID0;else->WriteKind.NORMAL},messages.sumOf{it.size-12},messages.size,MgMessage.build(CLIENT_SCRIPT,script).size+messages.sumOf{MgMessage.build(NEWS,it).size})
         sendSequence(listOf(Action.Send(CLIENT_SCRIPT,script))+messages.map{Action.Send(NEWS,it)}){ writesStarted=true; receive(RESPONSE){acceptWriteStatus(item.physicalSector,it)} }
     }
     private fun acceptWriteStatus(sector:Int,status:ByteArray){ val failed=if(status.size>=4)u32(status,0) else 0xffffffffL; if(failed!=0L){failureMask=failed;detail="Sector $sector readback failed (0x${failed.toString(16).padStart(8,'0')})";stage=Stage.FAILED;return end(NOT_RESTORED,false)}; written++; planAt++; detail="Restored $written of $total sectors";writeNext() }
-    private fun finishWrites(){ stage=Stage.LOADING; detail="Loading restored save"; sendSequence(listOf(Action.Send(CLIENT_SCRIPT,reportingScript(NEWS)),Action.Send(NEWS,FINISH))){receive(RESPONSE,::acceptFinish)} }
+    private fun finishWrites(){ currentWrite=null;stage=Stage.LOADING; detail="Loading restored save"; sendSequence(listOf(Action.Send(CLIENT_SCRIPT,reportingScript(NEWS)),Action.Send(NEWS,FINISH))){receive(RESPONSE,::acceptFinish)} }
     private fun acceptFinish(status:ByteArray){ failureMask=if(status.size>=8)u32(status,0)else 0xffffffffL;loadResult=if(status.size>=8)status[4].toInt()and 0xff else 0xff
         if(failureMask==0L&&loadResult==1){stage=Stage.COMPLETED;detail="Save restored and loaded";end(RESTORED,true)}else{stage=Stage.FAILED;detail="Save load failed (mask 0x${failureMask!!.toString(16).padStart(8,'0')}, result $loadResult)";end(NOT_RESTORED,false)} }
     private fun refuse(message:String){stage=Stage.REFUSED;detail=message;end(REFUSED,false)}
@@ -49,6 +63,11 @@ internal class FrlgSaveRestoreEngine(
     private fun advanceSend(){if(sends.isNotEmpty())action=sends.removeFirst()else{val done=afterSends;afterSends=null;done?.invoke()?:fail("Unexpected restore send completion")}}
     private fun receive(ident:Int,done:(ByteArray)->Unit){receiver=done;action=Action.Receive(ident)}
     private fun fail(message:String){stage=Stage.FAILED;detail=message;action=Action.Done;sends.clear();receiver=null}
+
+    fun failConnection(message: String) {
+        if (stage in setOf(Stage.COMPLETED, Stage.REFUSED, Stage.FAILED)) return
+        fail(message)
+    }
 
     companion object {
         const val CLIENT_SCRIPT=16;const val GAME_DATA=17;const val NEWS=18;const val RESPONSE=19;const val READY_END=20;const val DYNAMIC=21;const val RAM_SCRIPT=25
@@ -60,7 +79,7 @@ internal class FrlgSaveRestoreEngine(
         private val REFUSED=hexR("cedcdde700e7d5ead900dde700dae3e600d5e2e3e8dcd9e6fed7d5e6e8e6ddd8dbd9ad00c8e3e8dcdde2db00d7dcd5e2dbd9d8adff")
         private fun commands(vararg c:Pair<Int,Int>)=ByteArray(c.size*8).also{out->c.forEachIndexed{i,p->putU32(out,i*8,p.first);putU32(out,i*8+4,p.second)}}
         private fun reportingScript(ident:Int)=commands(2 to ident,14 to 0,21 to 0,3 to 0,2 to CLIENT_SCRIPT,4 to 0)
-        private fun sectorScript(count:Int):ByteArray {val c=mutableListOf<Pair<Int,Int>>();repeat(count-1){c+=2 to NEWS;c+=21 to 0};c+=listOf(2 to NEWS,14 to 0,21 to 0,3 to 0,2 to CLIENT_SCRIPT,4 to 0);return commands(*c.toTypedArray())}
+        internal fun sectorScript(count:Int):ByteArray {val c=mutableListOf<Pair<Int,Int>>();repeat(count-1){c+=2 to NEWS;c+=21 to 0};c+=listOf(2 to NEWS,14 to 0,21 to 0,3 to 0,2 to CLIENT_SCRIPT,4 to 0);return commands(*c.toTypedArray())}
         private fun endScript(success:Boolean)=commands(2 to DYNAMIC,12 to 0,20 to 0,1 to if(success)13 else 14)
         internal fun dataMessages(sector:Int,raw:ByteArray):List<ByteArray>{require(raw.size==FrlgSave.SECTOR_SIZE);val tokens=FrlgSave.deflate(raw);val out=mutableListOf<ByteArray>();var i=0;var offset=0
             while(i<tokens.size){val start=offset;val body=ArrayList<Byte>();while(i<tokens.size&&12+body.size+tokens[i].encoded.size<=1024){body.addAll(tokens[i].encoded.toList());offset+=tokens[i].expandedSize;i++};val msg=ByteArray(12+body.size);putU32(msg,0,0xea0000ff.toInt());msg[4]=1;msg[5]=sector.toByte();msg[6]=if(i==tokens.size)1 else 0;putU16(msg,8,start);putU16(msg,10,body.size);body.forEachIndexed{n,b->msg[12+n]=b};out+=msg};return out}
