@@ -49,7 +49,7 @@ import com.dedhapp3n.pokeldn.frlg.FrlgBackupStore
 import com.dedhapp3n.pokeldn.frlg.FrlgBackupStorageUiState
 import com.dedhapp3n.pokeldn.frlg.FrlgCompletedBackup
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveCloseResult
-import com.dedhapp3n.pokeldn.frlg.preserveAfterTransportFailure
+import com.dedhapp3n.pokeldn.frlg.finishAfterPersistence
 import com.dedhapp3n.pokeldn.frlg.frlgProtocolDiagnostics
 import com.dedhapp3n.pokeldn.ldn.LdnAdvertisementBuilder
 import com.dedhapp3n.pokeldn.ldn.LdnApTestPhase
@@ -883,6 +883,7 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onFailure = { error ->
+                        Log.e(ESP32_LOG_TAG, "FRLG operation failed: ${error::class.java.name}", error)
                         runOnUiThread {
                             finishFrlgOperation(jobId, FrlgOperationPhase.FAILED,
                                 error.message ?: "FRLG wireless operation failed")
@@ -1112,16 +1113,24 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 if (id != frlgOperationId) return@runOnUiThread
                 val completedBackup = active.saveBackup && saveBackupState.dataAvailable
+                if (completedBackup) {
+                    val existing = saveBackupState.closeResult
+                    val closeResult = when {
+                        error != null -> FrlgSaveCloseResult.CLEANUP_WARNING
+                        existing != null && existing != FrlgSaveCloseResult.PENDING -> existing
+                        terminal == FrlgOperationPhase.COMPLETED -> FrlgSaveCloseResult.CLEANUP_WARNING
+                        else -> FrlgSaveCloseResult.TRANSPORT_FAILURE
+                    }
+                    val finalDetail = when {
+                        error != null -> "Backup saved; adapter cleanup warning: ${error.message ?: "reconnect the ESP32 before retrying"}"
+                        terminal == FrlgOperationPhase.COMPLETED -> detail
+                        else -> "Backup saved; connection warning: $detail"
+                    }
+                    saveBackupState = saveBackupState.finishAfterPersistence(finalDetail, closeResult)
+                    return@runOnUiThread
+                }
                 val finished = if (error == null) {
                     FrlgOperationState(terminal, detail, progress.lastReached, progress.diagnostics)
-                } else if (completedBackup) {
-                    saveBackupState = saveBackupState.copy(closeResult = FrlgSaveCloseResult.CLEANUP_WARNING)
-                    FrlgOperationState(
-                        FrlgOperationPhase.COMPLETED,
-                        "Backup saved; adapter cleanup warning: ${error.message ?: "reconnect the ESP32 before retrying"}",
-                        progress.lastReached,
-                        progress.diagnostics,
-                    )
                 } else {
                     FrlgOperationState(
                         FrlgOperationPhase.FAILED,
@@ -1154,8 +1163,13 @@ class MainActivity : ComponentActivity() {
         active?.discovery?.stop()
         frlgOperationState = FrlgOperationState()
         saveBackupState = if (saveBackupState.dataAvailable) {
-            if (interruption == null) saveBackupState
-            else saveBackupState.preserveAfterTransportFailure("connection closed unexpectedly")
+            if (active?.saveBackup == true) {
+                saveBackupState.finishAfterPersistence(
+                    interruption?.let { "Backup saved; connection warning: $it" }
+                        ?: "Backup saved; connection closed locally",
+                    FrlgSaveCloseResult.TRANSPORT_FAILURE,
+                )
+            } else saveBackupState
         } else if (active?.saveBackup == true && interruption != null) {
             val previous = saveBackupState.operation
             saveBackupState.copy(

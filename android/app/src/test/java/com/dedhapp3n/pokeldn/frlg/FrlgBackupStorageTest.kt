@@ -7,6 +7,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class FrlgBackupStorageTest {
@@ -108,6 +109,33 @@ class FrlgBackupStorageTest {
             .preserveAfterTransportFailure("ESP32 disconnected")
         assertEquals(FrlgOperationPhase.FAILED, state.operation.phase)
         assertEquals(1024, state.bytesReceived)
+    }
+
+    @Test fun `persisted backup cannot become overall failed during cleanup`() {
+        val save = sampleSave()
+        val state = FrlgSaveBackupUiState(
+            bytesReceived = save.size,
+            save = save,
+            internalFilename = "backup.sav",
+            operation = FrlgOperationState(FrlgOperationPhase.RETURNING_TO_READY),
+        ).finishAfterPersistence("Adapter cleanup failed", FrlgSaveCloseResult.CLEANUP_WARNING)
+        assertEquals(FrlgOperationPhase.COMPLETED, state.operation.phase)
+        assertEquals(FrlgSaveCloseResult.CLEANUP_WARNING, state.closeResult)
+        assertArrayEquals(save, state.save)
+    }
+
+    @Test fun `every completed terminal path rejects pending connection result`() {
+        val state = FrlgSaveBackupUiState(
+            bytesReceived = FrlgSave.SAVE_SIZE,
+            save = sampleSave(),
+            internalFilename = "backup.sav",
+        )
+        FrlgSaveCloseResult.entries.filterNot { it == FrlgSaveCloseResult.PENDING }.forEach { result ->
+            assertEquals(result, state.finishAfterPersistence("done", result).closeResult)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            state.finishAfterPersistence("done", FrlgSaveCloseResult.PENDING)
+        }
     }
 
     private fun store(directory: java.io.File) = FrlgBackupStore(directory, NOW, ZONE)

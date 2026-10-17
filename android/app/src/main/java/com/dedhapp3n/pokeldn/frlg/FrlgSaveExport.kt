@@ -48,16 +48,24 @@ internal object FrlgSaveExport {
 }
 
 internal fun FrlgSaveBackupUiState.preserveAfterTransportFailure(message: String): FrlgSaveBackupUiState {
-    if (!dataAvailable) return copy(operation = FrlgOperationState(FrlgOperationPhase.FAILED, message))
+    return finishAfterPersistence("Backup saved - $message", FrlgSaveCloseResult.TRANSPORT_FAILURE)
+}
+
+internal fun FrlgSaveBackupUiState.finishAfterPersistence(
+    detail: String,
+    result: FrlgSaveCloseResult,
+): FrlgSaveBackupUiState {
+    if (!dataAvailable) return copy(operation = FrlgOperationState(FrlgOperationPhase.FAILED, detail))
+    require(result != FrlgSaveCloseResult.PENDING) { "A finished backup needs a terminal close result" }
     return copy(
         operation = FrlgOperationState(
             FrlgOperationPhase.COMPLETED,
-            "Backup saved - $message",
+            detail,
             operation.lastReached,
             operation.diagnostics,
         ),
         bytesReceived = FrlgSave.SAVE_SIZE,
         totalBytes = FrlgSave.SAVE_SIZE,
-        closeResult = FrlgSaveCloseResult.TRANSPORT_FAILURE,
+        closeResult = result,
     )
 }

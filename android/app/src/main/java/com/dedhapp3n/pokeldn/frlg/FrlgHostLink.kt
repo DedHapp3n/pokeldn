@@ -81,7 +81,7 @@ internal class FrlgHostLink(
             val payload = rfu.disconnect() ?: return emptyList()
             gift?.markDisconnected()
             backup?.markDisconnected()
-            return listOf(pia.sendReliable(payload, nowMillis))
+            return pia.sendReliable(payload, nowMillis)
         }
         if (pia.reliableOutstanding >= 6) return emptyList()
         val linkPlayerWirePhase = gift == null && backup == null && link.stage == FrlgLinkStage.SENDING_HOST
@@ -89,17 +89,17 @@ internal class FrlgHostLink(
             gift?.tick() ?: backup?.tick() ?: link.tick().also { ensureOperation() }
         } else null
         val payload = rfu.tick(parentWords) ?: return emptyList()
-        val datagram = if (!localReliableOpened) {
+        val datagrams = if (!localReliableOpened) {
             localReliableOpened = true
             pia.openReliable(payload, nowMillis)
         } else pia.sendReliable(payload, nowMillis)
-        if (datagram != null && parentWords != null && linkPlayerWirePhase) {
+        if (datagrams.isNotEmpty() && parentWords != null && linkPlayerWirePhase) {
             when (parentWords[0] and FrlgRfu.MASK) {
                 FrlgRfu.SEND_BLOCK_INIT -> linkWireInit++
                 FrlgRfu.SEND_BLOCK -> linkWireFragments++
             }
         }
-        return listOfNotNull(datagram)
+        return datagrams
     }
 
     fun snapshot(): FrlgHostLinkSnapshot {
@@ -142,7 +142,8 @@ internal class FrlgHostLink(
         }
     }
 
-    fun close(nowMillis: Long): LdnPiaDatagram? = rfu.disconnect()?.let { pia.sendReliable(it, nowMillis) }
+    fun close(nowMillis: Long): List<LdnPiaDatagram> =
+        rfu.disconnect()?.let { pia.sendReliable(it, nowMillis) }.orEmpty()
 
     private fun ensureOperation() {
         if ((!runWalkThroughWalls && !runSaveBackup) || gift != null || backup != null || !link.readyForGift) return

@@ -47,6 +47,7 @@ import com.dedhapp3n.pokeldn.frlg.FrlgOperationStartGate
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveBackupUiState
 import com.dedhapp3n.pokeldn.frlg.FrlgBackupStorageUiState
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveExportPhase
+import com.dedhapp3n.pokeldn.frlg.FrlgSaveCloseResult
 import com.dedhapp3n.pokeldn.frlg.ProdKeysPhase
 import com.dedhapp3n.pokeldn.frlg.ProdKeysState
 import com.dedhapp3n.pokeldn.frlg.WalkThroughWallsPreset
@@ -675,15 +676,20 @@ private fun SaveBackupScreen(
             BezelDisplay("Backup status") {
                 if (backupState.dataAvailable) {
                     DisplayStatus("Backup complete", StatusTone.POSITIVE)
+                    DisplayStatus(
+                        if (backupState.internalFilename != null) "File saved" else "File save warning",
+                        if (backupState.internalFilename != null) StatusTone.POSITIVE else StatusTone.WARNING,
+                    )
+                } else {
+                    DisplayStatus(
+                        operation.phase.label,
+                        when (operation.phase) {
+                            com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.COMPLETED -> StatusTone.POSITIVE
+                            com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.FAILED -> StatusTone.ERROR
+                            else -> if (operation.running) StatusTone.WARNING else StatusTone.NEUTRAL
+                        },
+                    )
                 }
-                DisplayStatus(
-                    operation.phase.label,
-                    when (operation.phase) {
-                        com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.COMPLETED -> StatusTone.POSITIVE
-                        com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.FAILED -> StatusTone.ERROR
-                        else -> if (operation.running) StatusTone.WARNING else StatusTone.NEUTRAL
-                    },
-                )
                 operation.detail?.let { Text(it, color = ScreenMuted) }
                 backupState.cartridge?.let { Text("Cartridge: $it", color = ScreenMuted) }
                 Text("Progress: $doneKb KB / $totalKb KB", color = ScreenMuted)
@@ -694,9 +700,18 @@ private fun SaveBackupScreen(
                     )
                 }
                 backupState.closeResult?.let { result ->
-                    Text(
-                        "Connection: ${result.name.lowercase().replace('_', ' ')}",
-                        color = ScreenMuted,
+                    val label = when (result) {
+                        FrlgSaveCloseResult.PENDING -> if (operation.running) "Connection: closing"
+                            else "Connection warning: close result unavailable"
+                        FrlgSaveCloseResult.NORMAL -> "Connection: closed normally"
+                        FrlgSaveCloseResult.PEER_CLOSED -> "Connection: closed by console"
+                        FrlgSaveCloseResult.CLEANUP_WARNING -> "Connection warning: adapter cleanup incomplete"
+                        FrlgSaveCloseResult.TRANSPORT_FAILURE -> "Connection warning: closed unexpectedly"
+                    }
+                    DisplayStatus(
+                        label,
+                        if (result in setOf(FrlgSaveCloseResult.NORMAL, FrlgSaveCloseResult.PEER_CLOSED))
+                            StatusTone.POSITIVE else StatusTone.WARNING,
                     )
                 }
                 DisplayStatus(

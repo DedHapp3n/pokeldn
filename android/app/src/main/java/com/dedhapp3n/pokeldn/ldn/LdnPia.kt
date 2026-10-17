@@ -219,11 +219,12 @@ internal class LdnPiaHost(
         while (reliableDeliveries.isNotEmpty()) add(reliableDeliveries.removeFirst())
     }
 
-    fun openReliable(payload: ByteArray, nowMillis: Long): LdnPiaDatagram? =
-        reliable.open(payload, nowMillis)?.let { reliableDatagrams(listOf(it)).single() }
+    fun openReliable(payload: ByteArray, nowMillis: Long): List<LdnPiaDatagram> =
+        reliable.open(payload, nowMillis)?.let { reliableDatagrams(listOf(it)) }.orEmpty()
 
-    fun sendReliable(payload: ByteArray, nowMillis: Long): LdnPiaDatagram =
-        reliableDatagrams(listOf(reliable.send(payload, nowMillis))).single()
+    /** Carry-forward may legitimately split one send across multiple upstream PIA packets. */
+    fun sendReliable(payload: ByteArray, nowMillis: Long): List<LdnPiaDatagram> =
+        reliableDatagrams(listOf(reliable.send(payload, nowMillis)))
 
     fun reliableReceiveAcknowledgementSent(sequence: Int): Boolean =
         reliable.receiveAcknowledgementSent(sequence)

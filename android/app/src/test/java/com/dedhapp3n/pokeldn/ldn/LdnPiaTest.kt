@@ -88,6 +88,24 @@ class LdnPiaTest {
     }
 
     @Test
+    fun reliableCarryForwardMayProduceMultipleDatagramsForOneApplicationSend() {
+        val host = host()
+        host.participantJoined(participant, 0)
+        host.receive(SESSION_JOIN.hex(), participant.ipAddress, 20)
+        host.receive(SESSION_ACK.hex(), participant.ipAddress, 30)
+
+        assertEquals(1, host.openReliable(byteArrayOf(1, 2, 3), 31).size)
+        val retransmission = host.tick(231)
+        assertTrue(retransmission.isNotEmpty())
+
+        // Upstream sends every carry-forward batch. The former .single() crashed here with
+        // "List has more than one element" after long-running backup traffic built this state.
+        val datagrams = host.sendReliable(byteArrayOf(4, 5, 6), 232)
+        assertTrue(datagrams.size > 1)
+        assertTrue(datagrams.all { it.destinationIp == participant.ipAddress })
+    }
+
+    @Test
     fun minimumUdpTransportConsumesOneDatagramAndAnswersArp() {
         val hostTransport = LdnPiaUdpTransport("169.254.88.1", hostMac)
         val consoleTransport = LdnPiaUdpTransport("169.254.88.2", consoleMac)
