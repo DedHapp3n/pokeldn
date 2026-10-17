@@ -513,6 +513,10 @@ class Esp32RadioSession internal constructor(
                     }
                 }
             } catch (error: Throwable) {
+                // Clear sendingBytes on write failure to avoid accounting errors
+                synchronized(outboundMonitor) {
+                    sendingBytes = 0
+                }
                 markFatal(error)
                 return
             } finally {

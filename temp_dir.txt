@@ -1,0 +1,22 @@
+ Datentr„ger in Laufwerk E: ist UnityBlender
+ Volumeseriennummer: 10FF-FBA3
+
+ Verzeichnis von E:\VS\repos\pokeldn\android
+
+10.10.2026  00:06    <DIR>          .
+17.10.2026  01:38    <DIR>          ..
+09.10.2026  22:08               118 .gitignore
+11.10.2026  17:10    <DIR>          .gradle
+17.10.2026  01:22    <DIR>          .idea
+08.10.2026  14:04    <DIR>          .kotlin
+10.10.2026  17:58    <DIR>          app
+08.10.2026  14:04    <DIR>          build
+08.10.2026  13:46               218 build.gradle.kts
+09.10.2026  23:19    <DIR>          gradle
+09.10.2026  23:19             1.120 gradle.properties
+08.10.2026  13:46             8.728 gradlew
+08.10.2026  13:46             2.937 gradlew.bat
+08.10.2026  13:46               418 local.properties
+08.10.2026  14:23               660 settings.gradle.kts
+               7 Datei(en),         14.199 Bytes
+               8 Verzeichnis(se), 779.074.342.912 Bytes frei

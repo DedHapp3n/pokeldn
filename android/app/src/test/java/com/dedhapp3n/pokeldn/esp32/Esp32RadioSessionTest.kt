@@ -12,6 +12,10 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.ArrayDeque
 
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.Callable
+
 class Esp32RadioSessionTest {
     @Test
     fun accessPointPayloadMatchesUpstreamLayout() {
@@ -449,7 +453,11 @@ class Esp32RadioSessionTest {
         var connectCalls = 0
         val baudChanges = mutableListOf<Int>()
         private var mode = 0
-
+        
+        // Blocking support for CMD_ETH_TX
+        private var blockWrite: (() -> Boolean)? = null
+        private var writeStartedCallback: (() -> Unit)? = null
+        
         override fun connect(device: UsbDevice, baudRate: Int) {
             connectCalls++
             configuredBaudRate = baudRate
@@ -477,6 +485,12 @@ class Esp32RadioSessionTest {
             synchronized(writes) { writes += frame }
             if (frame.type == Esp32Protocol.CMD_HELLO) consumed = 0
             else consumed += bytes.size
+            
+            // Signal that write has started for CMD_ETH_TX
+            if (frame.type == Esp32Protocol.CMD_ETH_TX) {
+                writeStartedCallback?.invoke()
+            }
+            
             when (frame.type) {
                 Esp32Protocol.CMD_HELLO -> {
                     emit(Esp32Protocol.MSG_INFO, INFO_PAYLOAD)
@@ -498,6 +512,16 @@ class Esp32RadioSessionTest {
                     emitResult(overrideResultCommand ?: frame.type)
                 }
             }
+            
+            // Block if requested for CMD_ETH_TX
+            if (frame.type == Esp32Protocol.CMD_ETH_TX && blockWrite != null) {
+                synchronized(monitor) {
+                    while (blockWrite != null && blockWrite!!()) {
+                        monitor.wait(10)
+                    }
+                }
+            }
+            
             if (frame.type != Esp32Protocol.CMD_HELLO && frame.type != Esp32Protocol.CMD_ETH_TX) {
                 emitCredit(consumed)
             }
@@ -524,6 +548,101 @@ class Esp32RadioSessionTest {
             bytes.forEach(incoming::addLast)
             monitor.notifyAll()
         }
+        
+        // Blocking control methods
+        fun setBlockWrite(blocker: () -> Boolean) {
+            blockWrite = blocker
+        }
+        
+        fun clearBlockWrite() {
+            synchronized(monitor) {
+                blockWrite = null
+                monitor.notifyAll()
+            }
+        }
+        
+        fun onWriteStarted(callback: () -> Unit) {
+            writeStartedCallback = callback
+        }
+    @Test
+    fun creditReceivedWhileWriteActive() {
+        val runtime = Esp32RadioSession(Runtime.getRuntime(), FakeSerial()).apply { start() }
+        val serial = (runtime.serial as FakeSerial)
+        
+        // Start AP and wait for link
+        val operation = runtime.startAccessPoint(config())
+        await { runtime.status().mode == 3 }
+        
+        // Set up events listener
+        val events = mutableListOf<Esp32RadioEvent>()
+        runtime.addOperationEventListener(operation) { events += it }
+        await { events.any { it is Esp32RadioEvent.StationJoined } }
+        
+        // Send a frame to establish initial written/credited state
+        assertTrue(runtime.sendEthernet(operation, ByteArray(64)))
+        await { events.any { it is Esp32RadioEvent.EthernetCommandWritten } }
+        
+        // Wait for write to complete and get initial state
+        val writtenBefore = serial.consumedSinceHello()
+        assertTrue(writtenBefore > 0)
+        
+        // Prepare a large frame (>1024 bytes) that will be blocked during write
+        val largeFrame = ByteArray(1500) { it.toByte() }
+        
+        // Set up blocking: block until we explicitly allow the write to proceed
+        var writeStarted = false
+        serial.setBlockWrite {
+            if (!writeStarted) return@setBlockWrite true
+            false
+        }
+        
+        // Create executor for async write operation
+        val worker = Executors.newSingleThreadExecutor()
+        try {
+            // Start the write - it will block inside serial.write()
+            val writeFuture = worker.submit<Boolean>(
+                Callable {
+                    runtime.sendEthernet(operation, largeFrame)
+                }
+            )
+            
+            // Wait for the write to start (signal from FakeSerial)
+            await { serial.commandCount(Esp32Protocol.CMD_ETH_TX) == 1 }
+            
+            // Now signal that write has started
+            writeStarted = true
+            
+            // Get current written value BEFORE emitting CREDIT
+            val written = serial.consumedSinceHello()
+            val sendingBytes = Esp32Protocol.encodeFrame(Esp32Protocol.CMD_ETH_TX, largeFrame).size
+            
+            // Emit a CREDIT while the write is still blocked
+            // Use a value between written and written + sendingBytes
+            val creditValue = written + (sendingBytes / 2)
+            serial.emitCredit(creditValue)
+            
+            // Take a snapshot of the credit state BEFORE unblocking the write
+            val creditSnapshot = runtime.creditSnapshot()
+            
+            // Verify that CREDIT was accepted while write is still active
+            assertTrue("CREDIT should be accepted while write is blocked", 
+                creditSnapshot.written >= written && 
+                creditSnapshot.credited > 0 &&
+                creditSnapshot.credited <= written + sendingBytes)
+            
+            // Now release the write
+            serial.clearBlockWrite()
+            
+            // Wait for write to complete
+            assertTrue(writeFuture.get(2_000, TimeUnit.MILLISECONDS))
+            
+            // Verify final state: credited should be at least the value we sent
+            val finalCredit = runtime.creditSnapshot().credited
+            assertTrue("Final credited should include mid-write CREDIT", 
+                finalCredit >= creditValue)
+        } finally {
+            worker.shutdownNow()
+        }
     }
 
     companion object {
@@ -536,13 +655,20 @@ class Esp32RadioSessionTest {
             Esp32Protocol.MSG_LINK,
             byteArrayOf(if (up) 1 else 0, 0, 0) + ByteArray(6),
         )
-
-        private fun await(timeoutMillis: Long = 1_000, condition: () -> Boolean) {
-            val deadline = System.nanoTime() + timeoutMillis * 1_000_000
-            while (!condition() && System.nanoTime() < deadline) Thread.sleep(2)
-            assertTrue("Condition was not met within ${timeoutMillis}ms", condition())
-        }
     }
+
+    private fun await(timeoutMillis: Long = 1_000, condition: () -> Boolean) {
+        val deadline = System.nanoTime() + timeoutMillis * 1_000_000
+        while (!condition() && System.nanoTime() < deadline) Thread.sleep(2)
+        assertTrue("Condition was not met within ${timeoutMillis}ms", condition())
+    }
+
+    private fun config() = Esp32AccessPointConfig(
+        channel = 11,
+        bssid = "021122334455".hex(),
+        ssid = SSID,
+        key = ByteArray(16) { it.toByte() },
+    )
 }
 
 private fun String.hex(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
