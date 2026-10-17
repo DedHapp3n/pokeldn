@@ -38,6 +38,12 @@ Direct local wireless communication with retail Pokémon games, and the protocol
 such as an unofficial GTS or online battles. AI tools helped reverse engineer the protocols and write
 parts of the code.
 
+## Android app
+
+The `android` branch also contains a native Android public preview for direct USB OTG use with the
+ESP32. Its supported workflows, hardware requirements, verification status and build instructions
+are documented in [android/README.md](android/README.md).
+
 ## Desktop app
 
 <img src=".github/assets/desktop-app.webp" alt="The pokeldn desktop app offering a shiny Chansey for a FireRed trade" width="100%">

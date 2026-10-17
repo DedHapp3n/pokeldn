@@ -193,11 +193,11 @@ Do not rely only on a live Switch for correctness.
 - The resident Walk Through Walls boost installs successfully and works on the console with the configured R-button activation.
 - A console-initiated network departure after the successful Mystery Gift close phase is valid completion behavior. Android must preserve the confirmed install result and report the operation as completed.
 - **FRLG Save Backup is physically verified for Pokémon LeafGreen / German.** Android received the complete 131072-byte flash image, verified a whole save slot and persisted the `.sav`. PKHeX opened the file and correctly parsed its cartridge, trainer, play time, money, Pokédex, party and Pokémon data.
-- Clean shutdown after that backup is not yet physically verified. The verified run ended with a Switch game exit/crash and exposed an Android Reliable carry-forward batching exception during finalization. The Android fix requires another hardware test.
 
 ### Unit-tested or not yet physically verified
 
 - Protocol fixtures and edge cases for raw group CCMP receive, ARP, PIA, Reliable, RFU, LinkPlayer block delivery and Mystery Gift lifecycle are covered by Android unit tests.
+- **FRLG Save Restore is implemented and unit tested, but has not yet been physically verified.** It must not be presented as hardware verified until a real cartridge restore succeeds.
 - Other FRLG cartridge and language variants represented by payload fixtures have not yet been physically verified through the Android workflow.
 - Other FRLG operations and other games remain planned or incomplete unless a later milestone records physical verification here.
 

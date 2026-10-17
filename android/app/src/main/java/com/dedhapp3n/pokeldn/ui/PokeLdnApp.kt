@@ -38,6 +38,7 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.dedhapp3n.pokeldn.BuildConfig
 import com.dedhapp3n.pokeldn.esp32.Esp32HandshakePhase
 import com.dedhapp3n.pokeldn.esp32.Esp32HandshakeState
 import com.dedhapp3n.pokeldn.esp32.RawCaptureState
@@ -64,6 +65,7 @@ import com.dedhapp3n.pokeldn.ui.theme.IndicatorCyan
 import com.dedhapp3n.pokeldn.ui.theme.IndicatorGreen
 import com.dedhapp3n.pokeldn.ui.theme.IndicatorRed
 import com.dedhapp3n.pokeldn.ui.theme.ScreenMuted
+import com.dedhapp3n.pokeldn.ui.theme.ScreenText
 import com.dedhapp3n.pokeldn.ui.theme.ShellRed
 import com.dedhapp3n.pokeldn.ui.theme.ShellRedBright
 import com.dedhapp3n.pokeldn.ui.theme.ShellRedDark
@@ -90,7 +92,7 @@ private data class GameModule(
 )
 
 private val gameModules = listOf(
-    GameModule("FireRed / LeafGreen", "GEN III", "First Android focus: Mystery Gift and direct trade workflows.", true),
+    GameModule("FireRed / LeafGreen", "GEN III", "Game boosts and save tools.", true),
     GameModule("Ruby / Sapphire / Emerald", "GEN III", "Planned Game Boy Advance link workflows."),
     GameModule("Diamond / Pearl / Platinum", "GEN IV", "Planned module. Not available yet."),
     GameModule("HeartGold / SoulSilver", "GEN IV", "Planned module. Not available yet."),
@@ -153,6 +155,8 @@ fun PokeLdnApp(
                 connectionState = connectionState,
                 esp32State = esp32State,
                 radioState = radioState,
+                keysState = prodKeysState,
+                backupStorageState = backupStorageState,
                 onConnectEsp32 = onConnectEsp32,
                 onOpenGames = { destination = AppDestination.GAMES },
                 onOpenDiagnostics = { destination = AppDestination.DIAGNOSTICS },
@@ -333,6 +337,8 @@ private fun HomeScreen(
     connectionState: SerialConnectionState,
     esp32State: Esp32HandshakeState,
     radioState: Esp32RadioState,
+    keysState: ProdKeysState,
+    backupStorageState: FrlgBackupStorageUiState,
     onConnectEsp32: (String) -> Unit,
     onOpenGames: () -> Unit,
     onOpenDiagnostics: () -> Unit,
@@ -342,7 +348,7 @@ private fun HomeScreen(
     val serialDevice = devices.firstOrNull { it.deviceName == connectionState.deviceName }
         ?: devices.firstOrNull { it.serialSupported }
     CenteredDeviceList(modifier) {
-        item { DeviceScreenTitle(null, "Link console", null) }
+        item { DeviceScreenTitle(null, "PokeLDN", "Connect, choose a game, and start an operation") }
         item {
             MainAdapterDisplay(
                 device = serialDevice,
@@ -353,35 +359,38 @@ private fun HomeScreen(
             )
         }
         item {
-            ShellPanel("Control deck") {
-                DeviceButton("Open games", onOpenGames, Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY)
-                Surface(
-                    color = CreamPanelDark,
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(2.dp, DeviceBezel),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(13.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        IndicatorLight(IndicatorRed, 10.dp)
-                        Column(Modifier.weight(1f)) {
-                            Text("FIRERED / LEAFGREEN", fontWeight = FontWeight.Black)
-                            Text("Current focus · workflows in development", style = MaterialTheme.typography.bodySmall)
-                        }
-                        StatusBadge("Soon", StatusTone.WARNING)
-                    }
-                }
-                DeviceButton("Open diagnostics", onOpenDiagnostics, Modifier.fillMaxWidth())
-                Text(
-                    "Operations and saved-data tools will unlock as their Android workflows are completed.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = DeviceInk.copy(alpha = 0.72f),
+            ShellPanel("Overview") {
+                OverviewRow(
+                    "Switch keys",
+                    when (keysState.phase) {
+                        ProdKeysPhase.AVAILABLE -> "Available"
+                        ProdKeysPhase.INVALID -> "Invalid"
+                        ProdKeysPhase.MISSING -> "Missing"
+                    },
+                    when (keysState.phase) {
+                        ProdKeysPhase.AVAILABLE -> StatusTone.POSITIVE
+                        ProdKeysPhase.INVALID -> StatusTone.ERROR
+                        ProdKeysPhase.MISSING -> StatusTone.WARNING
+                    },
                 )
+                OverviewRow(
+                    "Latest backup",
+                    backupStorageState.latestBackupFilename ?: "None yet",
+                    if (backupStorageState.latestBackupFilename != null) StatusTone.POSITIVE else StatusTone.NEUTRAL,
+                )
+                DeviceButton("Open games", onOpenGames, Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY)
+                Text("FireRed / LeafGreen tools are available in Games.", style = MaterialTheme.typography.bodySmall)
+                DeviceButton("Diagnostics", onOpenDiagnostics, Modifier.fillMaxWidth())
             }
         }
+    }
+}
+
+@Composable
+private fun OverviewRow(label: String, value: String, tone: StatusTone) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
+        StatusBadge(value, tone)
     }
 }
 
@@ -416,7 +425,7 @@ private fun MainAdapterDisplay(
                         serialConnected -> "Serial link online"
                         busy -> "Link in progress"
                         device != null -> "ESP32 detected"
-                        else -> "No ESP32 detected"
+                        else -> "ESP32 disconnected"
                     },
                     when {
                         ready -> StatusTone.POSITIVE
@@ -461,7 +470,15 @@ private fun MainAdapterDisplay(
                 style = DeviceButtonStyle.DISPLAY,
             )
         }
-        connectionState.detail?.let { Text(it, color = IndicatorRed) }
+        connectionState.detail?.let {
+            Text(
+                it,
+                color = if (connectionState.phase in setOf(
+                        SerialConnectionPhase.CONNECTION_FAILED,
+                        SerialConnectionPhase.PERMISSION_DENIED,
+                    )) IndicatorRed else ScreenMuted,
+            )
+        }
     }
 }
 
@@ -473,20 +490,16 @@ private fun GamesScreen(
 ) {
     CenteredDeviceList(modifier) {
         item {
-            DeviceScreenTitle(null, "Game modules", "FireRed and LeafGreen are the first Android focus")
+            DeviceScreenTitle(null, "Games", "Choose a supported game")
         }
         item {
-            BezelDisplay("Selected development target") {
+            BezelDisplay("FireRed / LeafGreen") {
                 DisplayStatus(
-                    if (radioState.phase == Esp32RadioPhase.READY) "ESP32 ready" else "ESP32 not ready",
-                    if (radioState.phase == Esp32RadioPhase.READY) StatusTone.POSITIVE else StatusTone.WARNING,
+                    if (radioState.phase == Esp32RadioPhase.READY) "ESP32 ready" else "ESP32 disconnected",
+                    if (radioState.phase == Esp32RadioPhase.READY) StatusTone.POSITIVE else StatusTone.NEUTRAL,
                 )
-                DisplayStatus("FireRed / LeafGreen", StatusTone.WARNING)
-                Text(
-                    "This module is being prepared first. No Android game operation is available in this build yet.",
-                    color = ScreenMuted,
-                )
-                StatusBadge("In development", StatusTone.WARNING)
+                Text("Walk Through Walls, Save Backup, and Save Restore are available.", color = ScreenMuted)
+                StatusBadge("3 tools", StatusTone.POSITIVE)
             }
         }
         item {
@@ -522,14 +535,17 @@ private fun OptionsScreen(
         item { DeviceScreenTitle(null, "Optionen", "App settings and local data") }
         item {
             ShellPanel("Trainer") {
-                Text("Trainer settings will be available in a later milestone.")
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Trainer profile", modifier = Modifier.weight(1f))
+                    StatusBadge("Planned", StatusTone.NEUTRAL)
+                }
             }
         }
         item {
             ShellPanel("Switch Keys") {
                 StatusBadge(
                     when (prodKeysState.phase) {
-                        ProdKeysPhase.AVAILABLE -> "Keys valid"
+                        ProdKeysPhase.AVAILABLE -> "Keys available"
                         ProdKeysPhase.INVALID -> "Keys invalid"
                         ProdKeysPhase.MISSING -> "Keys missing"
                     },
@@ -539,10 +555,7 @@ private fun OptionsScreen(
                         ProdKeysPhase.MISSING -> StatusTone.WARNING
                     },
                 )
-                prodKeysState.detail?.let {
-                    Text(it, style = MaterialTheme.typography.bodySmall)
-                }
-                Text("Your imported prod.keys file is stored in private app storage.")
+                Text("Your prod.keys file stays in app-private storage.")
                 DeviceButton("Import prod.keys", onImportProdKeys, Modifier.fillMaxWidth())
             }
         }
@@ -565,12 +578,19 @@ private fun OptionsScreen(
                     Modifier.fillMaxWidth(),
                     style = DeviceButtonStyle.SECONDARY,
                 )
+                if (backupStorageState.configuredFolderName == null) {
+                    Text(
+                        "Backups are still kept safely inside the app. Choose a folder for copies you can browse.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
                 backupStorageState.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             }
         }
         item {
             ShellPanel("Device / Firmware") {
-                Text("Device information is available in Diagnostics. Firmware updates are not available yet.")
+                DetailLine("App version", BuildConfig.VERSION_NAME)
+                Text("ESP32 and firmware details are available in Diagnostics.")
             }
         }
     }
@@ -589,7 +609,7 @@ private fun GameModulePanel(module: GameModule, onOpen: (() -> Unit)?, modifier:
         Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text(module.generation, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f))
-                StatusBadge(if (module.primary) "Focus" else "Planned", if (module.primary) StatusTone.WARNING else StatusTone.NEUTRAL)
+                StatusBadge(if (module.primary) "Available" else "Planned", if (module.primary) StatusTone.POSITIVE else StatusTone.NEUTRAL)
             }
             Text(module.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
             Text(module.detail, style = MaterialTheme.typography.bodyMedium)
@@ -618,8 +638,8 @@ private fun FrlgOperationsScreen(
             OperationCategory("Game Boosts") {
                 OperationRow(
                     "Walk Through Walls",
-                    "Hold R to pass through walls, trees, and water.",
-                    "Available",
+                    "Install the R-button movement boost.",
+                    "Verified",
                     StatusTone.POSITIVE,
                     onOpenWalkThroughWalls,
                 )
@@ -647,12 +667,18 @@ private fun FrlgOperationsScreen(
             OperationCategory("Save tools") {
                 OperationRow(
                     "Save Backup",
-                    "Copy the complete 128 KiB cartridge save without writing to it.",
-                    "Available",
+                    "Copy and safely store the complete cartridge save.",
+                    "Verified",
                     StatusTone.POSITIVE,
                     onOpenSaveBackup,
                 )
-                OperationRow("Save Restore", "Write a validated 128 KiB save to the cartridge.", "Available", StatusTone.WARNING, onOpenSaveRestore)
+                OperationRow(
+                    "Save Restore",
+                    "Validate and write a selected .sav file.",
+                    "Experimental",
+                    StatusTone.WARNING,
+                    onOpenSaveRestore,
+                )
             }
         }
     }
@@ -660,47 +686,112 @@ private fun FrlgOperationsScreen(
 
 @Composable
 private fun SaveRestoreScreen(
-    connectionState: SerialConnectionState, esp32State: Esp32HandshakeState,
-    keysState: ProdKeysState, state: FrlgSaveRestoreUiState, radioState: Esp32RadioState,
-    onImportKeys: () -> Unit, onSelect: () -> Unit, onStart: () -> Unit,
-    onCancel: () -> Unit, onBack: () -> Unit, modifier: Modifier = Modifier,
+    connectionState: SerialConnectionState,
+    esp32State: Esp32HandshakeState,
+    keysState: ProdKeysState,
+    state: FrlgSaveRestoreUiState,
+    radioState: Esp32RadioState,
+    onImportKeys: () -> Unit,
+    onSelect: () -> Unit,
+    onStart: () -> Unit,
+    onCancel: () -> Unit,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     var confirming by rememberSaveable { mutableStateOf(false) }
     val availability = FrlgOperationStartGate.evaluate(
-        keysState.phase == ProdKeysPhase.AVAILABLE, esp32State.phase == Esp32HandshakePhase.VERIFIED,
-        radioState.phase == Esp32RadioPhase.READY, state.running, false, radioState.detail)
-    if (confirming) AlertDialog(
-        onDismissRequest = { confirming = false }, title = { Text("Restore cartridge save?") },
-        text = { Text("This will write the selected save to the cartridge. A verified backup of the current save is strongly recommended.") },
-        dismissButton = { TextButton(onClick = { confirming = false }) { Text("Cancel") } },
-        confirmButton = { TextButton(onClick = { confirming = false; onStart() }) { Text("Restore") } })
+        keysAvailable = keysState.phase == ProdKeysPhase.AVAILABLE,
+        handshakeVerified = esp32State.phase == Esp32HandshakePhase.VERIFIED,
+        radioReady = radioState.phase == Esp32RadioPhase.READY,
+        frlgOperationOwned = state.running,
+        otherRadioOperationOwned = false,
+        radioDetail = radioState.detail ?: "Connect and verify the ESP32 before restoring",
+    )
+    if (confirming) {
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            title = { Text("Restore cartridge save?") },
+            text = { Text("This will write the selected save to the cartridge. Keep a verified backup of the current save.") },
+            dismissButton = { TextButton(onClick = { confirming = false }) { Text("Cancel") } },
+            confirmButton = { TextButton(onClick = { confirming = false; onStart() }) { Text("Restore") } },
+        )
+    }
     CenteredDeviceList(modifier) {
-        item { DeviceScreenTitle("FRLG / Save tools", "Save Restore", "Validated cartridge save restore") }
+        item { DeviceScreenTitle("FRLG / Save tools", "Save Restore", "Select, validate, connect, and restore") }
         item { DeviceButton("Back to operations", onBack, Modifier.fillMaxWidth()) }
-        item { BezelDisplay("Restore status") {
-            DisplayStatus(state.operation.phase.label, when {
-                state.operation.phase == com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.COMPLETED -> StatusTone.POSITIVE
-                state.operation.phase == com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.FAILED -> StatusTone.ERROR
-                state.running -> StatusTone.WARNING else -> StatusTone.NEUTRAL })
-            state.operation.detail?.let { Text(it, color = ScreenMuted) }
-            state.cartridge?.let { Text("Cartridge: $it", color = ScreenMuted) }
-            if (state.totalSectors > 0) Text("Progress: ${state.sectorsWritten} / ${state.totalSectors} sectors", color = ScreenMuted)
-            state.failureMask?.let { Text("Failure mask: 0x${it.toString(16).padStart(8,'0')}", color = ScreenMuted) }
-            state.loadResult?.let { Text("Load result: $it", color = ScreenMuted) }
-        } }
-        item { ShellPanel("Save file") {
-            state.filename?.let { Text("File: $it") }
-            if (state.fileSize > 0) Text("Size: ${state.fileSize} bytes", color = ScreenMuted)
-            state.validationDetail?.let { Text(it, color = if(state.readyFile) IndicatorGreen else IndicatorRed) }
-            if (state.readyFile) DisplayStatus("Whole save slot verified", StatusTone.POSITIVE)
-            DeviceButton("Select .sav", onSelect, Modifier.fillMaxWidth(), enabled = !state.running)
-            if (state.running) DeviceButton("Cancel", onCancel, Modifier.fillMaxWidth(), style=DeviceButtonStyle.SECONDARY)
-            else DeviceButton("Restore save", { confirming = true }, Modifier.fillMaxWidth(), enabled = state.readyFile && connectionState.phase==SerialConnectionPhase.CONNECTED && availability.enabled)
-            if (!availability.enabled) Text(availability.reason.orEmpty(), style=MaterialTheme.typography.bodySmall, color=ScreenMuted)
-            if (keysState.phase != ProdKeysPhase.AVAILABLE) DeviceButton("Import prod.keys", onImportKeys, Modifier.fillMaxWidth())
-        } }
+        item {
+            ShellPanel("Selected save") {
+                StatusBadge("Experimental - first hardware test pending", StatusTone.WARNING)
+                OverviewRow("1. Select save", state.filename ?: "No file selected", if (state.filename != null) StatusTone.POSITIVE else StatusTone.NEUTRAL)
+                state.filename?.let {
+                    Text("Size: ${state.fileSize} bytes (${state.save?.size?.div(1024) ?: 0} KB)", style = MaterialTheme.typography.bodySmall)
+                }
+                OverviewRow(
+                    "2. Validate save",
+                    if (state.readyFile) "Whole slot valid" else "Waiting",
+                    if (state.readyFile) StatusTone.POSITIVE else StatusTone.NEUTRAL,
+                )
+                state.validationDetail?.let {
+                    Text(it, color = if (state.readyFile) DeviceInk.copy(alpha = 0.72f) else IndicatorRed)
+                }
+                DeviceButton("Select .sav", onSelect, Modifier.fillMaxWidth(), enabled = !state.running)
+            }
+        }
+        item {
+            BezelDisplay("Restore status") {
+                DisplayStatus(
+                    when {
+                        state.operation.phase == com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.COMPLETED -> "Restore complete"
+                        state.operation.phase == com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.FAILED -> "Restore failed"
+                        state.running -> state.operation.phase.label
+                        else -> "Ready to connect"
+                    },
+                    when {
+                        state.operation.phase == com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.COMPLETED -> StatusTone.POSITIVE
+                        state.operation.phase == com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.FAILED -> StatusTone.ERROR
+                        state.running -> StatusTone.WARNING
+                        else -> StatusTone.NEUTRAL
+                    },
+                )
+                OverviewRow(
+                    "3. Cartridge",
+                    state.cartridge ?: if (radioState.phase == Esp32RadioPhase.READY) "Waiting for cartridge" else "ESP32 disconnected",
+                    when {
+                        state.totalSectors > 0 -> StatusTone.POSITIVE
+                        state.operation.phase == com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.FAILED -> StatusTone.ERROR
+                        else -> StatusTone.NEUTRAL
+                    },
+                )
+                if (state.totalSectors > 0) DisplayStatus("Save and cartridge compatible", StatusTone.POSITIVE)
+                state.operation.detail?.let { Text(it, color = ScreenMuted) }
+                if (state.totalSectors > 0) Text("Progress: ${state.sectorsWritten} / ${state.totalSectors} sectors", color = ScreenMuted)
+            }
+        }
+        item {
+            ShellPanel("Restore") {
+                Text("Compatibility is checked before the cartridge is written.", style = MaterialTheme.typography.bodySmall)
+                if (state.running) {
+                    DeviceButton("Cancel", onCancel, Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY)
+                } else {
+                    DeviceButton(
+                        "Restore save",
+                        { confirming = true },
+                        Modifier.fillMaxWidth(),
+                        enabled = state.readyFile && connectionState.phase == SerialConnectionPhase.CONNECTED && availability.enabled,
+                    )
+                    when {
+                        !state.readyFile -> Text("Select a valid save to continue.", style = MaterialTheme.typography.bodySmall, color = ScreenMuted)
+                        !availability.enabled -> Text(availability.reason.orEmpty(), style = MaterialTheme.typography.bodySmall, color = ScreenMuted)
+                    }
+                }
+                if (keysState.phase != ProdKeysPhase.AVAILABLE) {
+                    DeviceButton("Import prod.keys", onImportKeys, Modifier.fillMaxWidth())
+                }
+            }
+        }
     }
 }
+
 @Composable
 private fun SaveBackupScreen(
     connectionState: SerialConnectionState,
@@ -722,74 +813,58 @@ private fun SaveBackupScreen(
         radioReady = radioState.phase == Esp32RadioPhase.READY,
         frlgOperationOwned = operation.running,
         otherRadioOperationOwned = false,
-        radioDetail = radioState.detail ?: "ESP32 radio is ${radioState.phase.name.lowercase().replace('_', ' ')}",
+        radioDetail = radioState.detail ?: "Connect and verify the ESP32 before starting a backup",
     )
     val adapterReady = connectionState.phase == SerialConnectionPhase.CONNECTED &&
         esp32State.phase == Esp32HandshakePhase.VERIFIED && radioState.phase == Esp32RadioPhase.READY
-    val doneKb = backupState.bytesReceived / 1024
-    val totalKb = backupState.totalBytes / 1024
+    val closeWarning = backupState.closeResult in setOf(
+        FrlgSaveCloseResult.CLEANUP_WARNING,
+        FrlgSaveCloseResult.TRANSPORT_FAILURE,
+    )
     CenteredDeviceList(modifier) {
-        item { DeviceScreenTitle("FRLG / Save tools", "Save Backup", "Read-only 128 KiB cartridge backup") }
+        item { DeviceScreenTitle("FRLG / Save tools", "Save Backup", "Read-only 128 KB cartridge backup") }
         item { DeviceButton("Back to operations", onBack, Modifier.fillMaxWidth()) }
         item {
             BezelDisplay("Backup status") {
                 if (backupState.dataAvailable) {
                     DisplayStatus("Backup complete", StatusTone.POSITIVE)
+                    backupState.cartridge?.let { Text(it, color = ScreenText, fontWeight = FontWeight.Bold) }
+                    Text("128 KB", color = ScreenMuted)
                     DisplayStatus(
-                        if (backupState.internalFilename != null) "File saved" else "File save warning",
+                        if (backupState.hasWholeSlot == true) "Whole save verified" else "Save copied with warning",
+                        if (backupState.hasWholeSlot == true) StatusTone.POSITIVE else StatusTone.WARNING,
+                    )
+                    DisplayStatus(
+                        if (backupState.internalFilename != null) "Saved successfully" else "Storage warning",
                         if (backupState.internalFilename != null) StatusTone.POSITIVE else StatusTone.WARNING,
                     )
+                    backupState.internalFilename?.let { Text(it, color = ScreenMuted) }
+                    if (closeWarning) {
+                        StatusBadge("Connection ended unexpectedly", StatusTone.WARNING)
+                        operation.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = ScreenMuted) }
+                    }
                 } else {
                     DisplayStatus(
                         operation.phase.label,
-                        when (operation.phase) {
-                            com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.COMPLETED -> StatusTone.POSITIVE
-                            com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.FAILED -> StatusTone.ERROR
-                            else -> if (operation.running) StatusTone.WARNING else StatusTone.NEUTRAL
+                        when {
+                            operation.phase == com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.FAILED -> StatusTone.ERROR
+                            operation.running -> StatusTone.WARNING
+                            else -> StatusTone.NEUTRAL
                         },
                     )
-                }
-                operation.detail?.let { Text(it, color = ScreenMuted) }
-                backupState.cartridge?.let { Text("Cartridge: $it", color = ScreenMuted) }
-                Text("Progress: $doneKb KB / $totalKb KB", color = ScreenMuted)
-                backupState.hasWholeSlot?.let {
-                    DisplayStatus(
-                        if (it) "Whole save slot verified" else "No whole save slot found",
-                        if (it) StatusTone.POSITIVE else StatusTone.WARNING,
-                    )
-                }
-                backupState.closeResult?.let { result ->
-                    val label = when (result) {
-                        FrlgSaveCloseResult.PENDING -> if (operation.running) "Connection: closing"
-                            else "Connection warning: close result unavailable"
-                        FrlgSaveCloseResult.NORMAL -> "Connection: closed normally"
-                        FrlgSaveCloseResult.PEER_CLOSED -> "Connection: closed by console"
-                        FrlgSaveCloseResult.CLEANUP_WARNING -> "Connection warning: adapter cleanup incomplete"
-                        FrlgSaveCloseResult.TRANSPORT_FAILURE -> "Connection warning: closed unexpectedly"
-                    }
-                    DisplayStatus(
-                        label,
-                        if (result in setOf(FrlgSaveCloseResult.NORMAL, FrlgSaveCloseResult.PEER_CLOSED))
-                            StatusTone.POSITIVE else StatusTone.WARNING,
-                    )
+                    operation.detail?.let { Text(it, color = ScreenMuted) }
+                    backupState.cartridge?.let { Text("Cartridge: $it", color = ScreenMuted) }
+                    Text("Progress: ${backupState.bytesReceived / 1024} / ${backupState.totalBytes / 1024} KB", color = ScreenMuted)
                 }
                 DisplayStatus(
-                    when { operation.running -> "ESP32 active"; adapterReady -> "ESP32 ready"; else -> "ESP32 not ready" },
-                    if (operation.running || adapterReady) StatusTone.POSITIVE else StatusTone.ERROR,
-                )
-                DisplayStatus(
-                    when (keysState.phase) {
-                        ProdKeysPhase.AVAILABLE -> "Keys available"
-                        ProdKeysPhase.INVALID -> "Keys invalid"
-                        ProdKeysPhase.MISSING -> "Keys missing"
-                    },
-                    if (keysState.phase == ProdKeysPhase.AVAILABLE) StatusTone.POSITIVE else StatusTone.WARNING,
+                    when { operation.running -> "ESP32 active"; adapterReady -> "ESP32 ready"; else -> "ESP32 disconnected" },
+                    when { operation.running || adapterReady -> StatusTone.POSITIVE; else -> StatusTone.NEUTRAL },
                 )
             }
         }
         item {
             ShellPanel("Backup file") {
-                Text("The cartridge save is read only. The console exits Mystery Gift without saving changes.")
+                Text("Copies the cartridge save without writing to it.")
                 if (backupState.running) {
                     DeviceButton("Cancel", onCancel, Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY)
                 } else {
@@ -804,15 +879,15 @@ private fun SaveBackupScreen(
                     }
                 }
                 if (backupState.dataAvailable) {
-                    Text(backupState.suggestedFilename.orEmpty(), style = MaterialTheme.typography.bodySmall, color = ScreenMuted)
-                    backupState.internalFilename?.let {
-                        Text("Saved in app storage: $it", style = MaterialTheme.typography.bodySmall, color = ScreenMuted)
-                    }
                     backupState.externalFilename?.let {
-                        Text("Saved in backup folder: $it", style = MaterialTheme.typography.bodySmall, color = ScreenMuted)
+                        Text("Backup folder: $it", style = MaterialTheme.typography.bodySmall)
                     }
-                    DeviceButton("Save a copy…", onExport, Modifier.fillMaxWidth(),
-                        enabled = backupState.exportPhase != FrlgSaveExportPhase.EXPORTING)
+                    DeviceButton(
+                        "Save a copy",
+                        onExport,
+                        Modifier.fillMaxWidth(),
+                        enabled = backupState.exportPhase != FrlgSaveExportPhase.EXPORTING,
+                    )
                 }
                 backupState.exportDetail?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = ScreenMuted) }
                 if (keysState.phase != ProdKeysPhase.AVAILABLE) {
@@ -847,7 +922,7 @@ private fun WalkThroughWallsScreen(
     val adapterReady = connectionState.phase == SerialConnectionPhase.CONNECTED &&
         esp32State.phase == Esp32HandshakePhase.VERIFIED && radioState.phase == Esp32RadioPhase.READY
     CenteredDeviceList(modifier) {
-        item { DeviceScreenTitle("FRLG / Game Boost", "Walk Through Walls", "Existing upstream noclip resident hook") }
+        item { DeviceScreenTitle("FRLG / Game Boost", "Walk Through Walls", "Hold R while moving") }
         item { DeviceButton("Back to operations", onBack, Modifier.fillMaxWidth()) }
         item {
             BezelDisplay("Operation status") {
@@ -860,12 +935,13 @@ private fun WalkThroughWallsScreen(
                     },
                 )
                 operationState.detail?.let { Text(it, color = ScreenMuted) }
-                operationState.lastReached?.let {
-                    Text("Last reached: ${it.label}", style = MaterialTheme.typography.bodySmall, color = ScreenMuted)
-                }
+                StatusBadge("Physically verified", StatusTone.POSITIVE)
                 Text("Game: FireRed / LeafGreen", color = ScreenMuted)
                 Text("Activation: hold ${WalkThroughWallsPreset.ACTIVATION_BUTTON}", color = ScreenMuted)
-                DisplayStatus(if (adapterReady) "ESP32 ready" else "ESP32 not ready", if (adapterReady) StatusTone.POSITIVE else StatusTone.ERROR)
+                DisplayStatus(
+                    if (adapterReady) "ESP32 ready" else "ESP32 disconnected",
+                    if (adapterReady) StatusTone.POSITIVE else StatusTone.NEUTRAL,
+                )
                 DisplayStatus(
                     when (keysState.phase) {
                         ProdKeysPhase.AVAILABLE -> "Keys available"
@@ -878,7 +954,6 @@ private fun WalkThroughWallsScreen(
                         ProdKeysPhase.MISSING -> StatusTone.WARNING
                     },
                 )
-                keysState.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = ScreenMuted) }
             }
         }
         item {

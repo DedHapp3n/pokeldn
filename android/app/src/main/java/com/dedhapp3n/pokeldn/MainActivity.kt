@@ -1024,7 +1024,7 @@ class MainActivity : ComponentActivity() {
         }
         return FrlgOperationState(
             phase,
-            snapshot.latestActivity,
+            userOperationDetail(phase, snapshot),
             phase,
             frlgProtocolDiagnostics(snapshot),
         )
@@ -1041,7 +1041,7 @@ class MainActivity : ComponentActivity() {
             FrlgSaveRestoreStage.REFUSED, FrlgSaveRestoreStage.FAILED -> FrlgOperationPhase.FAILED
             null -> saveBackupOperationState(snapshot).phase
         }
-        val next = FrlgOperationState(phase,snapshot.latestActivity,phase,frlgProtocolDiagnostics(snapshot))
+        val next = FrlgOperationState(phase, userOperationDetail(phase, snapshot), phase, frlgProtocolDiagnostics(snapshot))
         saveRestoreState = saveRestoreState.copy(
             operation=saveRestoreState.operation.recordProgress(next),cartridge=snapshot.detectedCartridge,
             sectorsWritten=snapshot.saveRestoreSectors,totalSectors=snapshot.saveRestoreTotalSectors,
@@ -1073,7 +1073,27 @@ class MainActivity : ComponentActivity() {
         }
         val detected = snapshot.detectedCartridge?.let { "$it detected" }
         val diagnostics = frlgProtocolDiagnostics(snapshot)
-        return FrlgOperationState(phase, detected ?: snapshot.latestActivity, phase, diagnostics)
+        return FrlgOperationState(phase, detected ?: userOperationDetail(phase, snapshot), phase, diagnostics)
+    }
+
+    private fun userOperationDetail(phase: FrlgOperationPhase, snapshot: LdnDiscoverySnapshot): String? = when (phase) {
+        FrlgOperationPhase.WAITING_FOR_CONSOLE -> "Open Mystery Gift on the console and choose Friend."
+        FrlgOperationPhase.CONSOLE_DETECTED -> "Console activity detected"
+        FrlgOperationPhase.STATION_ASSOCIATED -> "Console connected"
+        FrlgOperationPhase.AUTHENTICATING -> "Checking console connection"
+        FrlgOperationPhase.PARTICIPANT_REGISTERED,
+        FrlgOperationPhase.ESTABLISHING_PIA,
+        FrlgOperationPhase.ESTABLISHING_RELIABLE,
+        FrlgOperationPhase.ESTABLISHING_RFU,
+        FrlgOperationPhase.ESTABLISHING_GAME_LINK -> "Establishing game link"
+        FrlgOperationPhase.FAILED -> snapshot.latestActivity?.takeUnless {
+            it.contains("mask", ignoreCase = true) ||
+                it.contains("PIA", ignoreCase = true) ||
+                it.contains("Reliable", ignoreCase = true) ||
+                it.contains("RFU", ignoreCase = true) ||
+                it.contains("LinkPlayer", ignoreCase = true)
+        } ?: "Operation failed. See Diagnostics for technical details."
+        else -> snapshot.latestActivity
     }
 
     private fun releaseStaleRadioOwnership(session: Esp32RadioSession) {
