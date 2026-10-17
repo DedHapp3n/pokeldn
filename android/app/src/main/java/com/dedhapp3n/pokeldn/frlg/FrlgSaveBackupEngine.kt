@@ -6,7 +6,10 @@ package com.dedhapp3n.pokeldn.frlg
  * This class has no restore/write action and publishes the image only after all 128 KiB arrive.
  * Persisting and resuming partial images is deliberately left for a later Android storage milestone.
  */
-internal class FrlgSaveBackupEngine {
+internal class FrlgSaveBackupEngine(
+    private val expectedGame: String? = null,
+    private val expectedLanguage: String? = null,
+) {
     enum class Stage { REQUESTING_GAME_DATA, TRANSFERRING, COMPLETED, FAILED }
 
     sealed interface Action {
@@ -20,6 +23,8 @@ internal class FrlgSaveBackupEngine {
         val bytesReceived: Int,
         val totalBytes: Int = FrlgSave.SAVE_SIZE,
         val gameCode: String?,
+        val game: String?,
+        val language: String?,
         val hasWholeSlot: Boolean?,
         val detail: String?,
     )
@@ -28,6 +33,8 @@ internal class FrlgSaveBackupEngine {
         private set
     private var stage = Stage.REQUESTING_GAME_DATA
     private var gameCode: String? = null
+    private var game: String? = null
+    private var language: String? = null
     private var detail: String? = "Requesting cartridge data"
     private var image = ByteArray(FrlgSave.SAVE_SIZE)
     private var at = 0
@@ -40,7 +47,8 @@ internal class FrlgSaveBackupEngine {
     /** Deliberately always false: backup uses the console's non-saving Mystery Gift exit. */
     val writesConsoleSave: Boolean get() = false
 
-    fun snapshot() = Snapshot(stage, at, gameCode = gameCode, hasWholeSlot = summary?.sound, detail = detail)
+    fun snapshot() = Snapshot(stage, at, gameCode = gameCode, game = game, language = language,
+        hasWholeSlot = summary?.sound, detail = detail)
     fun save(): ByteArray? = completedSave?.copyOf()
 
     fun onSent() {
@@ -75,7 +83,23 @@ internal class FrlgSaveBackupEngine {
         if (!validGameData(data)) return fail("Console Mystery Gift game data is invalid")
         val code = data.copyOfRange(0x5c, 0x60).toString(Charsets.US_ASCII)
         if (code !in FrlgSaveBackupPayload.supportedGameCodes) return fail("Unsupported FRLG cartridge: $code")
+        val detectedGame = when {
+            code.startsWith("BPR") -> "FireRed"
+            code.startsWith("BPG") -> "LeafGreen"
+            else -> return fail("Unsupported FRLG cartridge: $code")
+        }
+        val detectedLanguage = LANGUAGES[code.lastOrNull()]
+            ?: return fail("Unsupported FRLG cartridge language: $code")
+        val versionCode = (u32(data, 16) and 15L).toInt()
+        val expectedVersionCode = if (detectedGame == "FireRed") 1 else 2
+        if (versionCode != expectedVersionCode ||
+            expectedGame?.let { it != detectedGame } == true ||
+            expectedLanguage?.let { it != detectedLanguage } == true) {
+            return fail("Cartridge identity mismatch: $detectedGame / $detectedLanguage / $code")
+        }
         gameCode = code
+        game = detectedGame
+        language = detectedLanguage
         backupCode = FrlgSaveBackupPayload.build(code)
         stage = Stage.TRANSFERRING
         detail = "Receiving save backup"
@@ -123,6 +147,10 @@ internal class FrlgSaveBackupEngine {
         const val MG_LINKID_RESPONSE = 19
         const val MG_LINKID_RAM_SCRIPT = 25
         private const val MAX_PASSES = 32
+        private val LANGUAGES = mapOf(
+            'F' to "French", 'E' to "English", 'S' to "Spanish", 'D' to "German",
+            'I' to "Italian", 'J' to "Japanese",
+        )
 
         private val CLIENT_SCRIPT_SEND_GAME_DATA = hexBackup(
             "0800000000000000030000000000000002000000100000000400000000000000"

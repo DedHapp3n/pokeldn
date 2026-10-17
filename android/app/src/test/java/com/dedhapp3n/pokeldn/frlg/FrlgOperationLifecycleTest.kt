@@ -67,7 +67,7 @@ class FrlgOperationLifecycleTest {
         )
 
         assertFalse(availability.enabled)
-        assertEquals("A Walk Through Walls operation is still active or cleaning up", availability.reason)
+        assertEquals("An FRLG operation is still active or cleaning up", availability.reason)
     }
 
     @Test

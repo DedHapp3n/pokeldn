@@ -41,6 +41,8 @@ import com.dedhapp3n.pokeldn.esp32.Esp32RadioPhase
 import com.dedhapp3n.pokeldn.esp32.Esp32RadioState
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationState
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationStartGate
+import com.dedhapp3n.pokeldn.frlg.FrlgSaveBackupUiState
+import com.dedhapp3n.pokeldn.frlg.FrlgSaveExportPhase
 import com.dedhapp3n.pokeldn.frlg.ProdKeysPhase
 import com.dedhapp3n.pokeldn.frlg.ProdKeysState
 import com.dedhapp3n.pokeldn.frlg.WalkThroughWallsPreset
@@ -68,6 +70,8 @@ private enum class AppDestination(val label: String) {
     OPTIONS("Optionen"),
     DIAGNOSTICS("Diagnostics"),
 }
+
+private const val SAVE_BACKUP_ID = "frlg-save-backup"
 
 private data class GameModule(
     val title: String,
@@ -109,9 +113,13 @@ fun PokeLdnApp(
     onStartLdnApTest: () -> Unit,
     onStopLdnApTest: () -> Unit,
     frlgOperationState: FrlgOperationState,
+    saveBackupState: FrlgSaveBackupUiState,
     radioState: Esp32RadioState,
     onStartWalkThroughWalls: () -> Unit,
     onCancelWalkThroughWalls: () -> Unit,
+    onStartSaveBackup: () -> Unit,
+    onCancelSaveBackup: () -> Unit,
+    onExportSaveBackup: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var destination by rememberSaveable { mutableStateOf(AppDestination.HOME) }
@@ -147,8 +155,22 @@ fun PokeLdnApp(
                     onBack = { selectedOperation = null },
                     modifier = Modifier.padding(innerPadding),
                 )
+                selectedOperation == SAVE_BACKUP_ID -> SaveBackupScreen(
+                    connectionState = connectionState,
+                    esp32State = esp32State,
+                    keysState = prodKeysState,
+                    backupState = saveBackupState,
+                    radioState = radioState,
+                    onImportKeys = onImportProdKeys,
+                    onStart = onStartSaveBackup,
+                    onCancel = onCancelSaveBackup,
+                    onExport = onExportSaveBackup,
+                    onBack = { selectedOperation = null },
+                    modifier = Modifier.padding(innerPadding),
+                )
                 selectedGame == "frlg" -> FrlgOperationsScreen(
                     onOpenWalkThroughWalls = { selectedOperation = WalkThroughWallsPreset.BOOST_ID },
+                    onOpenSaveBackup = { selectedOperation = SAVE_BACKUP_ID },
                     onBack = { selectedGame = null },
                     modifier = Modifier.padding(innerPadding),
                 )
@@ -538,6 +560,7 @@ private fun GameModulePanel(module: GameModule, onOpen: (() -> Unit)?, modifier:
 @Composable
 private fun FrlgOperationsScreen(
     onOpenWalkThroughWalls: () -> Unit,
+    onOpenSaveBackup: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -575,8 +598,107 @@ private fun FrlgOperationsScreen(
         }
         item {
             OperationCategory("Save tools") {
-                PlannedOperation("Save Backup", "Planned")
+                OperationRow(
+                    "Save Backup",
+                    "Copy the complete 128 KiB cartridge save without writing to it.",
+                    "Available",
+                    StatusTone.POSITIVE,
+                    onOpenSaveBackup,
+                )
                 PlannedOperation("Save Restore", "Experimental")
+            }
+        }
+    }
+}
+
+@Composable
+private fun SaveBackupScreen(
+    connectionState: SerialConnectionState,
+    esp32State: Esp32HandshakeState,
+    keysState: ProdKeysState,
+    backupState: FrlgSaveBackupUiState,
+    radioState: Esp32RadioState,
+    onImportKeys: () -> Unit,
+    onStart: () -> Unit,
+    onCancel: () -> Unit,
+    onExport: () -> Unit,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val operation = backupState.operation
+    val availability = FrlgOperationStartGate.evaluate(
+        keysAvailable = keysState.phase == ProdKeysPhase.AVAILABLE,
+        handshakeVerified = esp32State.phase == Esp32HandshakePhase.VERIFIED,
+        radioReady = radioState.phase == Esp32RadioPhase.READY,
+        frlgOperationOwned = operation.running,
+        otherRadioOperationOwned = false,
+        radioDetail = radioState.detail ?: "ESP32 radio is ${radioState.phase.name.lowercase().replace('_', ' ')}",
+    )
+    val adapterReady = connectionState.phase == SerialConnectionPhase.CONNECTED &&
+        esp32State.phase == Esp32HandshakePhase.VERIFIED && radioState.phase == Esp32RadioPhase.READY
+    val doneKb = backupState.bytesReceived / 1024
+    val totalKb = backupState.totalBytes / 1024
+    CenteredDeviceList(modifier) {
+        item { DeviceScreenTitle("FRLG / Save tools", "Save Backup", "Read-only 128 KiB cartridge backup") }
+        item { DeviceButton("Back to operations", onBack, Modifier.fillMaxWidth()) }
+        item {
+            BezelDisplay("Backup status") {
+                DisplayStatus(
+                    operation.phase.label,
+                    when (operation.phase) {
+                        com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.COMPLETED -> StatusTone.POSITIVE
+                        com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.FAILED -> StatusTone.ERROR
+                        else -> if (operation.running) StatusTone.WARNING else StatusTone.NEUTRAL
+                    },
+                )
+                operation.detail?.let { Text(it, color = ScreenMuted) }
+                backupState.cartridge?.let { Text("Cartridge: $it", color = ScreenMuted) }
+                Text("Progress: $doneKb KB / $totalKb KB", color = ScreenMuted)
+                backupState.hasWholeSlot?.let {
+                    DisplayStatus(
+                        if (it) "Whole save slot verified" else "No whole save slot found",
+                        if (it) StatusTone.POSITIVE else StatusTone.WARNING,
+                    )
+                }
+                DisplayStatus(
+                    when { operation.running -> "ESP32 active"; adapterReady -> "ESP32 ready"; else -> "ESP32 not ready" },
+                    if (operation.running || adapterReady) StatusTone.POSITIVE else StatusTone.ERROR,
+                )
+                DisplayStatus(
+                    when (keysState.phase) {
+                        ProdKeysPhase.AVAILABLE -> "Keys available"
+                        ProdKeysPhase.INVALID -> "Keys invalid"
+                        ProdKeysPhase.MISSING -> "Keys missing"
+                    },
+                    if (keysState.phase == ProdKeysPhase.AVAILABLE) StatusTone.POSITIVE else StatusTone.WARNING,
+                )
+            }
+        }
+        item {
+            ShellPanel("Backup file") {
+                Text("The cartridge save is read only. The console exits Mystery Gift without saving changes.")
+                if (backupState.running) {
+                    DeviceButton("Cancel", onCancel, Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY)
+                } else {
+                    DeviceButton(
+                        "Start backup",
+                        onStart,
+                        Modifier.fillMaxWidth(),
+                        enabled = connectionState.phase == SerialConnectionPhase.CONNECTED && availability.enabled,
+                    )
+                    if (!availability.enabled && !backupState.dataAvailable) {
+                        Text(availability.reason.orEmpty(), style = MaterialTheme.typography.bodySmall, color = ScreenMuted)
+                    }
+                }
+                if (backupState.dataAvailable) {
+                    Text(backupState.suggestedFilename.orEmpty(), style = MaterialTheme.typography.bodySmall, color = ScreenMuted)
+                    DeviceButton("Export .sav", onExport, Modifier.fillMaxWidth(),
+                        enabled = backupState.exportPhase != FrlgSaveExportPhase.EXPORTING)
+                }
+                backupState.exportDetail?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = ScreenMuted) }
+                if (keysState.phase != ProdKeysPhase.AVAILABLE) {
+                    DeviceButton("Import prod.keys", onImportKeys, Modifier.fillMaxWidth())
+                }
             }
         }
     }

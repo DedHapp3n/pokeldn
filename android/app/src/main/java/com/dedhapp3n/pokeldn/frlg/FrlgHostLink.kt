@@ -9,6 +9,7 @@ internal data class FrlgHostLinkSnapshot(
     val linkPlayerExchanged: Boolean,
     val cartridge: FrlgCartridge?,
     val gift: FrlgGiftSnapshot?,
+    val backup: FrlgSaveBackupGiftSnapshot?,
     val operationStage: FrlgGiftStage?,
     val linkExchange: FrlgLinkExchangeSnapshot,
     val echoBacklog: Int,
@@ -28,13 +29,19 @@ internal class FrlgHostLink(
     private val pia: LdnPiaHost,
     parentSessionId: ByteArray,
     private val runWalkThroughWalls: Boolean = false,
+    private val runSaveBackup: Boolean = false,
 ) {
+    init {
+        require(!(runWalkThroughWalls && runSaveBackup)) { "Only one FRLG operation may own a host link" }
+    }
+
     private val rfu = FrlgRfuLeader(parentSessionId)
     private val link = FrlgLinkPlayerExchange()
     private var connectSequence: Int? = null
     private var localReliableOpened = false
     private var detail: String? = null
     private var gift: FrlgMysteryGiftEngine? = null
+    private var backup: FrlgSaveBackupGiftEngine? = null
     private var disconnectSent = false
     private var linkWireInit = 0L
     private var linkWireFragments = 0L
@@ -50,11 +57,13 @@ internal class FrlgHostLink(
                 "child_ni_complete" -> detail = "RFU identity received"
                 "uni" -> {
                     val activeGift = gift
-                    if (activeGift != null) activeGift.receive(rfu.childCommand) else {
+                    val activeBackup = backup
+                    if (activeGift != null) activeGift.receive(rfu.childCommand)
+                    else if (activeBackup != null) activeBackup.receive(rfu.childCommand) else {
                         link.receive(rfu.childCommand)
-                        ensureGift()
+                        ensureOperation()
                     }
-                    detail = gift?.snapshot()?.detail ?: when (link.stage) {
+                    detail = gift?.snapshot()?.detail ?: backup?.snapshot()?.detail ?: when (link.stage) {
                         FrlgLinkStage.ESTABLISHED -> "LinkPlayer exchanged"
                         FrlgLinkStage.FAILED -> link.error
                         else -> "RFU connected"
@@ -66,16 +75,17 @@ internal class FrlgHostLink(
         }
         val connect = connectSequence ?: return emptyList()
         if (!pia.reliableReceiveAcknowledgementSent(connect)) return emptyList()
-        if (gift?.disconnectRequested == true && !disconnectSent) {
+        if ((gift?.disconnectRequested == true || backup?.disconnectRequested == true) && !disconnectSent) {
             disconnectSent = true
             val payload = rfu.disconnect() ?: return emptyList()
             gift?.markDisconnected()
+            backup?.markDisconnected()
             return listOf(pia.sendReliable(payload, nowMillis))
         }
         if (pia.reliableOutstanding >= 6) return emptyList()
-        val linkPlayerWirePhase = gift == null && link.stage == FrlgLinkStage.SENDING_HOST
+        val linkPlayerWirePhase = gift == null && backup == null && link.stage == FrlgLinkStage.SENDING_HOST
         val parentWords = if (rfu.state == FrlgRfuState.UNI) {
-            gift?.tick() ?: link.tick().also { ensureGift() }
+            gift?.tick() ?: backup?.tick() ?: link.tick().also { ensureOperation() }
         } else null
         val payload = rfu.tick(parentWords) ?: return emptyList()
         val datagram = if (!localReliableOpened) {
@@ -93,12 +103,14 @@ internal class FrlgHostLink(
 
     fun snapshot(): FrlgHostLinkSnapshot {
         val giftSnapshot = gift?.snapshot()
+        val backupSnapshot = backup?.snapshot()
         return FrlgHostLinkSnapshot(
             rfuConnected = rfu.state != FrlgRfuState.WAIT_CONNECT && rfu.state != FrlgRfuState.DISCONNECTED,
             rfuReady = rfu.state == FrlgRfuState.UNI,
             linkPlayerExchanged = link.stage == FrlgLinkStage.ESTABLISHED,
-            cartridge = giftSnapshot?.cartridge ?: link.child?.cartridge,
+            cartridge = giftSnapshot?.cartridge ?: backupSnapshot?.cartridge ?: link.child?.cartridge,
             gift = giftSnapshot,
+            backup = backupSnapshot,
             operationStage = giftSnapshot?.stage ?: peerDepartureStage,
             linkExchange = link.snapshot(),
             echoBacklog = rfu.echoBacklog,
@@ -110,15 +122,19 @@ internal class FrlgHostLink(
             reliableOutstanding = pia.reliableOutstanding,
             linkWireInit = linkWireInit,
             linkWireFragments = linkWireFragments,
-            detail = giftSnapshot?.detail ?: detail,
+            detail = giftSnapshot?.detail ?: backupSnapshot?.detail ?: detail,
         )
     }
 
     fun onPeerLeft() {
         val activeGift = gift
+        val activeBackup = backup
         if (activeGift != null) {
             activeGift.onPeerLeft()
             detail = activeGift.snapshot().detail
+        } else if (activeBackup != null) {
+            activeBackup.onPeerLeft()
+            detail = activeBackup.snapshot().detail
         } else {
             peerDepartureStage = FrlgGiftStage.FAILED
             detail = "Console disconnected before the operation completed"
@@ -127,10 +143,14 @@ internal class FrlgHostLink(
 
     fun close(nowMillis: Long): LdnPiaDatagram? = rfu.disconnect()?.let { pia.sendReliable(it, nowMillis) }
 
-    private fun ensureGift() {
-        if (!runWalkThroughWalls || gift != null || !link.readyForGift) return
+    private fun ensureOperation() {
+        if ((!runWalkThroughWalls && !runSaveBackup) || gift != null || backup != null || !link.readyForGift) return
         link.child?.cartridge?.let {
-            gift = FrlgMysteryGiftEngine(it, link.standbyCount ?: 0, echoStartupStandby = false)
+            if (runWalkThroughWalls) {
+                gift = FrlgMysteryGiftEngine(it, link.standbyCount ?: 0, echoStartupStandby = false)
+            } else {
+                backup = FrlgSaveBackupGiftEngine(it, link.standbyCount ?: 0, echoStartupStandby = false)
+            }
         }
     }
 }

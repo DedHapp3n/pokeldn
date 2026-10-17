@@ -19,6 +19,8 @@ enum class FrlgOperationPhase(val label: String) {
     READING_CARTRIDGE("Reading cartridge"),
     PREPARING_BOOST("Preparing boost"),
     SENDING_BOOST("Sending boost"),
+    RECEIVING_SAVE("Receiving save"),
+    VALIDATING_SAVE("Validating save"),
     WAITING_FOR_CLOSE("Waiting for save/close"),
     CLOSING_LINK("Closing link"),
     RETURNING_TO_READY("Returning adapter to Ready"),
@@ -56,7 +58,7 @@ object FrlgOperationStartGate {
         otherRadioOperationOwned: Boolean,
         radioDetail: String? = null,
     ): FrlgStartAvailability = when {
-        frlgOperationOwned -> FrlgStartAvailability(false, "A Walk Through Walls operation is still active or cleaning up")
+        frlgOperationOwned -> FrlgStartAvailability(false, "An FRLG operation is still active or cleaning up")
         otherRadioOperationOwned -> FrlgStartAvailability(false, "Diagnostics currently owns the ESP32 radio")
         !keysAvailable -> FrlgStartAvailability(false, "Valid prod.keys are required")
         !handshakeVerified -> FrlgStartAvailability(false, "ESP32 verification is required")
@@ -78,8 +80,10 @@ private fun FrlgOperationPhase.progressRank(): Int = when (this) {
     FrlgOperationPhase.READING_CARTRIDGE -> 9
     FrlgOperationPhase.PREPARING_BOOST -> 10
     FrlgOperationPhase.SENDING_BOOST -> 11
-    FrlgOperationPhase.WAITING_FOR_CLOSE -> 12
-    FrlgOperationPhase.CLOSING_LINK -> 13
+    FrlgOperationPhase.RECEIVING_SAVE -> 11
+    FrlgOperationPhase.VALIDATING_SAVE -> 12
+    FrlgOperationPhase.WAITING_FOR_CLOSE -> 13
+    FrlgOperationPhase.CLOSING_LINK -> 14
     else -> -1
 }
 
@@ -150,6 +154,13 @@ internal fun frlgProtocolDiagnostics(snapshot: LdnDiscoverySnapshot): String = b
     append(" installOk=${snapshot.giftInstallSucceeded}")
     append(" closeEntered=${snapshot.giftClosePhaseEntered}")
     append(" closeAck=${snapshot.giftCloseHandshakeConfirmed}")
+    snapshot.saveBackupStage?.let { append(" backup=$it") }
+    if (snapshot.saveBackupTotalBytes > 0) {
+        append(" backupBytes=${snapshot.saveBackupBytes}/${snapshot.saveBackupTotalBytes}")
+        append(" backupWhole=${snapshot.saveBackupHasWholeSlot ?: "unknown"}")
+        append(" backupOk=${snapshot.saveBackupSucceeded}")
+        append(" backupClose=${snapshot.saveBackupNonSavingCloseEntered}/${snapshot.saveBackupNonSavingCloseConfirmed}")
+    }
 }
 
 /** Pure lifecycle gate for single-use FRLG operations. */

@@ -216,7 +216,7 @@ internal class FrlgMysteryGiftEngine(
     }
 }
 
-private class RfuBlockReceiver {
+internal class RfuBlockReceiver {
     private var count = 0
     private var flags = 0
     private var buffer = ByteArray(0)
@@ -245,7 +245,7 @@ private class RfuBlockReceiver {
     }
 }
 
-private class RfuBlockSender(private val data: ByteArray, private val repeat: Int) {
+internal class RfuBlockSender(private val data: ByteArray, private val repeat: Int) {
     private val count = maxOf(1, (data.size + 11) / 12)
     private var init = 0
     private var index = 0
@@ -265,7 +265,7 @@ private class RfuBlockSender(private val data: ByteArray, private val repeat: In
     }
 }
 
-private object MgMessage {
+internal object MgMessage {
     fun build(ident: Int, payload: ByteArray): List<ByteArray> {
         require(payload.isNotEmpty() && payload.size <= 1024)
         val header = ByteArray(6)
@@ -274,7 +274,7 @@ private object MgMessage {
     }
 }
 
-private class MgMessageReceiver {
+internal class MgMessageReceiver {
     private var ident: Int? = null
     private var crc = 0
     private var size = 0

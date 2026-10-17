@@ -5,6 +5,7 @@ import com.dedhapp3n.pokeldn.esp32.Esp32RadioOperation
 import com.dedhapp3n.pokeldn.esp32.Esp32RadioSession
 import com.dedhapp3n.pokeldn.esp32.formatMac
 import com.dedhapp3n.pokeldn.frlg.FrlgHostLink
+import com.dedhapp3n.pokeldn.frlg.FrlgSaveBackupStage
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -79,6 +80,14 @@ data class LdnDiscoverySnapshot(
     val giftInstallSucceeded: Boolean = false,
     val giftClosePhaseEntered: Boolean = false,
     val giftCloseHandshakeConfirmed: Boolean = false,
+    val saveBackupStage: FrlgSaveBackupStage? = null,
+    val saveBackupBytes: Int = 0,
+    val saveBackupTotalBytes: Int = 0,
+    val saveBackupHasWholeSlot: Boolean? = null,
+    val saveBackupSucceeded: Boolean = false,
+    val saveBackupNonSavingCloseEntered: Boolean = false,
+    val saveBackupNonSavingCloseConfirmed: Boolean = false,
+    val saveBackupData: ByteArray? = null,
     val latestActivity: String? = null,
 )
 
@@ -142,6 +151,7 @@ class LdnDiscoveryController internal constructor(
         operation: Esp32RadioOperation,
         network: LdnDiscoveryNetwork,
         walkThroughWalls: Boolean = false,
+        saveBackup: Boolean = false,
         onSnapshot: (LdnDiscoverySnapshot) -> Unit = {},
         onFailure: (Throwable) -> Unit = {},
     ) : this(
@@ -154,7 +164,7 @@ class LdnDiscoveryController internal constructor(
         piaHost = network.piaHost,
         piaTransport = LdnPiaUdpTransport(network.piaHost.hostIp, network.accessPoint.bssid),
         rawGroupDecoder = LdnRawGroupDecoder(network.accessPoint.wlanKey),
-        frlgHost = FrlgHostLink(network.piaHost, network.parentSessionId, walkThroughWalls),
+        frlgHost = FrlgHostLink(network.piaHost, network.parentSessionId, walkThroughWalls, saveBackup),
         activateApplicationData = {
             network.authenticationHost.setApplicationData(network.activeApplicationData)
             network.piaHost.activateApplicationData(network.activeApplicationData)
@@ -532,6 +542,16 @@ class LdnDiscoveryController internal constructor(
             giftClosePhaseEntered = link.gift?.closePhaseEntered ?: snapshot.giftClosePhaseEntered,
             giftCloseHandshakeConfirmed = link.gift?.closeHandshakeConfirmed
                 ?: snapshot.giftCloseHandshakeConfirmed,
+            saveBackupStage = link.backup?.stage,
+            saveBackupBytes = link.backup?.bytesReceived ?: snapshot.saveBackupBytes,
+            saveBackupTotalBytes = link.backup?.totalBytes ?: snapshot.saveBackupTotalBytes,
+            saveBackupHasWholeSlot = link.backup?.hasWholeSlot ?: snapshot.saveBackupHasWholeSlot,
+            saveBackupSucceeded = link.backup?.backupSucceeded ?: snapshot.saveBackupSucceeded,
+            saveBackupNonSavingCloseEntered = link.backup?.nonSavingCloseEntered
+                ?: snapshot.saveBackupNonSavingCloseEntered,
+            saveBackupNonSavingCloseConfirmed = link.backup?.nonSavingCloseConfirmed
+                ?: snapshot.saveBackupNonSavingCloseConfirmed,
+            saveBackupData = link.backup?.save ?: snapshot.saveBackupData,
             latestActivity = link.detail ?: snapshot.latestActivity,
         )
     }
