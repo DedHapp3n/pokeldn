@@ -26,6 +26,7 @@ internal object FrlgSave {
         val sound: Boolean get() = newest != null
         val japanese: Boolean get() = newest?.layouts == setOf(Layout.JAPANESE)
     }
+    data class SectorWrite(val physicalSector: Int, val data: ByteArray)
 
     class SaveException(message: String) : IllegalArgumentException(message)
 
@@ -99,6 +100,103 @@ internal object FrlgSave {
         return Summary(slots, newest)
     }
 
+    fun checkRestorable(input: ByteArray, japanese: Boolean): Summary {
+        val data = normalize(input)
+        val summary = describe(data)
+        if (!summary.sound) throw SaveException("the save has no whole copy of a game in it")
+        val spoken = language(data, summary)
+        val wanted = if (japanese) Layout.JAPANESE else Layout.LATIN
+        if ((spoken != null && (spoken == 1) != japanese) || wanted !in requireNotNull(summary.newest).layouts) {
+            throw SaveException(if (japanese)
+                "this save is from a Latin-alphabet cartridge; the console runs a Japanese one"
+            else "this save is from a Japanese cartridge; the console runs another language")
+        }
+        return summary
+    }
+
+    /** Upstream sav.py chip_newest(): only signature and 14 distinct ids are required. */
+    fun chipNewest(footers: ByteArray): Pair<Int, Long>? {
+        require(footers.size >= 2 * SLOT_SECTORS * 12) { "the console returned incomplete save footers" }
+        var best: Pair<Int, Long>? = null
+        for (slot in 0..1) {
+            val ids = mutableSetOf<Int>()
+            var counter = 0L
+            var valid = true
+            for (n in slot * SLOT_SECTORS until (slot + 1) * SLOT_SECTORS) {
+                val at = n * 12
+                if (u32(footers, at + 4) != SECTOR_SIGNATURE) { valid = false; break }
+                ids += u16(footers, at)
+                counter = u32(footers, at + 8)
+            }
+            if (valid && ids.size == SLOT_SECTORS) {
+                val candidate = slot to counter
+                if (best == null || ((counter + 1) and 0xffffffffL) > ((best.second + 1) and 0xffffffffL)) best = candidate
+            }
+        }
+        return best
+    }
+
+    /** Exact upstream safe restore order, including id-0 invalidation and extras. */
+    fun sectorsToWrite(input: ByteArray, footers: ByteArray): List<SectorWrite> {
+        val data = normalize(input)
+        val summary = describe(data)
+        val source = summary.newest ?: throw SaveException("the save has no whole copy of a game in it")
+        val newest = chipNewest(footers)
+        val counter = if (newest == null) 0L else (newest.second + 1) and 0xffffffffL
+        val target = (counter % 2).toInt()
+        val copy = (0 until SLOT_SECTORS).map { i ->
+            val raw = sector(data, source.index * SLOT_SECTORS + i)
+            putU32(raw, SECTOR_COUNTER_OFFSET, counter)
+            SectorWrite(target * SLOT_SECTORS + i, raw)
+        }
+        val result = mutableListOf<SectorWrite>()
+        for (i in 0 until SLOT_SECTORS) {
+            val at = (target * SLOT_SECTORS + i) * 12
+            if (u32(footers, at + 4) == SECTOR_SIGNATURE && u16(footers, at) == 0) {
+                result += SectorWrite(target * SLOT_SECTORS + i, ByteArray(SECTOR_SIZE) { 0xff.toByte() })
+            }
+        }
+        result += copy.filter { footer(it.data, 0).id != 0 }
+        result += copy.filter { footer(it.data, 0).id == 0 }
+        result += (28 until SECTOR_COUNT).map { SectorWrite(it, sector(data, it)) }
+        return result
+    }
+
+    data class Token(val encoded: ByteArray, val expandedSize: Int)
+    fun deflate(input: ByteArray): List<Token> {
+        val out = mutableListOf<Token>(); var at = 0
+        while (at < input.size) {
+            var run = 1
+            while (at + run < input.size && run < 130 && input[at + run] == input[at]) run++
+            if (run >= 3) { out += Token(byteArrayOf((0x80 + run - 3).toByte(), input[at]), run); at += run; continue }
+            val start = at
+            while (at < input.size && at - start < 128) {
+                if (at > start && at + 2 < input.size && input[at] == input[at + 1] && input[at] == input[at + 2]) break
+                at++
+            }
+            out += Token(byteArrayOf((at - start - 1).toByte()) + input.copyOfRange(start, at), at - start)
+        }
+        return out
+    }
+
+    private fun language(data: ByteArray, summary: Summary): Int? {
+        val newest = requireNotNull(summary.newest)
+        fun block(id: Int): ByteArray {
+            val n = (newest.index * SLOT_SECTORS until (newest.index + 1) * SLOT_SECTORS)
+                .first { footer(data, it).id == id }
+            return sector(data, n).copyOfRange(0, SECTOR_ID_OFFSET)
+        }
+        val sb2 = block(0); val trainerId = sb2.copyOfRange(0x0a, 0x0e)
+        val records = mutableListOf<ByteArray>()
+        val sb1 = block(1); val partyCount = minOf(sb1[0x34].toInt() and 0xff, 6)
+        repeat(partyCount) { records += sb1.copyOfRange(0x38 + it * 100, 0x38 + (it + 1) * 100) }
+        val layout = newest.layouts.first()
+        val storage = (5 until SLOT_SECTORS).fold(ByteArray(0)) { acc, id -> acc + block(id).copyOf(chunkSize(layout, id)) }
+        repeat(420) { val a = 4 + it * 80; if (a + 80 <= storage.size) records += storage.copyOfRange(a, a + 80) }
+        return records.filter { it.size >= 80 && it.copyOfRange(4, 8).contentEquals(trainerId) && !it.copyOfRange(0, 4).all { b -> b == 0.toByte() } }
+            .groupingBy { it[0x12].toInt() and 0xff }.eachCount().maxByOrNull { it.value }?.key
+    }
+
     private fun newer(a: Slot, b: Slot): Slot {
         val aCounter = requireNotNull(a.counter)
         val bCounter = requireNotNull(b.counter)
@@ -135,4 +233,5 @@ internal object FrlgSave {
     private fun u32(data: ByteArray, at: Int): Long = (0 until 4).fold(0L) { value, i ->
         value or ((data[at + i].toInt() and 0xff).toLong() shl (8 * i))
     }
+    private fun putU32(data: ByteArray, at: Int, value: Long) = repeat(4) { i -> data[at + i] = (value ushr (8 * i)).toByte() }
 }

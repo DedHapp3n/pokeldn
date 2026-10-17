@@ -9,6 +9,7 @@ import com.dedhapp3n.pokeldn.frlg.FrlgCompletedBackup
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveCloseResult
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveDataResult
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveBackupStage
+import com.dedhapp3n.pokeldn.frlg.FrlgSaveRestoreStage
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -94,6 +95,12 @@ data class LdnDiscoverySnapshot(
     val saveBackupDataResult: FrlgSaveDataResult = FrlgSaveDataResult.INCOMPLETE,
     val saveBackupCloseResult: FrlgSaveCloseResult = FrlgSaveCloseResult.PENDING,
     val saveBackupPersisted: Boolean = false,
+    val saveRestoreStage: FrlgSaveRestoreStage? = null,
+    val saveRestoreSectors: Int = 0,
+    val saveRestoreTotalSectors: Int = 0,
+    val saveRestoreFailureMask: Long? = null,
+    val saveRestoreLoadResult: Int? = null,
+    val saveRestoreSucceeded: Boolean = false,
     val latestActivity: String? = null,
 )
 
@@ -158,6 +165,7 @@ class LdnDiscoveryController internal constructor(
         network: LdnDiscoveryNetwork,
         walkThroughWalls: Boolean = false,
         saveBackup: Boolean = false,
+        restoreSave: ByteArray? = null,
         persistSaveBackup: (FrlgCompletedBackup) -> Unit = {},
         onSnapshot: (LdnDiscoverySnapshot) -> Unit = {},
         onFailure: (Throwable) -> Unit = {},
@@ -174,9 +182,10 @@ class LdnDiscoveryController internal constructor(
         frlgHost = FrlgHostLink(
             network.piaHost,
             network.parentSessionId,
-            walkThroughWalls,
-            saveBackup,
-            persistSaveBackup,
+            runWalkThroughWalls = walkThroughWalls,
+            runSaveBackup = saveBackup,
+            restoreSave = restoreSave,
+            persistSaveBackup = persistSaveBackup,
         ),
         activateApplicationData = {
             network.authenticationHost.setApplicationData(network.activeApplicationData)
@@ -568,6 +577,12 @@ class LdnDiscoveryController internal constructor(
             saveBackupDataResult = link.backup?.dataResult ?: snapshot.saveBackupDataResult,
             saveBackupCloseResult = link.backup?.closeResult ?: snapshot.saveBackupCloseResult,
             saveBackupPersisted = link.backup?.persisted ?: snapshot.saveBackupPersisted,
+            saveRestoreStage = link.restore?.stage,
+            saveRestoreSectors = link.restore?.sectorsWritten ?: snapshot.saveRestoreSectors,
+            saveRestoreTotalSectors = link.restore?.totalSectors ?: snapshot.saveRestoreTotalSectors,
+            saveRestoreFailureMask = link.restore?.failureMask ?: snapshot.saveRestoreFailureMask,
+            saveRestoreLoadResult = link.restore?.loadResult ?: snapshot.saveRestoreLoadResult,
+            saveRestoreSucceeded = link.restore?.successful ?: snapshot.saveRestoreSucceeded,
             latestActivity = link.detail ?: snapshot.latestActivity,
         )
     }

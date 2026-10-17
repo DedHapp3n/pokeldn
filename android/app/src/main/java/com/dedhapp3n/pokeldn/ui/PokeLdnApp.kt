@@ -20,6 +20,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.FolderOpen
@@ -48,6 +50,7 @@ import com.dedhapp3n.pokeldn.frlg.FrlgSaveBackupUiState
 import com.dedhapp3n.pokeldn.frlg.FrlgBackupStorageUiState
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveExportPhase
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveCloseResult
+import com.dedhapp3n.pokeldn.frlg.FrlgSaveRestoreUiState
 import com.dedhapp3n.pokeldn.frlg.ProdKeysPhase
 import com.dedhapp3n.pokeldn.frlg.ProdKeysState
 import com.dedhapp3n.pokeldn.frlg.WalkThroughWallsPreset
@@ -77,6 +80,7 @@ private enum class AppDestination(val label: String) {
 }
 
 private const val SAVE_BACKUP_ID = "frlg-save-backup"
+private const val SAVE_RESTORE_ID = "frlg-save-restore"
 
 private data class GameModule(
     val title: String,
@@ -119,12 +123,16 @@ fun PokeLdnApp(
     onStopLdnApTest: () -> Unit,
     frlgOperationState: FrlgOperationState,
     saveBackupState: FrlgSaveBackupUiState,
+    saveRestoreState: FrlgSaveRestoreUiState,
     radioState: Esp32RadioState,
     onStartWalkThroughWalls: () -> Unit,
     onCancelWalkThroughWalls: () -> Unit,
     onStartSaveBackup: () -> Unit,
     onCancelSaveBackup: () -> Unit,
     onExportSaveBackup: () -> Unit,
+    onSelectSaveRestore: () -> Unit,
+    onStartSaveRestore: () -> Unit,
+    onCancelSaveRestore: () -> Unit,
     backupStorageState: FrlgBackupStorageUiState,
     onOpenBackupFolder: () -> Unit,
     onChangeBackupFolder: () -> Unit,
@@ -176,9 +184,15 @@ fun PokeLdnApp(
                     onBack = { selectedOperation = null },
                     modifier = Modifier.padding(innerPadding),
                 )
+                selectedOperation == SAVE_RESTORE_ID -> SaveRestoreScreen(
+                    connectionState, esp32State, prodKeysState, saveRestoreState, radioState,
+                    onImportProdKeys, onSelectSaveRestore, onStartSaveRestore, onCancelSaveRestore,
+                    { selectedOperation = null }, Modifier.padding(innerPadding),
+                )
                 selectedGame == "frlg" -> FrlgOperationsScreen(
                     onOpenWalkThroughWalls = { selectedOperation = WalkThroughWallsPreset.BOOST_ID },
                     onOpenSaveBackup = { selectedOperation = SAVE_BACKUP_ID },
+                    onOpenSaveRestore = { selectedOperation = SAVE_RESTORE_ID },
                     onBack = { selectedGame = null },
                     modifier = Modifier.padding(innerPadding),
                 )
@@ -214,7 +228,8 @@ fun PokeLdnApp(
                 prodKeysState = prodKeysState,
                 onImportProdKeys = onImportProdKeys,
                 ldnApTestState = ldnApTestState,
-                frlgOperationState = frlgOperationState,
+                frlgOperationState = listOf(saveRestoreState.operation, saveBackupState.operation, frlgOperationState)
+                    .firstOrNull { it.diagnostics != null } ?: frlgOperationState,
                 onStartLdnApTest = onStartLdnApTest,
                 onStopLdnApTest = onStopLdnApTest,
                 modifier = Modifier.padding(innerPadding),
@@ -592,6 +607,7 @@ private fun GameModulePanel(module: GameModule, onOpen: (() -> Unit)?, modifier:
 private fun FrlgOperationsScreen(
     onOpenWalkThroughWalls: () -> Unit,
     onOpenSaveBackup: () -> Unit,
+    onOpenSaveRestore: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -636,12 +652,55 @@ private fun FrlgOperationsScreen(
                     StatusTone.POSITIVE,
                     onOpenSaveBackup,
                 )
-                PlannedOperation("Save Restore", "Experimental")
+                OperationRow("Save Restore", "Write a validated 128 KiB save to the cartridge.", "Available", StatusTone.WARNING, onOpenSaveRestore)
             }
         }
     }
 }
 
+@Composable
+private fun SaveRestoreScreen(
+    connectionState: SerialConnectionState, esp32State: Esp32HandshakeState,
+    keysState: ProdKeysState, state: FrlgSaveRestoreUiState, radioState: Esp32RadioState,
+    onImportKeys: () -> Unit, onSelect: () -> Unit, onStart: () -> Unit,
+    onCancel: () -> Unit, onBack: () -> Unit, modifier: Modifier = Modifier,
+) {
+    var confirming by rememberSaveable { mutableStateOf(false) }
+    val availability = FrlgOperationStartGate.evaluate(
+        keysState.phase == ProdKeysPhase.AVAILABLE, esp32State.phase == Esp32HandshakePhase.VERIFIED,
+        radioState.phase == Esp32RadioPhase.READY, state.running, false, radioState.detail)
+    if (confirming) AlertDialog(
+        onDismissRequest = { confirming = false }, title = { Text("Restore cartridge save?") },
+        text = { Text("This will write the selected save to the cartridge. A verified backup of the current save is strongly recommended.") },
+        dismissButton = { TextButton(onClick = { confirming = false }) { Text("Cancel") } },
+        confirmButton = { TextButton(onClick = { confirming = false; onStart() }) { Text("Restore") } })
+    CenteredDeviceList(modifier) {
+        item { DeviceScreenTitle("FRLG / Save tools", "Save Restore", "Validated cartridge save restore") }
+        item { DeviceButton("Back to operations", onBack, Modifier.fillMaxWidth()) }
+        item { BezelDisplay("Restore status") {
+            DisplayStatus(state.operation.phase.label, when {
+                state.operation.phase == com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.COMPLETED -> StatusTone.POSITIVE
+                state.operation.phase == com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.FAILED -> StatusTone.ERROR
+                state.running -> StatusTone.WARNING else -> StatusTone.NEUTRAL })
+            state.operation.detail?.let { Text(it, color = ScreenMuted) }
+            state.cartridge?.let { Text("Cartridge: $it", color = ScreenMuted) }
+            if (state.totalSectors > 0) Text("Progress: ${state.sectorsWritten} / ${state.totalSectors} sectors", color = ScreenMuted)
+            state.failureMask?.let { Text("Failure mask: 0x${it.toString(16).padStart(8,'0')}", color = ScreenMuted) }
+            state.loadResult?.let { Text("Load result: $it", color = ScreenMuted) }
+        } }
+        item { ShellPanel("Save file") {
+            state.filename?.let { Text("File: $it") }
+            if (state.fileSize > 0) Text("Size: ${state.fileSize} bytes", color = ScreenMuted)
+            state.validationDetail?.let { Text(it, color = if(state.readyFile) IndicatorGreen else IndicatorRed) }
+            if (state.readyFile) DisplayStatus("Whole save slot verified", StatusTone.POSITIVE)
+            DeviceButton("Select .sav", onSelect, Modifier.fillMaxWidth(), enabled = !state.running)
+            if (state.running) DeviceButton("Cancel", onCancel, Modifier.fillMaxWidth(), style=DeviceButtonStyle.SECONDARY)
+            else DeviceButton("Restore save", { confirming = true }, Modifier.fillMaxWidth(), enabled = state.readyFile && connectionState.phase==SerialConnectionPhase.CONNECTED && availability.enabled)
+            if (!availability.enabled) Text(availability.reason.orEmpty(), style=MaterialTheme.typography.bodySmall, color=ScreenMuted)
+            if (keysState.phase != ProdKeysPhase.AVAILABLE) DeviceButton("Import prod.keys", onImportKeys, Modifier.fillMaxWidth())
+        } }
+    }
+}
 @Composable
 private fun SaveBackupScreen(
     connectionState: SerialConnectionState,

@@ -21,6 +21,8 @@ enum class FrlgOperationPhase(val label: String) {
     SENDING_BOOST("Sending boost"),
     RECEIVING_SAVE("Receiving save"),
     VALIDATING_SAVE("Validating save"),
+    RESTORING_SAVE("Restoring save"),
+    LOADING_RESTORED_SAVE("Loading restored save"),
     WAITING_FOR_CLOSE("Waiting for save/close"),
     CLOSING_LINK("Closing link"),
     RETURNING_TO_READY("Returning adapter to Ready"),
@@ -82,6 +84,8 @@ private fun FrlgOperationPhase.progressRank(): Int = when (this) {
     FrlgOperationPhase.SENDING_BOOST -> 11
     FrlgOperationPhase.RECEIVING_SAVE -> 11
     FrlgOperationPhase.VALIDATING_SAVE -> 12
+    FrlgOperationPhase.RESTORING_SAVE -> 12
+    FrlgOperationPhase.LOADING_RESTORED_SAVE -> 13
     FrlgOperationPhase.WAITING_FOR_CLOSE -> 13
     FrlgOperationPhase.CLOSING_LINK -> 14
     else -> -1
@@ -160,6 +164,12 @@ internal fun frlgProtocolDiagnostics(snapshot: LdnDiscoverySnapshot): String = b
         append(" backupWhole=${snapshot.saveBackupHasWholeSlot ?: "unknown"}")
         append(" backupOk=${snapshot.saveBackupSucceeded}")
         append(" backupClose=${snapshot.saveBackupNonSavingCloseEntered}/${snapshot.saveBackupNonSavingCloseConfirmed}")
+    }
+    snapshot.saveRestoreStage?.let { append(" restore=$it") }
+    if (snapshot.saveRestoreTotalSectors > 0) {
+        append(" restoreSectors=${snapshot.saveRestoreSectors}/${snapshot.saveRestoreTotalSectors}")
+        snapshot.saveRestoreFailureMask?.let { append(" restoreFail=0x${it.toString(16).padStart(8, '0')}") }
+        snapshot.saveRestoreLoadResult?.let { append(" restoreLoad=$it") }
     }
 }
 

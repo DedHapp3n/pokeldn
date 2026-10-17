@@ -1,0 +1,26 @@
+package com.dedhapp3n.pokeldn.frlg
+
+enum class FrlgSaveRestoreStage { WAITING_CLIENT, VALIDATING, READING_FOOTERS, WRITING, LOADING, CLOSING, COMPLETED, REFUSED, FAILED }
+internal data class FrlgSaveRestoreGiftSnapshot(val stage:FrlgSaveRestoreStage,val cartridge:FrlgCartridge,val gameCode:String?,val sectorsWritten:Int,val totalSectors:Int,val failureMask:Long?,val loadResult:Int?,val detail:String?,val disconnectRequested:Boolean,val successful:Boolean)
+
+/** RFU/Mystery Gift adapter for the isolated upstream-compatible restore core. */
+internal class FrlgSaveRestoreGiftEngine(private val linkCartridge:FrlgCartridge,save:ByteArray,startupStandbyCount:Int=0,echoStartupStandby:Boolean=true){
+    private val core=FrlgSaveRestoreEngine(save,linkCartridge.game,linkCartridge.language);private var stage=FrlgSaveRestoreStage.WAITING_CLIENT;private var detail:String?="Waiting for Mystery Gift client";private var idle=0
+    private val words=ArrayDeque<IntArray>();private val blocks=ArrayDeque<Pair<ByteArray,Int>>();private var sender:RfuBlockSender?=null;private var gap=0;private val receiver=RfuBlockReceiver();private val messageReceiver=MgMessageReceiver();private var expecting:Int?=null;private var afterSend:(()->Unit)?=null
+    private var closeRetry=0;private var closeGrace:Int?=null;private var exitCount=startupStandbyCount+1;var disconnectRequested=false;private set
+    init{if(echoStartupStandby)repeat(4){words+=intArrayOf(FrlgRfu.READY_EXIT_STANDBY,startupStandbyCount,0,0,0,0,0)}}
+    fun receive(slot:ByteArray){if(slot.all{it==0.toByte()}){if(stage==FrlgSaveRestoreStage.WAITING_CLIENT&&++idle>=20)pumpCore();return};idle=0;val op=u16Restore(slot)and FrlgRfu.MASK;if(op==FrlgRfu.READY_CLOSE_LINK){val count=if(slot.size>=4)u16Restore(slot,2)else 0;exitCount=maxOf(exitCount,count);repeat(4){words+=intArrayOf(FrlgRfu.READY_CLOSE_LINK,count,0,0,0,0,0)};if(stage==FrlgSaveRestoreStage.CLOSING&&closeGrace==null)closeGrace=300;return};receiver.receive(slot)?.let(::onBlock)}
+    fun tick():IntArray{if(stage==FrlgSaveRestoreStage.CLOSING&&!disconnectRequested){closeGrace?.let{if(it<=1)disconnectRequested=true else closeGrace=it-1};if(closeGrace==null&&--closeRetry<=0){queueClose();closeRetry=60}};if(words.isNotEmpty())return words.removeFirst();if(gap>0){gap--;return IntArray(7)};if(sender==null&&blocks.isNotEmpty()){val(b,r)=blocks.removeFirst();sender=RfuBlockSender(b,r)};sender?.let{val out=it.tick();if(it.done){sender=null;gap=36;if(blocks.isEmpty()){val next=afterSend;afterSend=null;next?.invoke()}};return out};return IntArray(7)}
+    fun snapshot():FrlgSaveRestoreGiftSnapshot{val s=core.snapshot();return FrlgSaveRestoreGiftSnapshot(stage,FrlgCartridge(s.game?:linkCartridge.game,s.language?:linkCartridge.language,linkCartridge.version,linkCartridge.languageId),s.gameCode,s.sectorsWritten,s.totalSectors,s.failureMask,s.loadResult,detail,disconnectRequested,core.successful)}
+    fun onPeerLeft(){if(stage==FrlgSaveRestoreStage.COMPLETED||stage==FrlgSaveRestoreStage.FAILED||stage==FrlgSaveRestoreStage.REFUSED)return;if(core.successful&&stage==FrlgSaveRestoreStage.CLOSING){stage=FrlgSaveRestoreStage.COMPLETED;detail="Save restored successfully"}else{stage=FrlgSaveRestoreStage.FAILED;detail=detail?:"Console disconnected before restore completed"}}
+    fun markDisconnected()=onPeerLeft()
+    private fun onBlock(block:ByteArray){val wanted=expecting?:return;val msg=try{messageReceiver.receive(block,wanted)}catch(e:IllegalArgumentException){fail(e.message?:"Invalid Mystery Gift message");return}?:return;expecting=null;core.onReceived(wanted,msg);pumpCore()}
+    private fun pumpCore(){val s=core.snapshot();stage=when(s.stage){FrlgSaveRestoreEngine.Stage.REQUESTING_GAME_DATA->FrlgSaveRestoreStage.VALIDATING;FrlgSaveRestoreEngine.Stage.VALIDATING->FrlgSaveRestoreStage.VALIDATING;FrlgSaveRestoreEngine.Stage.READING_FOOTERS->FrlgSaveRestoreStage.READING_FOOTERS;FrlgSaveRestoreEngine.Stage.WRITING->FrlgSaveRestoreStage.WRITING;FrlgSaveRestoreEngine.Stage.LOADING->FrlgSaveRestoreStage.LOADING;FrlgSaveRestoreEngine.Stage.ENDING->FrlgSaveRestoreStage.LOADING;FrlgSaveRestoreEngine.Stage.COMPLETED->FrlgSaveRestoreStage.COMPLETED;FrlgSaveRestoreEngine.Stage.REFUSED->FrlgSaveRestoreStage.REFUSED;FrlgSaveRestoreEngine.Stage.FAILED->FrlgSaveRestoreStage.FAILED};detail=s.detail
+        when(val a=core.action){is FrlgSaveRestoreEngine.Action.Send->sendMessage(a.ident,a.payload,if(a.ident==FrlgSaveRestoreEngine.RAM_SCRIPT)3 else 2){core.onSent();pumpCore()};is FrlgSaveRestoreEngine.Action.Receive->expect(a.ident);FrlgSaveRestoreEngine.Action.Done->beginClose()}}
+    private fun beginClose(){stage=FrlgSaveRestoreStage.CLOSING;detail=if(core.successful)"Save restored; closing link" else core.snapshot().detail;queueClose();closeRetry=60}
+    private fun queueClose(){repeat(4){words+=intArrayOf(FrlgRfu.READY_CLOSE_LINK,exitCount,0,0,0,0,0)}}
+    private fun expect(id:Int){expecting=id;messageReceiver.reset()}
+    private fun sendMessage(id:Int,payload:ByteArray,repeats:Int,done:()->Unit){MgMessage.build(id,payload).forEach{blocks+=it to repeats};afterSend=done}
+    private fun fail(text:String){stage=FrlgSaveRestoreStage.FAILED;detail=text}
+}
+private fun u16Restore(d:ByteArray,a:Int=0)=(d[a].toInt()and 255)or((d[a+1].toInt()and 255)shl 8)
