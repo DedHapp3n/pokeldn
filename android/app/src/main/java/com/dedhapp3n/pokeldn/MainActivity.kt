@@ -44,6 +44,12 @@ import com.dedhapp3n.pokeldn.frlg.FrlgSaveBackupStage
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveBackupUiState
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveExport
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveExportPhase
+import com.dedhapp3n.pokeldn.frlg.AndroidFrlgBackupFolder
+import com.dedhapp3n.pokeldn.frlg.FrlgBackupStore
+import com.dedhapp3n.pokeldn.frlg.FrlgBackupStorageUiState
+import com.dedhapp3n.pokeldn.frlg.FrlgCompletedBackup
+import com.dedhapp3n.pokeldn.frlg.FrlgSaveCloseResult
+import com.dedhapp3n.pokeldn.frlg.preserveAfterTransportFailure
 import com.dedhapp3n.pokeldn.frlg.frlgProtocolDiagnostics
 import com.dedhapp3n.pokeldn.ldn.LdnAdvertisementBuilder
 import com.dedhapp3n.pokeldn.ldn.LdnApTestPhase
@@ -72,6 +78,10 @@ class MainActivity : ComponentActivity() {
     private val scanner by lazy { UsbDeviceScanner(this) }
     private val transport by lazy { UsbSerialTransport(usbManager) }
     private val prodKeysStore by lazy { ProdKeysStore(this) }
+    private val backupFolder by lazy { AndroidFrlgBackupFolder(this) }
+    private val backupStore by lazy {
+        FrlgBackupStore(filesDir.resolve("frlg-backups"), externalDirectory = backupFolder::externalDirectory)
+    }
     private val serialWorker = Executors.newSingleThreadExecutor()
     private val helloWorker = Executors.newCachedThreadPool()
     private val ldnOperationWorker = Executors.newSingleThreadExecutor()
@@ -87,6 +97,7 @@ class MainActivity : ComponentActivity() {
     private var ldnApTestState by mutableStateOf(LdnApTestState())
     private var frlgOperationState by mutableStateOf(FrlgOperationState())
     private var saveBackupState by mutableStateOf(FrlgSaveBackupUiState())
+    private var backupStorageState by mutableStateOf(FrlgBackupStorageUiState())
     private var radioState by mutableStateOf(Esp32RadioState())
     private var pendingDeviceId: Int? = null
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -161,6 +172,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val backupFolderPicker = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            val error = runCatching { backupFolder.remember(uri) }.exceptionOrNull()
+            refreshBackupStorageState(error?.message)
+        }
+    }
+
     private val permissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == ACTION_USB_PERMISSION) handlePermissionResult(intent)
@@ -191,6 +209,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prodKeysState = prodKeysStore.state()
+        restoreLatestBackup()
+        refreshBackupStorageState()
         enableEdgeToEdge()
         ContextCompat.registerReceiver(
             this, permissionReceiver, IntentFilter(ACTION_USB_PERMISSION), ContextCompat.RECEIVER_NOT_EXPORTED,
@@ -233,6 +253,9 @@ class MainActivity : ComponentActivity() {
                     onStartSaveBackup = ::startSaveBackup,
                     onCancelSaveBackup = ::cancelSaveBackup,
                     onExportSaveBackup = ::exportSaveBackup,
+                    backupStorageState = backupStorageState,
+                    onOpenBackupFolder = { backupFolderPicker.launch(backupFolder.uri()) },
+                    onChangeBackupFolder = { backupFolderPicker.launch(null) },
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -834,6 +857,7 @@ class MainActivity : ComponentActivity() {
                     network = network,
                     walkThroughWalls = !saveBackup,
                     saveBackup = saveBackup,
+                    persistSaveBackup = if (saveBackup) ::persistCompletedBackup else { _ -> },
                     onSnapshot = { snapshot ->
                         runOnUiThread {
                             val current = synchronized(frlgOperationLock) {
@@ -923,6 +947,7 @@ class MainActivity : ComponentActivity() {
             suggestedFilename = filename,
             exportPhase = if (completed != null && saveBackupState.exportPhase == FrlgSaveExportPhase.NOT_AVAILABLE)
                 FrlgSaveExportPhase.AVAILABLE else saveBackupState.exportPhase,
+            closeResult = snapshot.saveBackupCloseResult,
         )
     }
 
@@ -1014,6 +1039,50 @@ class MainActivity : ComponentActivity() {
         saveBackupExporter.launch(filename)
     }
 
+    private fun persistCompletedBackup(backup: FrlgCompletedBackup) {
+        val stored = backupStore.persist(backup)
+        runOnUiThread {
+            val warning = stored.externalWarning?.let { "Internal backup saved; external copy failed: $it" }
+            saveBackupState = saveBackupState.copy(
+                bytesReceived = stored.save.size,
+                totalBytes = stored.save.size,
+                cartridge = "${stored.game} / ${stored.language}",
+                hasWholeSlot = stored.hasWholeSlot,
+                save = stored.save.copyOf(),
+                suggestedFilename = stored.filename,
+                internalFilename = stored.filename,
+                externalFilename = stored.externalFilename,
+                exportPhase = FrlgSaveExportPhase.AVAILABLE,
+                exportDetail = warning ?: "Backup saved to private app storage",
+            )
+            refreshBackupStorageState(warning)
+        }
+    }
+
+    private fun restoreLatestBackup() {
+        val stored = backupStore.latest() ?: return
+        saveBackupState = FrlgSaveBackupUiState(
+            operation = FrlgOperationState(FrlgOperationPhase.COMPLETED, "Backup available in storage"),
+            bytesReceived = stored.save.size,
+            totalBytes = stored.save.size,
+            cartridge = "${stored.game} / ${stored.language}",
+            hasWholeSlot = stored.hasWholeSlot,
+            save = stored.save.copyOf(),
+            suggestedFilename = stored.filename,
+            internalFilename = stored.filename,
+            exportPhase = FrlgSaveExportPhase.AVAILABLE,
+            exportDetail = "Loaded from private app storage",
+        )
+    }
+
+    private fun refreshBackupStorageState(detail: String? = null) {
+        backupStorageState = FrlgBackupStorageUiState(
+            configuredFolderName = runCatching { backupFolder.displayName() }.getOrNull(),
+            latestBackupFilename = backupStore.latest()?.filename,
+            detail = detail,
+        )
+    }
+
     private fun activeOperationState(saveBackup: Boolean): FrlgOperationState =
         if (saveBackup) saveBackupState.operation else frlgOperationState
 
@@ -1042,8 +1111,17 @@ class MainActivity : ComponentActivity() {
             } catch (failure: Exception) { failure }
             runOnUiThread {
                 if (id != frlgOperationId) return@runOnUiThread
+                val completedBackup = active.saveBackup && saveBackupState.dataAvailable
                 val finished = if (error == null) {
                     FrlgOperationState(terminal, detail, progress.lastReached, progress.diagnostics)
+                } else if (completedBackup) {
+                    saveBackupState = saveBackupState.copy(closeResult = FrlgSaveCloseResult.CLEANUP_WARNING)
+                    FrlgOperationState(
+                        FrlgOperationPhase.COMPLETED,
+                        "Backup saved; adapter cleanup warning: ${error.message ?: "reconnect the ESP32 before retrying"}",
+                        progress.lastReached,
+                        progress.diagnostics,
+                    )
                 } else {
                     FrlgOperationState(
                         FrlgOperationPhase.FAILED,
@@ -1075,7 +1153,10 @@ class MainActivity : ComponentActivity() {
         }
         active?.discovery?.stop()
         frlgOperationState = FrlgOperationState()
-        saveBackupState = if (active?.saveBackup == true && interruption != null) {
+        saveBackupState = if (saveBackupState.dataAvailable) {
+            if (interruption == null) saveBackupState
+            else saveBackupState.preserveAfterTransportFailure("connection closed unexpectedly")
+        } else if (active?.saveBackup == true && interruption != null) {
             val previous = saveBackupState.operation
             saveBackupState.copy(
                 operation = FrlgOperationState(
@@ -1085,7 +1166,7 @@ class MainActivity : ComponentActivity() {
                     previous.diagnostics,
                 ),
             )
-        } else if (active != null || !saveBackupState.dataAvailable) {
+        } else if (active != null) {
             FrlgSaveBackupUiState()
         } else saveBackupState
     }

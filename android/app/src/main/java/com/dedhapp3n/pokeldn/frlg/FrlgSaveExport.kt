@@ -17,10 +17,19 @@ data class FrlgSaveBackupUiState(
     val suggestedFilename: String? = null,
     val exportPhase: FrlgSaveExportPhase = FrlgSaveExportPhase.NOT_AVAILABLE,
     val exportDetail: String? = null,
+    val internalFilename: String? = null,
+    val externalFilename: String? = null,
+    val closeResult: FrlgSaveCloseResult? = null,
 ) {
     val running: Boolean get() = operation.running
     val dataAvailable: Boolean get() = save?.size == FrlgSave.SAVE_SIZE
 }
+
+data class FrlgBackupStorageUiState(
+    val configuredFolderName: String? = null,
+    val latestBackupFilename: String? = null,
+    val detail: String? = null,
+)
 
 internal object FrlgSaveExport {
     private val filenameTime = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
@@ -36,4 +45,19 @@ internal object FrlgSaveExport {
 
     private fun safePart(value: String): String = value.filter { it.isLetterOrDigit() || it == '-' || it == '_' }
         .ifEmpty { "FRLG" }
+}
+
+internal fun FrlgSaveBackupUiState.preserveAfterTransportFailure(message: String): FrlgSaveBackupUiState {
+    if (!dataAvailable) return copy(operation = FrlgOperationState(FrlgOperationPhase.FAILED, message))
+    return copy(
+        operation = FrlgOperationState(
+            FrlgOperationPhase.COMPLETED,
+            "Backup saved - $message",
+            operation.lastReached,
+            operation.diagnostics,
+        ),
+        bytesReceived = FrlgSave.SAVE_SIZE,
+        totalBytes = FrlgSave.SAVE_SIZE,
+        closeResult = FrlgSaveCloseResult.TRANSPORT_FAILURE,
+    )
 }

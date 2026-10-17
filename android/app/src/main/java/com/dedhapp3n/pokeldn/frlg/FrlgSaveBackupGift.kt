@@ -10,6 +10,9 @@ enum class FrlgSaveBackupStage {
     FAILED,
 }
 
+enum class FrlgSaveDataResult { INCOMPLETE, COMPLETE_VALID, COMPLETE_WITH_WARNING }
+enum class FrlgSaveCloseResult { PENDING, NORMAL, PEER_CLOSED, CLEANUP_WARNING, TRANSPORT_FAILURE }
+
 internal data class FrlgSaveBackupGiftSnapshot(
     val stage: FrlgSaveBackupStage,
     val cartridge: FrlgCartridge,
@@ -23,6 +26,9 @@ internal data class FrlgSaveBackupGiftSnapshot(
     val nonSavingCloseEntered: Boolean,
     val nonSavingCloseConfirmed: Boolean,
     val save: ByteArray?,
+    val dataResult: FrlgSaveDataResult,
+    val closeResult: FrlgSaveCloseResult,
+    val persisted: Boolean,
 )
 
 /** RFU/Mystery Gift adapter for [FrlgSaveBackupEngine], using the proven WTW block pacing. */
@@ -30,6 +36,7 @@ internal class FrlgSaveBackupGiftEngine(
     private val linkCartridge: FrlgCartridge,
     startupStandbyCount: Int = 0,
     echoStartupStandby: Boolean = true,
+    private val persistCompleted: (FrlgCompletedBackup) -> Unit = {},
 ) {
     private val core = FrlgSaveBackupEngine(linkCartridge.game, linkCartridge.language)
     private var stage = FrlgSaveBackupStage.WAITING_CLIENT
@@ -49,6 +56,11 @@ internal class FrlgSaveBackupGiftEngine(
     private var nonSavingCloseConfirmed = false
     private var terminalDetail: String? = null
     private var completedSave: ByteArray? = null
+    private var dataResult = FrlgSaveDataResult.INCOMPLETE
+    private var closeResult = FrlgSaveCloseResult.PENDING
+    private var persisted = false
+    // Upstream carries the LinkPlayer standby sequence into READY_CLOSE_LINK.
+    private var exitCount = startupStandbyCount + 1
     var disconnectRequested = false
         private set
 
@@ -71,6 +83,7 @@ internal class FrlgSaveBackupGiftEngine(
         val op = u16Backup(slot) and FrlgRfu.MASK
         if (op == FrlgRfu.READY_CLOSE_LINK) {
             val count = if (slot.size >= 4) u16Backup(slot, 2) else 0
+            exitCount = maxOf(exitCount, count)
             repeat(4) { words += intArrayOf(FrlgRfu.READY_CLOSE_LINK, count, 0, 0, 0, 0, 0) }
             if (stage == FrlgSaveBackupStage.CLOSING) {
                 nonSavingCloseConfirmed = true
@@ -130,23 +143,34 @@ internal class FrlgSaveBackupGiftEngine(
             backupSucceeded = completedSave != null,
             nonSavingCloseEntered = nonSavingCloseEntered,
             nonSavingCloseConfirmed = nonSavingCloseConfirmed,
-            save = completedSave,
+            save = completedSave?.copyOf(),
+            dataResult = dataResult,
+            closeResult = closeResult,
+            persisted = persisted,
         )
     }
 
     fun onPeerLeft() {
         if (stage == FrlgSaveBackupStage.COMPLETED || stage == FrlgSaveBackupStage.FAILED) return
-        if (completedSave != null && nonSavingCloseEntered) {
+        if (completedSave != null) {
             stage = FrlgSaveBackupStage.COMPLETED
-            detail = terminalDetail ?: "Save backup complete"
+            closeResult = FrlgSaveCloseResult.PEER_CLOSED
+            detail = if (nonSavingCloseEntered) terminalDetail ?: "Backup saved successfully"
+                else "Backup saved - connection closed unexpectedly"
         } else {
             stage = FrlgSaveBackupStage.FAILED
             detail = terminalDetail ?: "Console disconnected before the save backup completed"
-            completedSave = null
         }
     }
 
-    fun markDisconnected() = onPeerLeft()
+    fun markDisconnected() {
+        if (completedSave != null) {
+            stage = FrlgSaveBackupStage.COMPLETED
+            closeResult = if (nonSavingCloseConfirmed) FrlgSaveCloseResult.NORMAL
+                else FrlgSaveCloseResult.CLEANUP_WARNING
+            detail = terminalDetail ?: "Backup saved successfully"
+        } else onPeerLeft()
+    }
 
     private fun onRfuBlock(block: ByteArray) {
         val wanted = expecting ?: return
@@ -181,9 +205,27 @@ internal class FrlgSaveBackupGiftEngine(
             FrlgSaveBackupEngine.Action.Done -> {
                 val coreState = core.snapshot()
                 if (coreState.stage == FrlgSaveBackupEngine.Stage.COMPLETED) {
-                    completedSave = requireNotNull(core.save())
+                    val frozen = requireNotNull(core.save()).copyOf()
+                    completedSave = frozen
+                    dataResult = if (coreState.hasWholeSlot == true) FrlgSaveDataResult.COMPLETE_VALID
+                        else FrlgSaveDataResult.COMPLETE_WITH_WARNING
                     terminalDetail = if (coreState.hasWholeSlot == true) "Save backup complete"
                     else "Save backup complete; neither save slot is whole"
+                    try {
+                        persistCompleted(FrlgCompletedBackup(
+                            save = frozen.copyOf(),
+                            game = coreState.game ?: linkCartridge.game,
+                            language = coreState.language ?: linkCartridge.language,
+                            gameCode = coreState.gameCode,
+                            hasWholeSlot = coreState.hasWholeSlot == true,
+                        ))
+                        persisted = true
+                    } catch (error: Exception) {
+                        stage = FrlgSaveBackupStage.COMPLETED
+                        closeResult = FrlgSaveCloseResult.CLEANUP_WARNING
+                        detail = "Backup complete, but private storage failed: ${error.message ?: "unknown error"}"
+                        return
+                    }
                     stage = FrlgSaveBackupStage.WAITING_READY_END
                     detail = "Closing Mystery Gift without saving"
                     sendMessage(FrlgSaveBackupEngine.MG_LINKID_CLIENT_SCRIPT, NON_SAVING_END_SCRIPT) {
@@ -203,7 +245,7 @@ internal class FrlgSaveBackupGiftEngine(
     }
 
     private fun queueClose() {
-        repeat(4) { words += intArrayOf(FrlgRfu.READY_CLOSE_LINK, 0, 0, 0, 0, 0, 0) }
+        repeat(4) { words += intArrayOf(FrlgRfu.READY_CLOSE_LINK, exitCount, 0, 0, 0, 0, 0) }
     }
 
     private fun expect(ident: Int) {
@@ -217,9 +259,14 @@ internal class FrlgSaveBackupGiftEngine(
     }
 
     private fun fail(message: String) {
-        stage = FrlgSaveBackupStage.FAILED
-        detail = message
-        completedSave = null
+        if (completedSave != null) {
+            stage = FrlgSaveBackupStage.COMPLETED
+            closeResult = FrlgSaveCloseResult.TRANSPORT_FAILURE
+            detail = "Backup saved - $message"
+        } else {
+            stage = FrlgSaveBackupStage.FAILED
+            detail = message
+        }
     }
 
     companion object {

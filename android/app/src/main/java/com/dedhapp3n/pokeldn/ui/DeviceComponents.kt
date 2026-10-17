@@ -223,6 +223,7 @@ internal fun DeviceButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     style: DeviceButtonStyle = DeviceButtonStyle.PRIMARY,
+    leading: (@Composable () -> Unit)? = null,
 ) {
     val container = when (style) {
         DeviceButtonStyle.PRIMARY -> ShellRedDark
@@ -242,7 +243,10 @@ internal fun DeviceButton(
         colors = ButtonDefaults.buttonColors(containerColor = container, contentColor = content),
         elevation = ButtonDefaults.buttonElevation(defaultElevation = 5.dp, pressedElevation = 1.dp),
     ) {
-        Text(label.uppercase(), fontWeight = FontWeight.Black)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            leading?.invoke()
+            Text(label.uppercase(), fontWeight = FontWeight.Black)
+        }
     }
 }
 

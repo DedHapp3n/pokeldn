@@ -5,6 +5,9 @@ import com.dedhapp3n.pokeldn.esp32.Esp32RadioOperation
 import com.dedhapp3n.pokeldn.esp32.Esp32RadioSession
 import com.dedhapp3n.pokeldn.esp32.formatMac
 import com.dedhapp3n.pokeldn.frlg.FrlgHostLink
+import com.dedhapp3n.pokeldn.frlg.FrlgCompletedBackup
+import com.dedhapp3n.pokeldn.frlg.FrlgSaveCloseResult
+import com.dedhapp3n.pokeldn.frlg.FrlgSaveDataResult
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveBackupStage
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
@@ -88,6 +91,9 @@ data class LdnDiscoverySnapshot(
     val saveBackupNonSavingCloseEntered: Boolean = false,
     val saveBackupNonSavingCloseConfirmed: Boolean = false,
     val saveBackupData: ByteArray? = null,
+    val saveBackupDataResult: FrlgSaveDataResult = FrlgSaveDataResult.INCOMPLETE,
+    val saveBackupCloseResult: FrlgSaveCloseResult = FrlgSaveCloseResult.PENDING,
+    val saveBackupPersisted: Boolean = false,
     val latestActivity: String? = null,
 )
 
@@ -152,6 +158,7 @@ class LdnDiscoveryController internal constructor(
         network: LdnDiscoveryNetwork,
         walkThroughWalls: Boolean = false,
         saveBackup: Boolean = false,
+        persistSaveBackup: (FrlgCompletedBackup) -> Unit = {},
         onSnapshot: (LdnDiscoverySnapshot) -> Unit = {},
         onFailure: (Throwable) -> Unit = {},
     ) : this(
@@ -164,7 +171,13 @@ class LdnDiscoveryController internal constructor(
         piaHost = network.piaHost,
         piaTransport = LdnPiaUdpTransport(network.piaHost.hostIp, network.accessPoint.bssid),
         rawGroupDecoder = LdnRawGroupDecoder(network.accessPoint.wlanKey),
-        frlgHost = FrlgHostLink(network.piaHost, network.parentSessionId, walkThroughWalls, saveBackup),
+        frlgHost = FrlgHostLink(
+            network.piaHost,
+            network.parentSessionId,
+            walkThroughWalls,
+            saveBackup,
+            persistSaveBackup,
+        ),
         activateApplicationData = {
             network.authenticationHost.setApplicationData(network.activeApplicationData)
             network.piaHost.activateApplicationData(network.activeApplicationData)
@@ -552,6 +565,9 @@ class LdnDiscoveryController internal constructor(
             saveBackupNonSavingCloseConfirmed = link.backup?.nonSavingCloseConfirmed
                 ?: snapshot.saveBackupNonSavingCloseConfirmed,
             saveBackupData = link.backup?.save ?: snapshot.saveBackupData,
+            saveBackupDataResult = link.backup?.dataResult ?: snapshot.saveBackupDataResult,
+            saveBackupCloseResult = link.backup?.closeResult ?: snapshot.saveBackupCloseResult,
+            saveBackupPersisted = link.backup?.persisted ?: snapshot.saveBackupPersisted,
             latestActivity = link.detail ?: snapshot.latestActivity,
         )
     }

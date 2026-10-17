@@ -63,8 +63,49 @@ class FrlgSaveBackupGiftTest {
 
         assertEquals(FrlgSaveBackupStage.WAITING_READY_END, engine.snapshot().stage)
         assertEquals(false, engine.snapshot().hasWholeSlot)
+        assertEquals(FrlgSaveDataResult.COMPLETE_WITH_WARNING, engine.snapshot().dataResult)
         assertArrayEquals(source, engine.snapshot().save)
         assertTrue(engine.snapshot().detail!!.contains("without saving"))
+    }
+
+    @Test fun `persistence failure retains complete image and prevents close from racing ahead`() {
+        val source = wholeSave()
+        val engine = readyEngine { throw IllegalStateException("disk full") }
+        completeData(engine, source)
+        val snapshot = engine.snapshot()
+        assertEquals(FrlgSaveBackupStage.COMPLETED, snapshot.stage)
+        assertEquals(FrlgSaveCloseResult.CLEANUP_WARNING, snapshot.closeResult)
+        assertFalse(snapshot.persisted)
+        assertArrayEquals(source, snapshot.save)
+    }
+
+    @Test fun `complete data is persisted before non-saving close starts`() {
+        val order = mutableListOf<String>()
+        val engine = readyEngine { backup ->
+            assertEquals(FrlgSave.SAVE_SIZE, backup.save.size)
+            order += "persisted"
+        }
+        completeData(engine)
+        assertEquals(listOf("persisted"), order)
+        assertTrue(engine.snapshot().persisted)
+        assertEquals(FrlgSaveBackupStage.WAITING_READY_END, engine.snapshot().stage)
+    }
+
+    @Test fun `complete data survives peer departure before ready end`() {
+        val source = wholeSave()
+        val engine = readyEngine()
+        completeData(engine, source)
+        engine.onPeerLeft()
+        assertEquals(FrlgSaveBackupStage.COMPLETED, engine.snapshot().stage)
+        assertEquals(FrlgSaveCloseResult.PEER_CLOSED, engine.snapshot().closeResult)
+        assertArrayEquals(source, engine.snapshot().save)
+    }
+
+    @Test fun `backup close uses upstream carried standby count`() {
+        val engine = readyEngine(startupStandbyCount = 7)
+        completeData(engine)
+        sendMessage(engine, 20, ByteArray(1024))
+        assertEquals(8, engine.tick()[1])
     }
 
     @Test fun `truncated token response fails cleanly`() {
@@ -96,8 +137,13 @@ class FrlgSaveBackupGiftTest {
         )
     }
 
-    private fun readyEngine(): FrlgSaveBackupGiftEngine = FrlgSaveBackupGiftEngine(
+    private fun readyEngine(
+        startupStandbyCount: Int = 0,
+        persist: (FrlgCompletedBackup) -> Unit = {},
+    ): FrlgSaveBackupGiftEngine = FrlgSaveBackupGiftEngine(
         FrlgCartridge("LeafGreen", "German", 0x4005, 5),
+        startupStandbyCount = startupStandbyCount,
+        persistCompleted = persist,
     ).also { engine ->
         repeat(20) { engine.receive(ByteArray(14)) }
         drain(engine)
@@ -106,15 +152,18 @@ class FrlgSaveBackupGiftTest {
 
     private fun completeToClosing(): FrlgSaveBackupGiftEngine {
         val engine = readyEngine()
-        val source = wholeSave()
+        completeData(engine)
+        sendMessage(engine, 20, ByteArray(1024))
+        return engine
+    }
+
+    private fun completeData(engine: FrlgSaveBackupGiftEngine, source: ByteArray = wholeSave()) {
         sendMessage(engine, 17, gameData("BPGD"))
         drain(engine)
         val messages = deflateMessages(source)
         messages.forEach { sendMessage(engine, 19, it) }
         repeat(32 - messages.size) { sendMessage(engine, 19, ByteArray(4)) }
         drain(engine)
-        sendMessage(engine, 20, ByteArray(1024))
-        return engine
     }
 
     private fun drain(engine: FrlgSaveBackupGiftEngine) = repeat(5_000) { engine.tick() }

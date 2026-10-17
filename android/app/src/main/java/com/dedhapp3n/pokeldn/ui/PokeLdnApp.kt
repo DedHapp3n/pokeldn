@@ -20,6 +20,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,6 +45,7 @@ import com.dedhapp3n.pokeldn.esp32.Esp32RadioState
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationState
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationStartGate
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveBackupUiState
+import com.dedhapp3n.pokeldn.frlg.FrlgBackupStorageUiState
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveExportPhase
 import com.dedhapp3n.pokeldn.frlg.ProdKeysPhase
 import com.dedhapp3n.pokeldn.frlg.ProdKeysState
@@ -120,6 +124,9 @@ fun PokeLdnApp(
     onStartSaveBackup: () -> Unit,
     onCancelSaveBackup: () -> Unit,
     onExportSaveBackup: () -> Unit,
+    backupStorageState: FrlgBackupStorageUiState,
+    onOpenBackupFolder: () -> Unit,
+    onChangeBackupFolder: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var destination by rememberSaveable { mutableStateOf(AppDestination.HOME) }
@@ -183,6 +190,9 @@ fun PokeLdnApp(
             AppDestination.OPTIONS -> OptionsScreen(
                 prodKeysState = prodKeysState,
                 onImportProdKeys = onImportProdKeys,
+                backupStorageState = backupStorageState,
+                onOpenBackupFolder = onOpenBackupFolder,
+                onChangeBackupFolder = onChangeBackupFolder,
                 modifier = Modifier.padding(innerPadding),
             )
             AppDestination.DIAGNOSTICS -> DiagnosticsScreen(
@@ -487,6 +497,9 @@ private fun GamesScreen(
 private fun OptionsScreen(
     prodKeysState: ProdKeysState,
     onImportProdKeys: () -> Unit,
+    backupStorageState: FrlgBackupStorageUiState,
+    onOpenBackupFolder: () -> Unit,
+    onChangeBackupFolder: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     CenteredDeviceList(modifier) {
@@ -519,7 +532,24 @@ private fun OptionsScreen(
         }
         item {
             ShellPanel("Storage") {
-                Text("Local file and backup settings will be added as storage workflows become available.")
+                Text("Backup folder: ${backupStorageState.configuredFolderName ?: "Not selected"}")
+                backupStorageState.latestBackupFilename?.let {
+                    Text("Latest backup: $it", style = MaterialTheme.typography.bodySmall)
+                }
+                DeviceButton(
+                    "Backups öffnen",
+                    onOpenBackupFolder,
+                    Modifier.fillMaxWidth(),
+                    enabled = backupStorageState.configuredFolderName != null,
+                    leading = { Icon(Icons.Outlined.FolderOpen, contentDescription = null) },
+                )
+                DeviceButton(
+                    if (backupStorageState.configuredFolderName == null) "Backup-Ordner wählen" else "Ordner ändern",
+                    onChangeBackupFolder,
+                    Modifier.fillMaxWidth(),
+                    style = DeviceButtonStyle.SECONDARY,
+                )
+                backupStorageState.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             }
         }
         item {
@@ -643,6 +673,9 @@ private fun SaveBackupScreen(
         item { DeviceButton("Back to operations", onBack, Modifier.fillMaxWidth()) }
         item {
             BezelDisplay("Backup status") {
+                if (backupState.dataAvailable) {
+                    DisplayStatus("Backup complete", StatusTone.POSITIVE)
+                }
                 DisplayStatus(
                     operation.phase.label,
                     when (operation.phase) {
@@ -658,6 +691,12 @@ private fun SaveBackupScreen(
                     DisplayStatus(
                         if (it) "Whole save slot verified" else "No whole save slot found",
                         if (it) StatusTone.POSITIVE else StatusTone.WARNING,
+                    )
+                }
+                backupState.closeResult?.let { result ->
+                    Text(
+                        "Connection: ${result.name.lowercase().replace('_', ' ')}",
+                        color = ScreenMuted,
                     )
                 }
                 DisplayStatus(
@@ -692,7 +731,13 @@ private fun SaveBackupScreen(
                 }
                 if (backupState.dataAvailable) {
                     Text(backupState.suggestedFilename.orEmpty(), style = MaterialTheme.typography.bodySmall, color = ScreenMuted)
-                    DeviceButton("Export .sav", onExport, Modifier.fillMaxWidth(),
+                    backupState.internalFilename?.let {
+                        Text("Saved in app storage: $it", style = MaterialTheme.typography.bodySmall, color = ScreenMuted)
+                    }
+                    backupState.externalFilename?.let {
+                        Text("Saved in backup folder: $it", style = MaterialTheme.typography.bodySmall, color = ScreenMuted)
+                    }
+                    DeviceButton("Save a copy…", onExport, Modifier.fillMaxWidth(),
                         enabled = backupState.exportPhase != FrlgSaveExportPhase.EXPORTING)
                 }
                 backupState.exportDetail?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = ScreenMuted) }

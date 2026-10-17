@@ -30,6 +30,7 @@ internal class FrlgHostLink(
     parentSessionId: ByteArray,
     private val runWalkThroughWalls: Boolean = false,
     private val runSaveBackup: Boolean = false,
+    private val persistSaveBackup: (FrlgCompletedBackup) -> Unit = {},
 ) {
     init {
         require(!(runWalkThroughWalls && runSaveBackup)) { "Only one FRLG operation may own a host link" }
@@ -149,7 +150,12 @@ internal class FrlgHostLink(
             if (runWalkThroughWalls) {
                 gift = FrlgMysteryGiftEngine(it, link.standbyCount ?: 0, echoStartupStandby = false)
             } else {
-                backup = FrlgSaveBackupGiftEngine(it, link.standbyCount ?: 0, echoStartupStandby = false)
+                backup = FrlgSaveBackupGiftEngine(
+                    it,
+                    link.standbyCount ?: 0,
+                    echoStartupStandby = false,
+                    persistCompleted = persistSaveBackup,
+                )
             }
         }
     }
