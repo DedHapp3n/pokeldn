@@ -1,6 +1,12 @@
 package com.dedhapp3n.pokeldn.frlg
 
 import com.dedhapp3n.pokeldn.ldn.LdnPiaHost
+import com.dedhapp3n.pokeldn.ldn.LdnParticipant
+import com.dedhapp3n.pokeldn.ldn.LdnReliableDelivery
+import com.dedhapp3n.pokeldn.ldn.LdnReliableEmission
+import com.dedhapp3n.pokeldn.ldn.LdnReliableSession
+import com.dedhapp3n.pokeldn.ldn.RELIABLE_FLAGS_DATA
+import com.dedhapp3n.pokeldn.ldn.RELIABLE_FLAGS_INIT
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -8,6 +14,59 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FrlgRfuTest {
+    @Test fun `latched connect acknowledgement survives reliable half-window wrap`() {
+        val pia = LdnPiaHost(ByteArray(32), byteArrayOf(2, 0, 0, 0, 0, 1), 14, 6)
+        pia.participantJoined(
+            LdnParticipant(1, "169.254.14.2", byteArrayOf(2, 0, 0, 0, 0, 2), ByteArray(0), 14, 0),
+            0,
+        )
+        setPrivate(pia, "guestVar", 2)
+        val reliable = privateField<LdnReliableSession>(pia, "reliable")
+        val deliveries = privateField<ArrayDeque<LdnReliableDelivery>>(pia, "reliableDeliveries")
+        val connectSequence = 0xfff0
+        val connect = hex("574302008084")
+        deliveries.addAll(reliable.receive(
+            LdnReliableEmission(connectSequence, RELIABLE_FLAGS_INIT, connectSequence, connect).encode(), 0,
+        ))
+        reliable.poll(34) // Emits the cumulative ACK that covers C.
+
+        val host = FrlgHostLink(pia, byteArrayOf(1, 0xf1.toByte()), runWalkThroughWalls = true)
+        host.tick(35)
+        val opened = host.snapshot()
+        assertEquals(connectSequence, opened.connectSequence)
+        assertTrue(opened.connectAckLatched)
+        assertTrue(opened.localReliableOpened)
+        assertEquals(1L, opened.protocolTickCount)
+
+        var sequence = (connectSequence + 1) and 0xffff
+        repeat(0x7ffe) { index ->
+            reliable.receive(
+                LdnReliableEmission(sequence, RELIABLE_FLAGS_DATA, 0, ByteArray(0)).encode(),
+                100L + index,
+            )
+            sequence = (sequence + 1) and 0xffff
+        }
+        reliable.poll(40_000)
+        assertTrue(pia.reliableReceiveAcknowledgementSent(connectSequence))
+        assertEquals((connectSequence + 0x7fff) and 0xffff, pia.reliableLastReceiveAcknowledgement)
+        host.tick(40_001)
+        val beforeBoundary = host.snapshot().protocolTickCount
+
+        reliable.receive(
+            LdnReliableEmission(sequence, RELIABLE_FLAGS_DATA, 0, ByteArray(0)).encode(), 40_002,
+        )
+        reliable.poll(40_035)
+        // This is the historical comparison used by the old gate: it flips at distance 0x8000.
+        assertTrue(!pia.reliableReceiveAcknowledgementSent(connectSequence))
+        host.tick(40_036)
+
+        val afterBoundary = host.snapshot()
+        assertTrue(afterBoundary.connectAckLatched)
+        assertTrue(afterBoundary.localReliableOpened)
+        assertEquals(beforeBoundary + 1, afterBoundary.protocolTickCount)
+        assertEquals((connectSequence + 0x8000) and 0xffff, afterBoundary.lastReceiveAcknowledgement)
+    }
+
     @Test fun `peer departure during early RFU setup is a protocol failure`() {
         val pia = LdnPiaHost(ByteArray(32), byteArrayOf(2, 0, 0, 0, 0, 1), 14, 6)
         val host = FrlgHostLink(pia, byteArrayOf(1, 0xf1.toByte()), runWalkThroughWalls = true)
@@ -274,6 +333,12 @@ class FrlgRfuTest {
     }
     private fun childFrame(type: Int, body: ByteArray) = FrlgGbaFrame.frame(type, body)
     private fun hex(value: String) = value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+    @Suppress("UNCHECKED_CAST")
+    private fun <T> privateField(instance: Any, name: String): T = instance.javaClass
+        .getDeclaredField(name).also { it.isAccessible = true }.get(instance) as T
+    private fun setPrivate(instance: Any, name: String, value: Any?) {
+        instance.javaClass.getDeclaredField(name).also { it.isAccessible = true }.set(instance, value)
+    }
     private fun le16Test(data: ByteArray, offset: Int) = (data[offset].toInt() and 255) or ((data[offset + 1].toInt() and 255) shl 8)
     private fun putLe16Test(data: ByteArray, offset: Int, value: Int) { data[offset] = value.toByte(); data[offset + 1] = (value ushr 8).toByte() }
 

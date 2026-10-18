@@ -20,6 +20,12 @@ internal data class FrlgHostLinkSnapshot(
     val rfuUniIn: Long,
     val rfuUniOut: Long,
     val reliableOutstanding: Int,
+    val connectSequence: Int?,
+    val receiveNext: Int,
+    val lastReceiveAcknowledgement: Int?,
+    val connectAckLatched: Boolean,
+    val localReliableOpened: Boolean,
+    val protocolTickCount: Long,
     val linkWireInit: Long,
     val linkWireFragments: Long,
     val detail: String?,
@@ -41,7 +47,8 @@ internal class FrlgHostLink(
     private val rfu = FrlgRfuLeader(parentSessionId)
     private val link = FrlgLinkPlayerExchange()
     private var connectSequence: Int? = null
-    private var localReliableOpened = false
+    private var connectAckLatched = false
+    private var protocolTickCount = 0L
     private var detail: String? = null
     private var gift: FrlgMysteryGiftEngine? = null
     private var backup: FrlgSaveBackupGiftEngine? = null
@@ -55,7 +62,7 @@ internal class FrlgHostLink(
         pia.drainReliableDeliveries().forEach { delivery ->
             when (val event = rfu.receive(delivery.payload)) {
                 "connect" -> {
-                    connectSequence = delivery.sequence
+                    if (connectSequence == null) connectSequence = delivery.sequence
                     detail = "RFU connection request received"
                 }
                 "child_ni_complete" -> detail = "RFU identity received"
@@ -79,8 +86,11 @@ internal class FrlgHostLink(
                 else -> if (event != null && detail == null) detail = event
             }
         }
+        updateRestoreLiveness()
         val connect = connectSequence ?: return emptyList()
-        if (!pia.reliableReceiveAcknowledgementSent(connect)) return emptyList()
+        if (!connectAckLatched && pia.reliableReceiveAcknowledgementSent(connect)) connectAckLatched = true
+        if (!pia.reliableLocalOpened && !connectAckLatched) return emptyList()
+        protocolTickCount++
         if ((gift?.disconnectRequested == true || backup?.disconnectRequested == true || restore?.disconnectRequested == true) && !disconnectSent) {
             disconnectSent = true
             val payload = rfu.disconnect() ?: return emptyList()
@@ -89,29 +99,13 @@ internal class FrlgHostLink(
             restore?.markDisconnected()
             return pia.sendReliable(payload, nowMillis)
         }
-        pia.snapshot().let { piaState ->
-            restore?.updateTransportCounters(
-                pia.reliableOutstanding,
-                piaState.reliableInflight,
-                piaState.reliableFramesReceived,
-                piaState.reliableFramesSent,
-                rfu.uniIn,
-                rfu.uniOut,
-                piaState.consoleQuiet,
-                piaState.quietDurationMillis,
-                piaState.quietRetransmitsSent,
-                piaState.lastQuietRetransmitMillis,
-            )
-        }
-        restore?.checkLiveness()
         if (pia.reliableOutstanding >= 6) return emptyList()
         val linkPlayerWirePhase = gift == null && backup == null && restore == null && link.stage == FrlgLinkStage.SENDING_HOST
         val parentWords = if (rfu.state == FrlgRfuState.UNI) {
             gift?.tick() ?: backup?.tick() ?: restore?.tick() ?: link.tick().also { ensureOperation() }
         } else null
         val payload = rfu.tick(parentWords) ?: return emptyList()
-        val datagrams = if (!localReliableOpened) {
-            localReliableOpened = true
+        val datagrams = if (!pia.reliableLocalOpened) {
             pia.openReliable(payload, nowMillis)
         } else pia.sendReliable(payload, nowMillis)
         if (datagrams.isNotEmpty() && parentWords != null && linkPlayerWirePhase) {
@@ -144,6 +138,12 @@ internal class FrlgHostLink(
             rfuUniIn = rfu.uniIn,
             rfuUniOut = rfu.uniOut,
             reliableOutstanding = pia.reliableOutstanding,
+            connectSequence = connectSequence,
+            receiveNext = pia.reliableReceiveNext,
+            lastReceiveAcknowledgement = pia.reliableLastReceiveAcknowledgement,
+            connectAckLatched = connectAckLatched,
+            localReliableOpened = pia.reliableLocalOpened,
+            protocolTickCount = protocolTickCount,
             linkWireInit = linkWireInit,
             linkWireFragments = linkWireFragments,
             detail = giftSnapshot?.detail ?: backupSnapshot?.detail ?: restoreSnapshot?.detail ?: detail,
@@ -174,6 +174,24 @@ internal class FrlgHostLink(
 
     fun updateEthernetCounters(accepted: Long, completed: Long, acknowledged: Long) {
         restore?.updateEthernetCounters(accepted, completed, acknowledged)
+    }
+
+    private fun updateRestoreLiveness() {
+        val activeRestore = restore ?: return
+        val piaState = pia.snapshot()
+        activeRestore.updateTransportCounters(
+            pia.reliableOutstanding,
+            piaState.reliableInflight,
+            piaState.reliableFramesReceived,
+            piaState.reliableFramesSent,
+            rfu.uniIn,
+            rfu.uniOut,
+            piaState.consoleQuiet,
+            piaState.quietDurationMillis,
+            piaState.quietRetransmitsSent,
+            piaState.lastQuietRetransmitMillis,
+        )
+        activeRestore.checkLiveness()
     }
 
     private fun ensureOperation() {

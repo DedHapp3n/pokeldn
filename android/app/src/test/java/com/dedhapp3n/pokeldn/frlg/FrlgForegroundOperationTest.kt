@@ -14,9 +14,9 @@ class FrlgForegroundOperationTest {
             restorePlanIndex = 12, restorePlanTotal = 19, restoreLastProgressAtMillis = 1_000,
         )
         val thirteen = twelve.copy(completed = 12, restorePlanIndex = 13, restoreWaitingForResponse = true)
-        assertEquals("Sector 12 / 19 - sending", FrlgOperationNotificationText.text(twelve, 5_000))
-        assertEquals("Sector 13 / 19 - verifying", FrlgOperationNotificationText.text(thirteen, 5_000))
-        assertEquals("Sector 13 / 19 - no progress for 45 s", FrlgOperationNotificationText.text(thirteen, 46_000))
+        assertEquals("11 / 19 completed - sending sector 12", FrlgOperationNotificationText.text(twelve, 5_000))
+        assertEquals("12 / 19 completed - verifying sector 13", FrlgOperationNotificationText.text(thirteen, 5_000))
+        assertEquals("12 / 19 completed - no progress for 45 s (sector 13)", FrlgOperationNotificationText.text(thirteen, 46_000))
         assertEquals(12, thirteen.completed)
         assertEquals("PokeLDN - Restoring LeafGreen", FrlgOperationNotificationText.title(twelve))
     }

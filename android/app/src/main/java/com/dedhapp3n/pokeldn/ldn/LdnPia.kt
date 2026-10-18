@@ -245,6 +245,9 @@ internal class LdnPiaHost(
         reliable.receiveAcknowledgementSent(sequence)
 
     val reliableOutstanding: Int get() = reliable.outstanding
+    val reliableReceiveNext: Int get() = reliable.receiveNext
+    val reliableLastReceiveAcknowledgement: Int? get() = reliable.lastReceiveAcknowledgementSent
+    val reliableLocalOpened: Boolean get() = reliable.localOpened
 
     fun reset() {
         participant = null

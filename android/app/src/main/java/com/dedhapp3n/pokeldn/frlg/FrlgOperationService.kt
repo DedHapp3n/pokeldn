@@ -74,8 +74,12 @@ internal object FrlgOperationNotificationText {
             val quietSeconds = progress.restoreLastProgressAtMillis?.let {
                 ((nowMillis - it).coerceAtLeast(0) / 1000).toInt()
             } ?: 0
-            "Sector ${progress.restorePlanIndex} / ${progress.restorePlanTotal} - " +
-                if (quietSeconds >= 10) "no progress for $quietSeconds s" else action
+            val completed = "${progress.completed} / ${progress.restorePlanTotal} completed"
+            if (quietSeconds >= 10) {
+                "$completed - no progress for $quietSeconds s (sector ${progress.restorePlanIndex})"
+            } else {
+                "$completed - $action sector ${progress.restorePlanIndex}"
+            }
         }
         progress.phase == FrlgOperationPhase.RESTORING_SAVE && progress.total > 0 -> "Sector ${progress.completed + 1} / ${progress.total} - sending"
         progress.phase == FrlgOperationPhase.LOADING_RESTORED_SAVE -> "Loading restored save"

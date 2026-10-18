@@ -9,6 +9,7 @@ import com.dedhapp3n.pokeldn.frlg.FrlgCompletedBackup
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveCloseResult
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveDataResult
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveBackupStage
+import com.dedhapp3n.pokeldn.frlg.FrlgRestoreTransferDiagnostic
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveRestoreStage
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
@@ -82,6 +83,12 @@ data class LdnDiscoverySnapshot(
     val rfuUniIn: Long = 0,
     val rfuUniOut: Long = 0,
     val reliableOutstanding: Int = 0,
+    val reliableConnectSequence: Int? = null,
+    val reliableReceiveNext: Int = 0,
+    val reliableLastReceiveAcknowledgement: Int? = null,
+    val reliableConnectAckLatched: Boolean = false,
+    val reliableLocalOpened: Boolean = false,
+    val protocolTickCount: Long = 0,
     val linkPlayerWireInit: Long = 0,
     val linkPlayerWireFragments: Long = 0,
     val detectedCartridge: String? = null,
@@ -621,6 +628,12 @@ class LdnDiscoveryController internal constructor(
             rfuUniIn = link.rfuUniIn,
             rfuUniOut = link.rfuUniOut,
             reliableOutstanding = link.reliableOutstanding,
+            reliableConnectSequence = link.connectSequence,
+            reliableReceiveNext = link.receiveNext,
+            reliableLastReceiveAcknowledgement = link.lastReceiveAcknowledgement,
+            reliableConnectAckLatched = link.connectAckLatched,
+            reliableLocalOpened = link.localReliableOpened,
+            protocolTickCount = link.protocolTickCount,
             linkPlayerWireInit = link.linkWireInit,
             linkPlayerWireFragments = link.linkWireFragments,
             detectedCartridge = link.cartridge?.let { "${it.game} / ${it.language}" },
@@ -654,35 +667,18 @@ class LdnDiscoveryController internal constructor(
             saveRestoreWaitingForResponse = currentRestore?.waitingForResponse == true,
             saveRestoreSenderActive = currentRestore?.senderActive == true,
             saveRestoreBlocksRemaining = currentRestore?.blocksRemaining ?: 0,
-            saveRestoreTransferDiagnostics = link.restore?.transferDiagnostics?.joinToString("\n") { item ->
+            saveRestoreTransferDiagnostics = link.restore?.transferDiagnostics?.let { items ->
                 buildString {
-                    append("restoreWrite=${item.planIndex}/${item.total}")
-                    append(" physical=${item.physicalSector}")
-                    append(" sectorId=${item.sectorId ?: "none"}")
-                    append(" kind=${item.kind.name.lowercase()}")
-                    append(" tokens=${item.tokenBytes}")
-                    append(" mgMessages=${item.mgMessageCount}")
-                    append(" chunks=${item.blockCount}")
-                    append(" started=${item.startedAtMillis}")
-                    append(" lastProgress=${item.lastProgressAtMillis}")
-                    append(" response=${item.responseAtMillis ?: "none"}")
-                    append(" durationMs=${item.durationMillis ?: "waiting"}")
-                    append(" mgMessage=${item.currentMgMessageIndex}/${item.mgMessageCount}")
-                    append(" block=${item.currentBlockIndex}/${item.blockCount}")
-                    append(" remaining=${item.blocksRemaining}")
-                    append(" senderActive=${item.senderActive}")
-                    append(" waitingResponse=${item.waitingForResponse}")
-                    append(" failMask=${item.failureMask?.let { "0x" + it.toString(16).padStart(8, '0') } ?: "none"}")
-                    append(" consoleQuiet=${item.consoleQuiet}")
-                    append(" quietMs=${item.quietDurationMillis}")
-                    append(" quietRetx=${item.quietRetransmitsSent}")
-                    append(" lastQuietRetx=${item.lastQuietRetransmitMillis ?: "none"}")
-                    append(" relOutstanding=${item.reliableOutstanding}")
-                    append(" relInflight=${item.reliableInflight}")
-                    append(" relRxTx=${item.reliableReceived}/${item.reliableSent}")
-                    append(" rfu=${item.rfuIn}/${item.rfuOut}")
-                    append(" eth=${item.ethernetAccepted}/${item.ethernetCompleted}/${item.ethernetAcknowledged}")
-                    append(" result=${item.result}")
+                    append("connectSequence=${link.connectSequence ?: "none"}")
+                    append(" receiveNext=${link.receiveNext}")
+                    append(" lastReceiveAck=${link.lastReceiveAcknowledgement ?: "none"}")
+                    append(" connectAckLatched=${link.connectAckLatched}")
+                    append(" localReliableOpened=${link.localReliableOpened}")
+                    append(" protocolTicks=${link.protocolTickCount}")
+                    items.forEach { item ->
+                        append('\n')
+                        append(formatRestoreTransferDiagnostic(item))
+                    }
                 }
             } ?: snapshot.saveRestoreTransferDiagnostics,
             latestActivity = link.detail ?: snapshot.latestActivity,
@@ -750,6 +746,36 @@ class LdnDiscoveryController internal constructor(
             LdnPiaStage.WAITING -> previous ?: "Waiting for PIA negotiation"
         }
     }
+}
+
+private fun formatRestoreTransferDiagnostic(item: FrlgRestoreTransferDiagnostic): String = buildString {
+    append("restoreWrite=${item.planIndex}/${item.total}")
+    append(" physical=${item.physicalSector}")
+    append(" sectorId=${item.sectorId ?: "none"}")
+    append(" kind=${item.kind.name.lowercase()}")
+    append(" tokens=${item.tokenBytes}")
+    append(" mgMessages=${item.mgMessageCount}")
+    append(" chunks=${item.blockCount}")
+    append(" started=${item.startedAtMillis}")
+    append(" lastProgress=${item.lastProgressAtMillis}")
+    append(" response=${item.responseAtMillis ?: "none"}")
+    append(" durationMs=${item.durationMillis ?: "waiting"}")
+    append(" mgMessage=${item.currentMgMessageIndex}/${item.mgMessageCount}")
+    append(" block=${item.currentBlockIndex}/${item.blockCount}")
+    append(" remaining=${item.blocksRemaining}")
+    append(" senderActive=${item.senderActive}")
+    append(" waitingResponse=${item.waitingForResponse}")
+    append(" failMask=${item.failureMask?.let { "0x" + it.toString(16).padStart(8, '0') } ?: "none"}")
+    append(" consoleQuiet=${item.consoleQuiet}")
+    append(" quietMs=${item.quietDurationMillis}")
+    append(" quietRetx=${item.quietRetransmitsSent}")
+    append(" lastQuietRetx=${item.lastQuietRetransmitMillis ?: "none"}")
+    append(" relOutstanding=${item.reliableOutstanding}")
+    append(" relInflight=${item.reliableInflight}")
+    append(" relRxTx=${item.reliableReceived}/${item.reliableSent}")
+    append(" rfu=${item.rfuIn}/${item.rfuOut}")
+    append(" eth=${item.ethernetAccepted}/${item.ethernetCompleted}/${item.ethernetAcknowledged}")
+    append(" result=${item.result}")
 }
 
 /** Firmware sets queued-us to UINT32_MAX for TX callbacks that are not CMD_ETH_TX data frames. */
