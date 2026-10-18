@@ -149,8 +149,9 @@ internal class FrlgMysteryGiftEngine(
             fail("Unsupported FRLG cartridge: $code")
             return
         }
-        val payload = when (operation) {
-            FrlgMysteryGiftOperation.WALK_THROUGH_WALLS -> requireNotNull(WalkThroughWallsPayloads.forGameCode(code))
+        val transfer = when (operation) {
+            FrlgMysteryGiftOperation.WALK_THROUGH_WALLS -> FrlgBufferTransfer(
+                emptyList(), requireNotNull(WalkThroughWallsPayloads.forGameCode(code)))
             FrlgMysteryGiftOperation.POKEHAX_SCREEN -> requireNotNull(PokeHaxScreenPayload.forGameCode(code))
         }
         val expectedGame = if (code.startsWith("BPR")) "FireRed" else if (code.startsWith("BPG")) "LeafGreen" else null
@@ -166,10 +167,11 @@ internal class FrlgMysteryGiftEngine(
         detectedCartridge = FrlgCartridge(expectedGame, language, linkCartridge.version, linkCartridge.languageId)
         stage = FrlgGiftStage.PREPARING_BOOST
         detail = "${linkCartridge.game} / ${linkCartridge.language} detected"
-        sendMessage(16, CLIENT_RUN_BUFFER) {
+        val clientScript = if (transfer.leads.isEmpty()) CLIENT_RUN_BUFFER else CLIENT_RUN_BUFFER_TWO_LEADS
+        sendMessage(16, clientScript) {
             stage = FrlgGiftStage.SENDING_BOOST
             detail = operation.sendingDetail
-            sendMessage(25, payload, repeats = 3) {
+            sendPayloads(transfer.leads + transfer.payload) {
                 stage = FrlgGiftStage.WAITING_RESULT
                 detail = when (operation) {
                     FrlgMysteryGiftOperation.WALK_THROUGH_WALLS -> "Waiting for console install result"
@@ -207,6 +209,10 @@ internal class FrlgMysteryGiftEngine(
         MgMessage.build(ident, payload).forEach { blocks += it to repeats }
         afterSend = done
     }
+    private fun sendPayloads(payloads: List<ByteArray>, at: Int = 0, done: () -> Unit) {
+        if (at == payloads.size) return done()
+        sendMessage(25, payloads[at], repeats = 3) { sendPayloads(payloads, at + 1, done) }
+    }
     private fun fail(message: String) { stage = FrlgGiftStage.FAILED; detail = message }
 
     fun onPeerLeft() {
@@ -225,6 +231,12 @@ internal class FrlgMysteryGiftEngine(
     companion object {
         private val CLIENT_SEND_GAME_DATA = hexMg("0800000000000000030000000000000002000000100000000400000000000000")
         private val CLIENT_RUN_BUFFER = hexMg("020000001900000015000000000000000e00000000000000030000000000000002000000100000000400000000000000")
+        private val CLIENT_RUN_BUFFER_TWO_LEADS = hexMg(
+            "02000000190000001500000000000000" +
+                "02000000190000001500000000000000" +
+                "02000000190000001500000000000000" +
+                "0e000000000000000300000000000000" +
+                "02000000100000000400000000000000")
         private val CLIENT_SUCCESS = hexMg("02000000150000000c000000000000001400000000000000010000000d000000")
         private val CLIENT_FAILURE = hexMg("02000000150000000c000000000000001400000000000000010000000e000000")
         private val SUCCESS_MESSAGE = hexMg("cedcd900d7e3d8d900e6d5e200d5e2d800e6d9d5d800ede3e9e6fececcbbc3c8bfcc00c3be00d7e3e6e6d9d7e8e0edadff")

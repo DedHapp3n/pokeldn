@@ -229,7 +229,7 @@ internal fun PokeLdnApp(
                     badge = "Test payload",
                     preparingLabel = "Preparing payload",
                     sendingLabel = "Sending payload",
-                    instructions = "The GBA shows POKEHAX on black. Press A on the GBA to restore the Mystery Gift screen and finish.",
+                    instructions = "Use Up/Down and A on the GBA to open FRAME, RNG, or COLOR. Press B to return, then choose EXIT to restore the Mystery Gift screen and finish.",
                     persistence = "Only RAM, VRAM, OAM, palette, and display registers are touched. The payload does not access save or flash memory.",
                     onImportKeys = onImportProdKeys,
                     onStart = onStartPokeHaxScreen,
@@ -1114,7 +1114,7 @@ private fun FrlgOperationsScreen(
             OperationCategory("Mystery Gift") {
                 OperationRow(
                     "PokeHax Screen",
-                    "Run a non-persistent RAM/VRAM screen test; press A to return.",
+                    "Open the non-persistent RAM/VRAM diagnostics menu; choose EXIT to return.",
                     "Safe test",
                     StatusTone.POSITIVE,
                     onOpenPokeHaxScreen,

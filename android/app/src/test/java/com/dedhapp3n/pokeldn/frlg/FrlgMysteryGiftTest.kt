@@ -37,14 +37,14 @@ class FrlgMysteryGiftTest {
     }
 
     @Test fun `PokeHax screen is a bounded shared RAM and VRAM payload`() {
-        val payload = PokeHaxScreenPayload.forGameCode("BPGD")!!
-        assertEquals(800, payload.size)
-        assertEquals("cdeda9e53dd3a4f36d26f0d814d3a5846c7152cf3f0e053f23697398a3771824",
-            MessageDigest.getInstance("SHA-256").digest(payload).hex())
-        assertTrue(payload.size <= 1024)
-        assertTrue(payload.contentEquals(PokeHaxScreenPayload.forGameCode("BPGD")!!))
-        assertTrue(!payload.contentEquals(PokeHaxScreenPayload.forGameCode("BPGE")!!))
-        assertTrue(!payload.contentEquals(PokeHaxScreenPayload.forGameCode("BPGJ")!!))
+        val transfer = PokeHaxScreenPayload.forGameCode("BPGD")!!
+        assertEquals(listOf(1024, 260), transfer.leads.map { it.size })
+        assertEquals(12, transfer.payload.size)
+        assertTrue((transfer.leads + transfer.payload).all { it.size <= 1024 })
+        val same = PokeHaxScreenPayload.forGameCode("BPGD")!!
+        assertTrue(transfer.leads.zip(same.leads).all { (a, b) -> a.contentEquals(b) })
+        assertTrue(!transfer.leads[0].contentEquals(PokeHaxScreenPayload.forGameCode("BPGE")!!.leads[0]))
+        assertTrue(!transfer.leads[0].contentEquals(PokeHaxScreenPayload.forGameCode("BPGJ")!!.leads[0]))
     }
 
     @Test fun `PokeHax screen uses the existing run buffer Mystery Gift flow`() {

@@ -10,7 +10,8 @@ import dataclasses
 from dataclasses import dataclass
 
 from pokeldn.frlg.rom import builds
-from pokeldn.frlg.rom.buffer_payloads import PAYLOADS
+from pokeldn.frlg.rom.buffer_payloads import (
+    PAYLOADS, POKEHAX_SCREEN_BODY, POKEHAX_SCREEN_TRAMPOLINE)
 
 # MG_LINK_BUFFER_SIZE [decomp:include/mystery_gift_link.h:4]: the whole buffer is copied but only
 # what we send is fresh, so a payload must be self-contained.
@@ -63,6 +64,47 @@ def validate(code):
         raise BufferScriptError(
             f"ARM code is a multiple of 4 bytes, got {len(code)}")
     return code
+
+
+_POKEHAX_ADDRESS = GDECOMPRESSION_BUFFER + 0x800
+_POKEHAX_CHUNK_BYTES = 976
+_POKEHAX_COPY_HEADER = bytes.fromhex(
+    "010000ea00000000000000001c308fe214201fe514101fe5041051e2010093e7"
+    "010082e7fbffff1a0100a0e31eff2fe1")
+
+
+def pokehax_screen_stages(build=None):
+    """Return two one-shot RAM copy payloads and the frame-driven menu trampoline.
+
+    The 1,188-byte menu body cannot fit the 1 KiB receive image. The standard multi-lead Mystery
+    Gift path runs these bounded copy payloads first and keeps the body in the unused remainder of
+    gDecompressionBuffer for the duration of this session only.
+    """
+    build = builds.resolve(build)
+    body = bytearray(POKEHAX_SCREEN_BODY)
+    replacements = {
+        0x030026C8: build.overlay_oam,
+        0x020379D6: build.ewram.get("overlay_pal", 0x020379D6),
+        0x03004220: build.rng,
+    }
+    for old, new in replacements.items():
+        old_bytes, new_bytes = old.to_bytes(4, "little"), new.to_bytes(4, "little")
+        at = 0
+        while (at := body.find(old_bytes, at)) >= 0:
+            body[at:at + 4] = new_bytes
+            at += 4
+
+    leads = []
+    for at in range(0, len(body), _POKEHAX_CHUNK_BYTES):
+        chunk = bytes(body[at:at + _POKEHAX_CHUNK_BYTES])
+        header = bytearray(_POKEHAX_COPY_HEADER)
+        header[4:8] = (_POKEHAX_ADDRESS + at).to_bytes(4, "little")
+        header[8:12] = len(chunk).to_bytes(4, "little")
+        leads.append(bytes(header) + chunk)
+    final = POKEHAX_SCREEN_TRAMPOLINE
+    for stage in (*leads, final):
+        validate(stage)
+    return tuple(leads), final
 
 
 @dataclass(frozen=True)
