@@ -78,6 +78,8 @@ import com.dedhapp3n.pokeldn.usb.SerialConnectionPhase
 import com.dedhapp3n.pokeldn.usb.SerialConnectionState
 import com.dedhapp3n.pokeldn.usb.UsbSerialTransport
 import com.dedhapp3n.pokeldn.usb.devicePhase
+import com.dedhapp3n.pokeldn.za.ZaSnapshot
+import com.dedhapp3n.pokeldn.za.ZaSnapshotStore
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
@@ -91,6 +93,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var transport: UsbSerialTransport
     private val prodKeysStore by lazy { ProdKeysStore(this) }
     private val trainerProfileStore by lazy { TrainerProfileStore(this) }
+    private val zaSnapshotStore by lazy { ZaSnapshotStore(filesDir.resolve("za-snapshots")) }
     private val backupFolder by lazy { AndroidFrlgBackupFolder(this) }
     private val backupStore by lazy {
         FrlgBackupStore(filesDir.resolve("frlg-backups"), externalDirectory = backupFolder::externalDirectory)
@@ -113,6 +116,7 @@ class MainActivity : ComponentActivity() {
     private var saveBackupState by mutableStateOf(FrlgSaveBackupUiState())
     private var saveRestoreState by mutableStateOf(FrlgSaveRestoreUiState())
     private var backupStorageState by mutableStateOf(FrlgBackupStorageUiState())
+    private var zaSnapshots by mutableStateOf<List<ZaSnapshot>>(emptyList())
     private var radioState by mutableStateOf(Esp32RadioState())
     private var pendingDeviceId: Int? = null
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -270,6 +274,7 @@ class MainActivity : ComponentActivity() {
         foregroundOperationSubscription = FrlgOperationService.subscribe(::onForegroundOperationProgress)
         prodKeysState = prodKeysStore.state()
         trainerProfile = trainerProfileStore.load()
+        zaSnapshots = zaSnapshotStore.list()
         restoreLatestBackup()
         refreshBackupStorageState()
         enableEdgeToEdge()
@@ -323,6 +328,7 @@ class MainActivity : ComponentActivity() {
                     backupStorageState = backupStorageState,
                     onOpenBackupFolder = { backupFolderPicker.launch(backupFolder.uri()) },
                     onChangeBackupFolder = { backupFolderPicker.launch(null) },
+                    zaSnapshots = zaSnapshots,
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -332,6 +338,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         scanDevices()
+        zaSnapshots = zaSnapshotStore.list()
     }
 
     override fun onDestroy() {

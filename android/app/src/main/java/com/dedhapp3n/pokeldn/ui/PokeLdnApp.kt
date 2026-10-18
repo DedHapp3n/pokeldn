@@ -82,6 +82,10 @@ import com.dedhapp3n.pokeldn.usb.SerialConnectionPhase
 import com.dedhapp3n.pokeldn.usb.SerialConnectionState
 import com.dedhapp3n.pokeldn.usb.UsbDeviceInfo
 import com.dedhapp3n.pokeldn.usb.UsbScanResult
+import com.dedhapp3n.pokeldn.za.ZaSnapshot
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 private enum class AppDestination(val label: String) {
     HOME("Home"),
@@ -110,8 +114,7 @@ private val gameModules = listOf(
     GameModule("Legends: Arceus", "GEN VIII", "Upstream-supported game; Android features are not available yet."),
     GameModule("Scarlet / Violet", "GEN IX", "Upstream-supported game; Android features are not available yet."),
     GameModule(
-        "Legends: Z-A", "GEN IX", "Android integration research has not started.",
-        researchItems = listOf("Save Inspector", "Research"),
+        "Legends: Z-A", "GEN IX", "Save Reader under development.",
     ),
 )
 
@@ -154,12 +157,15 @@ fun PokeLdnApp(
     backupStorageState: FrlgBackupStorageUiState,
     onOpenBackupFolder: () -> Unit,
     onChangeBackupFolder: () -> Unit,
+    zaSnapshots: List<ZaSnapshot>,
     modifier: Modifier = Modifier,
 ) {
     var destination by rememberSaveable { mutableStateOf(AppDestination.HOME) }
     var selectedGame by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedOperation by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedOption by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedZaSnapshot by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedZaPokemon by rememberSaveable { mutableStateOf<Int?>(null) }
     Scaffold(
         modifier = modifier,
         containerColor = ShellRed,
@@ -218,8 +224,24 @@ fun PokeLdnApp(
                     onBack = { selectedGame = null },
                     modifier = Modifier.padding(innerPadding),
                 )
+                selectedGame == "za" -> ZaReaderScreen(
+                    zaSnapshots,
+                    selectedZaSnapshot,
+                    selectedZaPokemon,
+                    onSelectSnapshot = { selectedZaSnapshot = it; selectedZaPokemon = null },
+                    onSelectPokemon = { selectedZaPokemon = it },
+                    onBack = {
+                        when {
+                            selectedZaPokemon != null -> selectedZaPokemon = null
+                            selectedZaSnapshot != null -> selectedZaSnapshot = null
+                            else -> selectedGame = null
+                        }
+                    },
+                    modifier = Modifier.padding(innerPadding),
+                )
                 else -> GamesScreen(
                     onOpenFrlg = { selectedGame = "frlg" },
+                    onOpenZa = { selectedGame = "za" },
                     radioState = radioState,
                     modifier = Modifier.padding(innerPadding),
                 )
@@ -535,6 +557,7 @@ private fun MainAdapterDisplay(
 @Composable
 private fun GamesScreen(
     onOpenFrlg: () -> Unit,
+    onOpenZa: () -> Unit,
     radioState: Esp32RadioState,
     modifier: Modifier = Modifier,
 ) {
@@ -554,7 +577,11 @@ private fun GamesScreen(
                     gameModules.chunked(columns).forEach { rowModules ->
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                             rowModules.forEach { module ->
-                                GameModulePanel(module, if (module.primary) onOpenFrlg else null, Modifier.weight(1f))
+                                GameModulePanel(module, when (module.title) {
+                                    "FireRed / LeafGreen" -> onOpenFrlg
+                                    "Legends: Z-A" -> onOpenZa
+                                    else -> null
+                                }, Modifier.weight(1f))
                             }
                             if (rowModules.size < columns) {
                                 repeat(columns - rowModules.size) { Box(Modifier.weight(1f)) }
@@ -564,6 +591,86 @@ private fun GamesScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ZaReaderScreen(
+    snapshots: List<ZaSnapshot>,
+    selectedId: String?,
+    selectedPokemon: Int?,
+    onSelectSnapshot: (String?) -> Unit,
+    onSelectPokemon: (Int?) -> Unit,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val snapshot = snapshots.firstOrNull { it.id == selectedId }
+    val pokemon = selectedPokemon?.let { snapshot?.pokemon?.getOrNull(it)?.summary }
+    CenteredDeviceList(modifier) {
+        item {
+            DeviceScreenTitle("Games / Legends: Z-A", "Save Reader", "Read trainer and Pokémon data exposed by local communication.")
+            StatusBadge("EXPERIMENTAL", StatusTone.WARNING)
+        }
+        if (pokemon != null) {
+            item {
+                ShellPanel("Pokémon detail") {
+                    Text("Species #${pokemon.species}, form ${pokemon.form} · Lv. ${pokemon.level}", style = MaterialTheme.typography.titleLarge)
+                    Text("${pokemon.nickname.ifBlank { "Pokémon" }} · ${when (pokemon.gender) { 0 -> "Male"; 1 -> "Female"; else -> "Genderless" }}")
+                    Text(if (pokemon.shiny) "Shiny" else "Not shiny")
+                    Text("Nature ${pokemon.nature} · Ability ${pokemon.ability} · Item ${pokemon.heldItem} · Ball ${pokemon.ball}")
+                    Text("OT ${pokemon.ot} · TID ${pokemon.tid} / SID ${pokemon.sid}")
+                    Text("PID ${pokemon.pid.toString(16).uppercase()} · EC ${pokemon.encryptionConstant.toString(16).uppercase()}")
+                    Text("IVs ${pokemon.ivs.joinToString()} · EVs ${pokemon.evs.joinToString()}")
+                    Text("Moves ${pokemon.moves.filter { it != 0 }.joinToString()}")
+                    Text("Language ${pokemon.language} · Met location ${pokemon.metLocation} · Date ${pokemon.metDate.joinToString("/")}")
+                    Text("Height ${pokemon.height} · Weight ${pokemon.weight} · Scale ${pokemon.scale}")
+                }
+            }
+        } else if (snapshot != null) {
+            item {
+                ShellPanel("Trainer") {
+                    val trainer = snapshot.trainer
+                    if (trainer == null) Text("No trainer identity captured") else {
+                        Text(trainer.name, style = MaterialTheme.typography.titleLarge)
+                        Text("TID ${trainer.tid} / SID ${trainer.sid}")
+                        Text("${trainer.genderLabel} · ${trainer.languageLabel}")
+                    }
+                }
+            }
+            item {
+                ShellPanel("Pokémon · ${snapshot.pokemon.size}") {
+                    snapshot.pokemon.forEachIndexed { index, entry ->
+                        val info = entry.summary
+                        DeviceButton("#${info.species} · Lv. ${info.level} · ${if (info.shiny) "Shiny" else "Not shiny"}",
+                            { onSelectPokemon(index) }, Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY)
+                    }
+                    if (snapshot.pokemon.isEmpty()) Text("No Pokémon previews captured")
+                }
+            }
+        } else {
+            item {
+                ShellPanel("Save Reader") {
+                    Text("Reads save-related data exposed by the game's local communication. Full save-file export is not available yet.")
+                    DeviceButton("Read Save Data", {}, Modifier.fillMaxWidth(), enabled = false)
+                    Text("The Z-A wireless host is still being implemented.", style = MaterialTheme.typography.bodySmall)
+                    DeviceButton("Show Saved Data", { onSelectSnapshot("history") }, Modifier.fillMaxWidth())
+                }
+            }
+            if (selectedId == "history") {
+                item {
+                    ShellPanel("Saved locally") {
+                        if (snapshots.isEmpty()) Text("No Z-A snapshots saved yet")
+                        snapshots.forEach { entry ->
+                            val date = DateTimeFormatter.ofPattern("dd MMM yyyy HH:mm")
+                                .format(Instant.ofEpochMilli(entry.started).atZone(ZoneId.systemDefault()))
+                            DeviceButton("$date · ${entry.trainer?.name ?: "Unknown trainer"} · ${entry.pokemon.size} Pokémon",
+                                { onSelectSnapshot(entry.id) }, Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY)
+                        }
+                    }
+                }
+            }
+        }
+        item { DeviceButton("Back", onBack, Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY) }
     }
 }
 

@@ -201,7 +201,7 @@ Do not rely only on a live Switch for correctness.
 - Protocol fixtures and edge cases for raw group CCMP receive, ARP, PIA, Reliable, RFU, LinkPlayer block delivery and Mystery Gift lifecycle are covered by Android unit tests.
 - Other FRLG cartridge and language variants represented by payload fixtures have not yet been physically verified through the Android workflow.
 - Other FRLG operations and other games remain planned or incomplete unless a later milestone records physical verification here.
-- Pokémon Legends: Z-A save inspection and save read/write are research targets only and have not been implemented or physically verified on Android.
+- Pokémon Legends: Z-A Save Reader implementation has started on Android. Current code parses the upstream `0x1400` trainer identity, `0x1403` identity sync, `0x0101` Pokémon preview, and stores the raw `0x0100` selection record in incremental app-private snapshots. It includes an offline snapshot viewer. The Z-A wireless host/session is not ported yet, so live trainer and Pokémon capture is not available and the Read Save Data action is disabled. This is not physically verified, not a full save dump, and has no save writing or trade completion path.
 
 ## Repository structure
 
