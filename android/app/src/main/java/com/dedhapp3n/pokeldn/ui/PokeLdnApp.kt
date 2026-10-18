@@ -181,7 +181,6 @@ internal fun PokeLdnApp(
     var selectedZaSnapshot by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedZaPokemon by rememberSaveable { mutableStateOf<Int?>(null) }
     var selectedZaPage by rememberSaveable { mutableStateOf(0) }
-    var zaOpenedFromHistory by rememberSaveable { mutableStateOf(false) }
     Scaffold(
         modifier = modifier,
         containerColor = ShellRed,
@@ -254,17 +253,13 @@ internal fun PokeLdnApp(
                     onStart = onStartZaReader,
                     onFinish = onFinishZaReader,
                     onSelectSnapshot = {
-                        if (selectedZaSnapshot == "history" && it != "history") zaOpenedFromHistory = true
                         selectedZaSnapshot = it; selectedZaPokemon = null; selectedZaPage = 0
                     },
                     onSelectPokemon = { selectedZaPokemon = it },
                     onBack = {
                         when {
                             selectedZaPokemon != null -> selectedZaPokemon = null
-                            selectedZaSnapshot != null -> {
-                                selectedZaSnapshot = if (selectedZaSnapshot != "history" && zaOpenedFromHistory) "history" else null
-                                if (selectedZaSnapshot == null) zaOpenedFromHistory = false
-                            }
+                            selectedZaSnapshot != null -> selectedZaSnapshot = null
                             else -> selectedGame = null
                         }
                     },
@@ -652,10 +647,14 @@ private fun ZaReaderScreen(
     val document = snapshot?.let(ZaSaveDocument::fromCapture)
     val pokemon = selectedPokemon?.let { snapshot?.pokemon?.getOrNull(it)?.summary }
     val active = reader != null && !reader.terminal
+    val latest = snapshots.firstOrNull()
+    val adapterReady = radioState.phase == Esp32RadioPhase.READY
     CenteredDeviceList(modifier) {
         item {
-            GameScreenTitle(GameSkins.ZA, "LEGENDS: Z-A", "Save Manager", "Local wireless capture of trainer and Pokémon previews")
-            StatusBadge("PHYSICALLY VERIFIED READER", StatusTone.POSITIVE)
+            DeviceScreenTitle("Games / Legends: Z-A", "Save Manager", "Local wireless capture of trainer and Pokémon previews")
+        }
+        if (selectedId == null) item {
+            DeviceButton("BACK TO GAMES", onBack, Modifier.fillMaxWidth())
         }
         if (pokemon != null) {
             item {
@@ -760,7 +759,7 @@ private fun ZaReaderScreen(
             }
         } else if (active) {
             item {
-                BezelDisplay("Reader status") {
+                BezelDisplay("Save reader status") {
                     Text("Z-A SAVE READER · PARTIAL CAPTURE", color = ScreenText, fontWeight = FontWeight.Black)
                     DisplayStatus(reader!!.phase, when (reader.phase) {
                         "FAILED" -> StatusTone.ERROR
@@ -768,6 +767,8 @@ private fun ZaReaderScreen(
                         "WAITING FOR Z-A", "ESTABLISHING SESSION", "FINISHING" -> StatusTone.WARNING
                         else -> StatusTone.NEUTRAL
                     })
+                    StatusBadge("PHYSICALLY VERIFIED READER", StatusTone.POSITIVE)
+                    DisplayStatus("ESP32 active", StatusTone.POSITIVE)
                     reader.snapshot.trainer?.let { Text("Trainer: ${it.name}", color = ScreenText) }
                     Text("Pokémon captured: ${reader.snapshot.pokemon.size}", color = ScreenText)
                     reader.current?.let { Text("Currently reading: ${names.headline(it)} · ${names.summary(it)}", color = ScreenText) }
@@ -786,17 +787,39 @@ private fun ZaReaderScreen(
             }
         } else {
             item {
-                ShellPanel("SAVE READER") {
-                    Text("Read trainer and Pokémon previews over local wireless. This is a partial capture; full save import, export and writing are not available yet.")
-                    snapshots.firstOrNull()?.let { latest ->
-                        DetailLine("Latest trainer", latest.trainer?.name ?: "Unknown")
-                        DetailLine("Pokémon", latest.pokemon.size.toString())
-                        DetailLine("Last read", zaDate(latest.updated))
-                    }
+                BezelDisplay("Save reader status") {
+                    DisplayStatus(
+                        when {
+                            reader?.phase == "FAILED" -> "Reader failed"
+                            reader?.phase == "COMPLETE" -> "Last read complete"
+                            adapterReady && keysState.phase == ProdKeysPhase.AVAILABLE -> "Ready to read"
+                            adapterReady -> "Keys required"
+                            else -> "ESP32 unavailable"
+                        },
+                        when {
+                            reader?.phase == "FAILED" -> StatusTone.ERROR
+                            reader?.phase == "COMPLETE" -> StatusTone.POSITIVE
+                            adapterReady && keysState.phase == ProdKeysPhase.AVAILABLE -> StatusTone.POSITIVE
+                            adapterReady -> StatusTone.WARNING
+                            else -> StatusTone.NEUTRAL
+                        },
+                    )
+                    Text("Pokémon Legends: Z-A", color = ScreenText, fontWeight = FontWeight.Black)
+                    Text("Latest trainer: ${latest?.trainer?.name ?: "None captured"}", color = ScreenMuted)
+                    Text("Captured Pokémon: ${latest?.pokemon?.size ?: 0}", color = ScreenMuted)
+                    StatusBadge("PARTIAL CAPTURE", StatusTone.WARNING)
+                    StatusBadge("PHYSICALLY VERIFIED READER", StatusTone.POSITIVE)
+                    DisplayStatus(if (adapterReady) "ESP32 ready" else "ESP32 disconnected",
+                        if (adapterReady) StatusTone.POSITIVE else StatusTone.NEUTRAL)
+                }
+            }
+            item {
+                ShellPanel("SAVE MANAGER") {
+                    Text("Reads trainer and Pokémon preview data over local wireless. This is not a complete save dump; full save import, export, and writing are not available yet.")
                     DeviceButton("READ FROM GAME", onStart, Modifier.fillMaxWidth(),
-                        enabled = radioState.phase == Esp32RadioPhase.READY && keysState.phase == ProdKeysPhase.AVAILABLE)
+                        enabled = adapterReady && keysState.phase == ProdKeysPhase.AVAILABLE)
                     if (keysState.phase != ProdKeysPhase.AVAILABLE) Text("Import valid prod.keys to start.")
-                    else if (radioState.phase != Esp32RadioPhase.READY) Text("Connect and verify the ESP32 to start.")
+                    else if (!adapterReady) Text("Connect and verify the ESP32 to start.")
                     reader?.takeIf { it.phase == "FAILED" }?.let { Text("Reader failed. See Diagnostics for details.") }
                     DeviceButton("SHOW SAVED DATA", { onSelectSnapshot("history") }, Modifier.fillMaxWidth(),
                         style = DeviceButtonStyle.SECONDARY)
@@ -804,7 +827,7 @@ private fun ZaReaderScreen(
             }
         }
         if (selectedId != null) item {
-            DeviceButton(if (selectedPokemon != null) "Back to snapshot" else "Back to Save Reader", onBack,
+            DeviceButton(if (selectedPokemon != null) "BACK TO CAPTURE" else "BACK TO SAVE MANAGER", onBack,
                 Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY)
         }
     }
@@ -1018,12 +1041,6 @@ private fun GameModulePanel(module: GameModule, onOpen: (() -> Unit)?, modifier:
         shadowElevation = if (module.primary) 7.dp else 3.dp,
     ) {
         Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            val skin = when (module.title) {
-                "FireRed / LeafGreen" -> GameSkins.FRLG
-                "Legends: Z-A" -> GameSkins.ZA
-                else -> null
-            }
-            skin?.let { Surface(color = it.accent, modifier = Modifier.fillMaxWidth().height(4.dp)) {} }
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text(module.generation, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f))
                 StatusBadge(if (onOpen != null) "Available" else "Planned", if (onOpen != null) StatusTone.POSITIVE else StatusTone.NEUTRAL)
@@ -1050,7 +1067,7 @@ private fun FrlgOperationsScreen(
     modifier: Modifier = Modifier,
 ) {
     CenteredDeviceList(modifier) {
-        item { GameScreenTitle(GameSkins.FRLG, "Games / FRLG", "FireRed / LeafGreen", "Choose an operation") }
+        item { DeviceScreenTitle("Games / FRLG", "FireRed / LeafGreen", "Choose an operation") }
         item { DeviceButton("Back to games", onBack, Modifier.fillMaxWidth()) }
         item {
             OperationCategory("Game Boosts") {
@@ -1135,7 +1152,7 @@ private fun SaveRestoreScreen(
         )
     }
     CenteredDeviceList(modifier) {
-        item { GameScreenTitle(GameSkins.FRLG, "FRLG / Save tools", "Save Restore", "Select, validate, connect, and restore") }
+        item { DeviceScreenTitle("FRLG / Save tools", "Save Restore", "Select, validate, connect, and restore") }
         item { DeviceButton("Back to operations", onBack, Modifier.fillMaxWidth()) }
         item {
             ShellPanel("Selected save") {
@@ -1255,7 +1272,7 @@ private fun SaveBackupScreen(
         FrlgSaveCloseResult.TRANSPORT_FAILURE,
     )
     CenteredDeviceList(modifier) {
-        item { GameScreenTitle(GameSkins.FRLG, "FRLG / Save tools", "Save Backup", "Read-only 128 KB cartridge backup") }
+        item { DeviceScreenTitle("FRLG / Save tools", "Save Backup", "Read-only 128 KB cartridge backup") }
         item { DeviceButton("Back to operations", onBack, Modifier.fillMaxWidth()) }
         item {
             BezelDisplay("Backup status") {
@@ -1355,7 +1372,7 @@ private fun WalkThroughWallsScreen(
     val adapterReady = connectionState.phase == SerialConnectionPhase.CONNECTED &&
         esp32State.phase == Esp32HandshakePhase.VERIFIED && radioState.phase == Esp32RadioPhase.READY
     CenteredDeviceList(modifier) {
-        item { GameScreenTitle(GameSkins.FRLG, "FRLG / Game Boost", "Walk Through Walls", "Hold R while moving") }
+        item { DeviceScreenTitle("FRLG / Game Boost", "Walk Through Walls", "Hold R while moving") }
         item { DeviceButton("Back to operations", onBack, Modifier.fillMaxWidth()) }
         item {
             BezelDisplay("Operation status") {
