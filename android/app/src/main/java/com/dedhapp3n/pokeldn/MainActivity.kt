@@ -86,6 +86,10 @@ import com.dedhapp3n.pokeldn.za.ZaReaderController
 import com.dedhapp3n.pokeldn.za.ZaLdnNetworkBuilder
 import com.dedhapp3n.pokeldn.za.ZaHostSession
 import com.dedhapp3n.pokeldn.za.ZaReference
+import com.dedhapp3n.pokeldn.za.ZaNames
+import com.dedhapp3n.pokeldn.profile.TrainerIdentityStore
+import com.dedhapp3n.pokeldn.profile.TrainerIdentitySettings
+import com.dedhapp3n.pokeldn.profile.TrainerSource
 import java.security.SecureRandom
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -100,7 +104,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var transport: UsbSerialTransport
     private val prodKeysStore by lazy { ProdKeysStore(this) }
     private val trainerProfileStore by lazy { TrainerProfileStore(this) }
+    private val trainerIdentityStore by lazy { TrainerIdentityStore(this) }
     private val zaSnapshotStore by lazy { ZaSnapshotStore(filesDir.resolve("za-snapshots")) }
+    private val zaNames by lazy { ZaNames.fromAssets(assets) }
     private val backupFolder by lazy { AndroidFrlgBackupFolder(this) }
     private val backupStore by lazy {
         FrlgBackupStore(filesDir.resolve("frlg-backups"), externalDirectory = backupFolder::externalDirectory)
@@ -118,6 +124,7 @@ class MainActivity : ComponentActivity() {
     private var selectedReadBufferMode by mutableStateOf(RawReadBufferMode.REUSED)
     private var prodKeysState by mutableStateOf(ProdKeysState())
     private var trainerProfile by mutableStateOf(TrainerProfile())
+    private var trainerIdentitySettings by mutableStateOf(TrainerIdentitySettings())
     private var ldnApTestState by mutableStateOf(LdnApTestState())
     private var frlgOperationState by mutableStateOf(FrlgOperationState())
     private var saveBackupState by mutableStateOf(FrlgSaveBackupUiState())
@@ -281,14 +288,20 @@ class MainActivity : ComponentActivity() {
             esp32State = Esp32HandshakeState(Esp32HandshakePhase.VERIFIED, detail = "ESP32 operation active")
         }
         foregroundOperationSubscription = FrlgOperationService.subscribe(::onForegroundOperationProgress)
+        trainerProfile = trainerProfileStore.load()
+        trainerIdentitySettings = trainerIdentityStore.load()
         zaReaderSubscription = ZaReaderService.subscribe { state ->
             runOnUiThread {
                 zaReaderState = state
+                if (!state.terminal && state.host.participant && trainerIdentitySettings.source == TrainerSource.AUTOMATIC_FROM_GAME) {
+                    state.snapshot.trainer?.asTrainerProfile()?.let { profile ->
+                        trainerIdentitySettings = trainerIdentityStore.recordDetected("Pokémon Legends: Z-A", profile)
+                    }
+                }
                 zaSnapshots = zaSnapshotStore.list()
             }
         }
         prodKeysState = prodKeysStore.state()
-        trainerProfile = trainerProfileStore.load()
         zaSnapshots = zaSnapshotStore.list()
         restoreLatestBackup()
         refreshBackupStorageState()
@@ -325,6 +338,8 @@ class MainActivity : ComponentActivity() {
                     onImportProdKeys = { prodKeysPicker.launch(arrayOf("text/plain", "application/octet-stream")) },
                     trainerProfile = trainerProfile,
                     onSaveTrainerProfile = { trainerProfile = trainerProfileStore.save(it) },
+                    trainerIdentitySettings = trainerIdentitySettings,
+                    onTrainerSourceSelected = { trainerIdentitySettings = trainerIdentityStore.setSource(it) },
                     ldnApTestState = ldnApTestState,
                     onStartLdnApTest = ::startLdnApTest,
                     onStopLdnApTest = ::stopLdnApTest,
@@ -344,6 +359,7 @@ class MainActivity : ComponentActivity() {
                     onOpenBackupFolder = { backupFolderPicker.launch(backupFolder.uri()) },
                     onChangeBackupFolder = { backupFolderPicker.launch(null) },
                     zaSnapshots = zaSnapshots,
+                    zaNames = zaNames,
                     zaReaderState = zaReaderState,
                     onStartZaReader = ::startZaReader,
                     onFinishZaReader = ZaReaderService::finish,

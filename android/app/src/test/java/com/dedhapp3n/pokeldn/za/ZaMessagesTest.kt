@@ -3,6 +3,8 @@ package com.dedhapp3n.pokeldn.za
 import org.junit.Assert.*
 import org.junit.Test
 import java.nio.file.Files
+import java.io.DataOutputStream
+import java.util.UUID
 
 class ZaMessagesTest {
     private fun fixture(name: String) = javaClass.getResourceAsStream("/za/$name.bin")!!.use { it.readBytes() }
@@ -91,6 +93,51 @@ class ZaMessagesTest {
             assertEquals(2, ZaSnapshotStore(folder).load(snapshot.id)!!.pokemon.size)
             store.finish(snapshot)
             assertEquals(4, writes)
+        } finally { folder.deleteRecursively() }
+    }
+
+    @Test fun unreadablePreviewPersistsAndDoesNotStopLaterCapture() {
+        val folder = Files.createTempDirectory("za-unreadable-test").toFile()
+        try {
+            var time = 2000L
+            val store = ZaSnapshotStore(folder) { time++ }
+            var snapshot = store.start()
+            val unreadable = fixture("preview").also { it[20] = (it[20].toInt() xor 1).toByte() }
+            snapshot = store.observe(snapshot, unreadable)
+            assertEquals(1, snapshot.unreadablePreviews)
+            assertEquals(0, snapshot.pokemon.size)
+            assertNotNull(snapshot.lastDecodeError)
+            assertArrayEquals(unreadable, snapshot.unreadableRaw)
+            assertNotNull(snapshot.lastUnreadableAt)
+            snapshot = store.observe(snapshot, fixture("preview"))
+            assertEquals(1, snapshot.pokemon.size)
+            val restored = ZaSnapshotStore(folder).load(snapshot.id)!!
+            assertEquals(1, restored.unreadablePreviews)
+            assertArrayEquals(unreadable, restored.unreadableRaw)
+            assertEquals(1, restored.pokemon.size)
+            assertEquals("Pokémon Legends: Z-A", restored.game)
+            assertEquals(2, restored.readerVersion)
+        } finally { folder.deleteRecursively() }
+    }
+
+    @Test fun versionOneSnapshotStillLoadsAndCanBeUpgraded() {
+        val folder = Files.createTempDirectory("za-v1-test").toFile()
+        try {
+            val id = UUID.randomUUID().toString()
+            DataOutputStream(folder.resolve("$id.zas").outputStream()).use { out ->
+                out.writeInt(0x5a41534e); out.writeInt(1); out.writeUTF(id)
+                out.writeLong(100); out.writeLong(200); out.writeBoolean(true)
+                out.writeBoolean(false); out.writeBoolean(false); out.writeInt(-1)
+                out.writeInt(0); out.writeInt(0); out.writeInt(-1); out.writeBoolean(false)
+                out.writeInt(0)
+            }
+            val store = ZaSnapshotStore(folder)
+            val old = store.load(id)!!
+            assertEquals(1, old.readerVersion)
+            assertEquals(0, old.unreadablePreviews)
+            assertEquals("Pokémon Legends: Z-A", old.game)
+            store.save(old)
+            assertEquals(1, store.load(id)!!.readerVersion)
         } finally { folder.deleteRecursively() }
     }
 

@@ -65,6 +65,8 @@ import com.dedhapp3n.pokeldn.ldn.LdnApTestState
 import com.dedhapp3n.pokeldn.profile.TrainerGender
 import com.dedhapp3n.pokeldn.profile.TrainerLanguage
 import com.dedhapp3n.pokeldn.profile.TrainerProfile
+import com.dedhapp3n.pokeldn.profile.TrainerIdentitySettings
+import com.dedhapp3n.pokeldn.profile.TrainerSource
 import com.dedhapp3n.pokeldn.ui.theme.CreamPanel
 import com.dedhapp3n.pokeldn.ui.theme.CreamPanelDark
 import com.dedhapp3n.pokeldn.ui.theme.DeviceAmber
@@ -84,6 +86,7 @@ import com.dedhapp3n.pokeldn.usb.UsbDeviceInfo
 import com.dedhapp3n.pokeldn.usb.UsbScanResult
 import com.dedhapp3n.pokeldn.za.ZaSnapshot
 import com.dedhapp3n.pokeldn.za.ZaReaderState
+import com.dedhapp3n.pokeldn.za.ZaNames
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -115,7 +118,7 @@ private val gameModules = listOf(
     GameModule("Legends: Arceus", "GEN VIII", "Upstream-supported game; Android features are not available yet."),
     GameModule("Scarlet / Violet", "GEN IX", "Upstream-supported game; Android features are not available yet."),
     GameModule(
-        "Legends: Z-A", "GEN IX", "Read-only local Save Reader.",
+        "Legends: Z-A", "GEN IX", "Physically verified read-only Save Reader.",
     ),
 )
 
@@ -140,6 +143,8 @@ internal fun PokeLdnApp(
     onImportProdKeys: () -> Unit,
     trainerProfile: TrainerProfile,
     onSaveTrainerProfile: (TrainerProfile) -> Unit,
+    trainerIdentitySettings: TrainerIdentitySettings,
+    onTrainerSourceSelected: (TrainerSource) -> Unit,
     ldnApTestState: LdnApTestState,
     onStartLdnApTest: () -> Unit,
     onStopLdnApTest: () -> Unit,
@@ -159,6 +164,7 @@ internal fun PokeLdnApp(
     onOpenBackupFolder: () -> Unit,
     onChangeBackupFolder: () -> Unit,
     zaSnapshots: List<ZaSnapshot>,
+    zaNames: ZaNames,
     zaReaderState: ZaReaderState?,
     onStartZaReader: () -> Unit,
     onFinishZaReader: () -> Unit,
@@ -170,6 +176,7 @@ internal fun PokeLdnApp(
     var selectedOption by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedZaSnapshot by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedZaPokemon by rememberSaveable { mutableStateOf<Int?>(null) }
+    var zaOpenedFromHistory by rememberSaveable { mutableStateOf(false) }
     Scaffold(
         modifier = modifier,
         containerColor = ShellRed,
@@ -230,6 +237,7 @@ internal fun PokeLdnApp(
                 )
                 selectedGame == "za" -> ZaReaderScreen(
                     zaSnapshots,
+                    zaNames,
                     zaReaderState,
                     radioState,
                     prodKeysState,
@@ -237,12 +245,18 @@ internal fun PokeLdnApp(
                     selectedZaPokemon,
                     onStartZaReader,
                     onFinishZaReader,
-                    onSelectSnapshot = { selectedZaSnapshot = it; selectedZaPokemon = null },
+                    onSelectSnapshot = {
+                        if (selectedZaSnapshot == "history" && it != "history") zaOpenedFromHistory = true
+                        selectedZaSnapshot = it; selectedZaPokemon = null
+                    },
                     onSelectPokemon = { selectedZaPokemon = it },
                     onBack = {
                         when {
                             selectedZaPokemon != null -> selectedZaPokemon = null
-                            selectedZaSnapshot != null -> selectedZaSnapshot = null
+                            selectedZaSnapshot != null -> {
+                                selectedZaSnapshot = if (selectedZaSnapshot != "history" && zaOpenedFromHistory) "history" else null
+                                if (selectedZaSnapshot == null) zaOpenedFromHistory = false
+                            }
                             else -> selectedGame = null
                         }
                     },
@@ -258,6 +272,8 @@ internal fun PokeLdnApp(
             AppDestination.OPTIONS -> if (selectedOption == TRAINER_OPTION_ID) {
                 TrainerProfileScreen(
                     profile = trainerProfile,
+                    identitySettings = trainerIdentitySettings,
+                    onSourceSelected = onTrainerSourceSelected,
                     onSave = onSaveTrainerProfile,
                     onBack = { selectedOption = null },
                     modifier = Modifier.padding(innerPadding),
@@ -265,6 +281,7 @@ internal fun PokeLdnApp(
             } else {
                 OptionsScreen(
                     trainerProfile = trainerProfile,
+                    identitySettings = trainerIdentitySettings,
                     onOpenTrainer = { selectedOption = TRAINER_OPTION_ID },
                     prodKeysState = prodKeysState,
                     onImportProdKeys = onImportProdKeys,
@@ -607,6 +624,7 @@ private fun GamesScreen(
 @Composable
 private fun ZaReaderScreen(
     snapshots: List<ZaSnapshot>,
+    names: ZaNames,
     reader: ZaReaderState?,
     radioState: Esp32RadioState,
     keysState: ProdKeysState,
@@ -621,91 +639,164 @@ private fun ZaReaderScreen(
 ) {
     val snapshot = snapshots.firstOrNull { it.id == selectedId }
     val pokemon = selectedPokemon?.let { snapshot?.pokemon?.getOrNull(it)?.summary }
+    val active = reader != null && !reader.terminal
     CenteredDeviceList(modifier) {
         item {
-            DeviceScreenTitle("Games / Legends: Z-A", "Save Reader", "Read trainer and Pokémon data exposed by local communication.")
-            StatusBadge("EXPERIMENTAL", StatusTone.WARNING)
+            DeviceScreenTitle("LEGENDS: Z-A", "Save Reader", "Read trainer and Pokémon data exposed by local communication.")
+            StatusBadge("PHYSICALLY VERIFIED READER", StatusTone.POSITIVE)
         }
         if (pokemon != null) {
             item {
-                ShellPanel("Pokémon detail") {
-                    Text("Species #${pokemon.species}, form ${pokemon.form} · Lv. ${pokemon.level}", style = MaterialTheme.typography.titleLarge)
-                    Text("${pokemon.nickname.ifBlank { "Pokémon" }} · ${when (pokemon.gender) { 0 -> "Male"; 1 -> "Female"; else -> "Genderless" }}")
-                    Text(if (pokemon.shiny) "Shiny" else "Not shiny")
-                    Text("Nature ${pokemon.nature} · Ability ${pokemon.ability} · Item ${pokemon.heldItem} · Ball ${pokemon.ball}")
-                    Text("OT ${pokemon.ot} · TID ${pokemon.tid} / SID ${pokemon.sid}")
-                    Text("PID ${pokemon.pid.toString(16).uppercase()} · EC ${pokemon.encryptionConstant.toString(16).uppercase()}")
-                    Text("IVs ${pokemon.ivs.joinToString()} · EVs ${pokemon.evs.joinToString()}")
-                    Text("Moves ${pokemon.moves.filter { it != 0 }.joinToString()}")
-                    Text("Language ${pokemon.language} · Met location ${pokemon.metLocation} · Date ${pokemon.metDate.joinToString("/")}")
-                    Text("Height ${pokemon.height} · Weight ${pokemon.weight} · Scale ${pokemon.scale}")
+                ShellPanel("POKÉMON") {
+                    Text(names.headline(pokemon), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
+                    Text(names.summary(pokemon))
+                    if (pokemon.nickname.isNotBlank() && !pokemon.nickname.equals(names.species(pokemon.species), true))
+                        DetailLine("Nickname", pokemon.nickname)
+                    StatusBadge(if (pokemon.shiny) "Shiny" else "Not shiny",
+                        if (pokemon.shiny) StatusTone.POSITIVE else StatusTone.NEUTRAL)
+                    DetailLine("Nature", names.nature(pokemon.nature))
+                    DetailLine("Ability", names.ability(pokemon.ability))
+                    DetailLine("Held item", names.item(pokemon.heldItem))
+                    DetailLine("Ball", names.ball(pokemon.ball))
+                    DetailLine("OT", pokemon.ot.ifBlank { "Unknown" })
+                    DetailLine("TID / SID", "${pokemon.tid} / ${pokemon.sid}")
+                }
+            }
+            item {
+                ShellPanel("MOVES") {
+                    val moves = pokemon.moves.filter { it != 0 }
+                    if (moves.isEmpty()) Text("No moves recorded")
+                    moves.forEach { Text(names.move(it)) }
+                }
+            }
+            item {
+                ShellPanel("IVs") {
+                    ZaNames.statRows(pokemon.ivs).forEach { (label, value) -> DetailLine(label, value.toString()) }
+                }
+            }
+            item {
+                ShellPanel("EVs") {
+                    ZaNames.statRows(pokemon.evs).forEach { (label, value) -> DetailLine(label, value.toString()) }
+                }
+            }
+            item {
+                ShellPanel("DETAILS") {
+                    DetailLine("Language", zaLanguage(pokemon.language))
+                    DetailLine("Met location", names.location(pokemon.metLocation))
+                    DetailLine("Met date", pokemon.metDate.joinToString("/"))
+                    DetailLine("Height / weight / scale", "${pokemon.height} / ${pokemon.weight} / ${pokemon.scale}")
+                    DetailLine("PID", pokemon.pid.toString(16).uppercase())
+                    DetailLine("EC", pokemon.encryptionConstant.toString(16).uppercase())
                 }
             }
         } else if (snapshot != null) {
             item {
-                ShellPanel("Trainer") {
+                ShellPanel("TRAINER") {
                     val trainer = snapshot.trainer
                     if (trainer == null) Text("No trainer identity captured") else {
                         Text(trainer.name, style = MaterialTheme.typography.titleLarge)
-                        Text("TID ${trainer.tid} / SID ${trainer.sid}")
-                        Text("${trainer.genderLabel} · ${trainer.languageLabel}")
+                        DetailLine("TID", trainer.tid.toString())
+                        DetailLine("SID", trainer.sid.toString())
+                        DetailLine("Gender", trainer.genderLabel)
+                        DetailLine("Language", trainer.languageLabel)
                     }
+                    snapshot.unreadablePreviews.takeIf { it > 0 }?.let { Text("$it unreadable preview${if (it == 1) "" else "s"}") }
                 }
             }
             item {
-                ShellPanel("Pokémon · ${snapshot.pokemon.size}") {
+                ShellPanel("POKÉMON · ${snapshot.pokemon.size}") {
                     snapshot.pokemon.forEachIndexed { index, entry ->
                         val info = entry.summary
-                        DeviceButton("#${info.species} · Lv. ${info.level} · ${if (info.shiny) "Shiny" else "Not shiny"}",
+                        DeviceButton("${names.headline(info)} · ${names.summary(info)}${if (info.shiny) " · Shiny" else ""}",
                             { onSelectPokemon(index) }, Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY)
                     }
                     if (snapshot.pokemon.isEmpty()) Text("No Pokémon previews captured")
                 }
             }
-        } else {
+        } else if (selectedId == "history") {
             item {
-                ShellPanel("Save Reader") {
-                    Text("Reads save-related data exposed by the game's local communication. Full save-file export is not available yet.")
-                    val active = reader != null && !reader.terminal
-                    if (active) {
-                        DetailLine("Link code", reader!!.code.chunked(4).joinToString(" "))
-                        DetailLine("Status", reader.phase)
-                        reader.snapshot.trainer?.let { DetailLine("Trainer", it.name) }
-                        DetailLine("Pokémon previews", reader.snapshot.pokemon.size.toString())
-                        reader.current?.let { Text("Latest: #${it.species} · Lv. ${it.level}${if (it.shiny) " · Shiny" else ""}") }
-                        reader.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-                        DeviceButton("Finish Reading", onFinish, Modifier.fillMaxWidth())
-                    } else {
-                        DeviceButton("Read Save Data", onStart, Modifier.fillMaxWidth(),
-                            enabled = radioState.phase == Esp32RadioPhase.READY && keysState.phase == ProdKeysPhase.AVAILABLE)
-                        if (keysState.phase != ProdKeysPhase.AVAILABLE) Text("Import valid prod.keys to start.")
-                        else if (radioState.phase != Esp32RadioPhase.READY) Text("Connect and verify the ESP32 to start.")
-                        reader?.let { Text("${it.phase}${it.detail?.let { detail -> ": $detail" } ?: ""}") }
-                    }
-                    DeviceButton("Show Saved Data", { onSelectSnapshot("history") }, Modifier.fillMaxWidth())
+                ShellPanel("SAVED LOCALLY") {
+                    if (snapshots.isEmpty()) Text("No Z-A snapshots saved yet")
                 }
             }
-            if (selectedId == "history") {
+            snapshots.forEach { entry ->
                 item {
-                    ShellPanel("Saved locally") {
-                        if (snapshots.isEmpty()) Text("No Z-A snapshots saved yet")
-                        snapshots.forEach { entry ->
-                            val date = DateTimeFormatter.ofPattern("dd MMM yyyy HH:mm")
-                                .format(Instant.ofEpochMilli(entry.started).atZone(ZoneId.systemDefault()))
-                            DeviceButton("$date · ${entry.trainer?.name ?: "Unknown trainer"} · ${entry.pokemon.size} Pokémon",
-                                { onSelectSnapshot(entry.id) }, Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY)
-                        }
+                    ShellPanel(entry.trainer?.name ?: "Unknown trainer") {
+                        Text("${entry.pokemon.size} Pokémon read", fontWeight = FontWeight.Bold)
+                        entry.unreadablePreviews.takeIf { it > 0 }?.let { Text("$it unreadable preview${if (it == 1) "" else "s"}") }
+                        DetailLine("Last read", zaDate(entry.updated))
+                        entry.trainer?.let { DetailLine("Language", it.languageLabel) }
+                        StatusBadge(if (entry.finished) "Complete" else "In progress",
+                            if (entry.finished) StatusTone.POSITIVE else StatusTone.WARNING)
+                        DeviceButton("OPEN SNAPSHOT", { onSelectSnapshot(entry.id) }, Modifier.fillMaxWidth())
                     }
+                }
+            }
+        } else if (active) {
+            item {
+                BezelDisplay("Reader status") {
+                    Text("Z-A SAVE READER", color = ScreenText, fontWeight = FontWeight.Black)
+                    DisplayStatus(reader!!.phase, when (reader.phase) {
+                        "FAILED" -> StatusTone.ERROR
+                        "READING POKÉMON", "TRAINER DETECTED", "Z-A CONNECTED", "COMPLETE" -> StatusTone.POSITIVE
+                        "WAITING FOR Z-A", "ESTABLISHING SESSION", "FINISHING" -> StatusTone.WARNING
+                        else -> StatusTone.NEUTRAL
+                    })
+                    reader.snapshot.trainer?.let { Text("Trainer: ${it.name}", color = ScreenText) }
+                    Text("Pokémon captured: ${reader.snapshot.pokemon.size}", color = ScreenText)
+                    reader.current?.let { Text("Currently reading: ${names.headline(it)} · ${names.summary(it)}", color = ScreenText) }
+                }
+            }
+            item {
+                ShellPanel("SAVE READER") {
+                    DetailLine("Link code", reader!!.code.chunked(4).joinToString(" "))
+                    if (reader.snapshot.lastUnreadableAt?.let { System.currentTimeMillis() - it < 8_000 } == true)
+                        Text("Could not read this Pokémon. Move to another Pokémon to continue.")
+                    reader.snapshot.unreadablePreviews.takeIf { it > 0 }?.let { Text("$it unreadable preview${if (it == 1) "" else "s"}") }
+                    DeviceButton("FINISH READING", onFinish, Modifier.fillMaxWidth())
+                    DeviceButton("VIEW CAPTURED", { onSelectSnapshot(reader.snapshot.id) }, Modifier.fillMaxWidth(),
+                        style = DeviceButtonStyle.SECONDARY)
+                }
+            }
+        } else {
+            item {
+                ShellPanel("SAVE READER") {
+                    Text("Reads save-related data exposed through the game's local wireless communication. Full save-file export is not available yet.")
+                    snapshots.firstOrNull()?.let { latest ->
+                        DetailLine("Latest trainer", latest.trainer?.name ?: "Unknown")
+                        DetailLine("Pokémon", latest.pokemon.size.toString())
+                        DetailLine("Last read", zaDate(latest.updated))
+                    }
+                    DeviceButton("READ SAVE DATA", onStart, Modifier.fillMaxWidth(),
+                        enabled = radioState.phase == Esp32RadioPhase.READY && keysState.phase == ProdKeysPhase.AVAILABLE)
+                    if (keysState.phase != ProdKeysPhase.AVAILABLE) Text("Import valid prod.keys to start.")
+                    else if (radioState.phase != Esp32RadioPhase.READY) Text("Connect and verify the ESP32 to start.")
+                    reader?.takeIf { it.phase == "FAILED" }?.let { Text("Reader failed. See Diagnostics for details.") }
+                    DeviceButton("SHOW SAVED DATA", { onSelectSnapshot("history") }, Modifier.fillMaxWidth(),
+                        style = DeviceButtonStyle.SECONDARY)
                 }
             }
         }
-        item { DeviceButton("Back", onBack, Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY) }
+        if (selectedId != null) item {
+            DeviceButton(if (selectedPokemon != null) "Back to snapshot" else "Back to Save Reader", onBack,
+                Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY)
+        }
     }
+}
+
+private fun zaDate(epoch: Long): String = DateTimeFormatter.ofPattern("dd MMM yyyy · HH:mm")
+    .format(Instant.ofEpochMilli(epoch).atZone(ZoneId.systemDefault()))
+
+private fun zaLanguage(id: Int): String = when (id) {
+    1 -> "Japanese"; 2 -> "English"; 3 -> "French"; 4 -> "Italian"; 5 -> "German"
+    7 -> "Spanish"; 8 -> "Korean"; 9 -> "Chinese (Traditional)"; 10 -> "Chinese (Simplified)"
+    11 -> "Spanish (Latin America)"; else -> "Unknown (#$id)"
 }
 
 @Composable
 private fun OptionsScreen(
     trainerProfile: TrainerProfile,
+    identitySettings: TrainerIdentitySettings,
     onOpenTrainer: () -> Unit,
     prodKeysState: ProdKeysState,
     onImportProdKeys: () -> Unit,
@@ -718,14 +809,17 @@ private fun OptionsScreen(
         item { DeviceScreenTitle(null, "Optionen", "App settings and local data") }
         item {
             ShellPanel("Trainer") {
+                val activeTrainer = identitySettings.active(trainerProfile)
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        if (trainerProfile.configured) trainerProfile.name else "Trainer profile",
+                        if (activeTrainer.configured) activeTrainer.name else "Trainer profile",
                         modifier = Modifier.weight(1f),
                     )
-                    StatusBadge(if (trainerProfile.configured) "Configured" else "Not configured", if (trainerProfile.configured) StatusTone.POSITIVE else StatusTone.WARNING)
+                    StatusBadge(if (activeTrainer.configured) "Configured" else "Not configured", if (activeTrainer.configured) StatusTone.POSITIVE else StatusTone.WARNING)
                 }
-                Text("App-wide identity for future game modules.", style = MaterialTheme.typography.bodySmall)
+                Text(if (identitySettings.source == TrainerSource.AUTOMATIC_FROM_GAME)
+                    "Automatic from game${identitySettings.detected?.let { ": ${it.sourceGame}" } ?: " — waiting for detection"}"
+                    else "Manual trainer profile", style = MaterialTheme.typography.bodySmall)
                 DeviceButton("Open Trainer", onOpenTrainer, Modifier.fillMaxWidth())
             }
         }
@@ -787,6 +881,8 @@ private fun OptionsScreen(
 @Composable
 private fun TrainerProfileScreen(
     profile: TrainerProfile,
+    identitySettings: TrainerIdentitySettings,
+    onSourceSelected: (TrainerSource) -> Unit,
     onSave: (TrainerProfile) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -806,7 +902,26 @@ private fun TrainerProfileScreen(
         item { DeviceScreenTitle("Optionen / Trainer", "Trainer Profile", "App-wide identity for future game modules") }
         item { DeviceButton("Back to Optionen", onBack, Modifier.fillMaxWidth()) }
         item {
-            ShellPanel("Identity") {
+            ShellPanel("Trainer source") {
+                DetailLine("Current source", if (identitySettings.source == TrainerSource.MANUAL) "Manual" else "Automatic from game")
+                DeviceButton("MANUAL", { onSourceSelected(TrainerSource.MANUAL) }, Modifier.fillMaxWidth(),
+                    style = if (identitySettings.source == TrainerSource.MANUAL) DeviceButtonStyle.PRIMARY else DeviceButtonStyle.SECONDARY)
+                DeviceButton("AUTOMATIC FROM GAME", { onSourceSelected(TrainerSource.AUTOMATIC_FROM_GAME) }, Modifier.fillMaxWidth(),
+                    style = if (identitySettings.source == TrainerSource.AUTOMATIC_FROM_GAME) DeviceButtonStyle.PRIMARY else DeviceButtonStyle.SECONDARY)
+                identitySettings.detected?.let { detected ->
+                    DetailLine("Detected from", detected.sourceGame)
+                    Text(detected.profile.name, style = MaterialTheme.typography.titleLarge)
+                    DetailLine("TID / SID", "${detected.profile.tid} / ${detected.profile.sid}")
+                    Text("${detected.profile.gender.label} · ${detected.profile.language.label}")
+                    DetailLine("Detected", zaDate(detected.detectedAt))
+                } ?: if (identitySettings.source == TrainerSource.AUTOMATIC_FROM_GAME) {
+                    Text("Waiting for a supported game's trainer identity.")
+                } else Unit
+            }
+        }
+        item {
+            ShellPanel("Manual identity") {
+                Text("Your manual profile is kept when automatic detection is selected.", style = MaterialTheme.typography.bodySmall)
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it; feedback = null },

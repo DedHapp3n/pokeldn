@@ -195,15 +195,15 @@ Do not rely only on a live Switch for correctness.
 - **FRLG Save Backup is physically verified for Pokémon LeafGreen / German.** Android received the complete 131072-byte flash image, verified a whole save slot and persisted the `.sav`. PKHeX opened the file and correctly parsed its cartridge, trainer, play time, money, Pokédex, party and Pokémon data.
 - **FRLG Save Restore is physically verified for Pokémon LeafGreen / German.** Android restored an edited, valid 131072-byte `.sav`; all 19 planned writes completed and the game loaded the restored save successfully.
 - The long-session restore freeze was fixed by latching the historical Reliable connect acknowledgement. Re-evaluating the original sequence after more than `0x8000` receive-sequence advancement could incorrectly suspend the session and its restore watchdog.
+- **Pokémon Legends: Z-A Save Reader is physically verified on a real retail Switch.** Android's Protocol-1 LDN host was discovered and joined; PIA/session establishment delivered a real `0x1400` trainer identity and real `0x0101` Pokémon previews. The app decoded the trainer and multiple Pokémon while the console moved through the selection screen, persisted snapshots, opened them offline, and left through the safe read-only workflow without completing a trade. One slot gave no useful preview data; its cause is unknown.
+- The Z-A Save Reader does not provide full raw save-file extraction, save writing, Pokémon injection, a completed trade, or automatic complete-box traversal. It is not a full Save Backup.
 
 ### Unit-tested or not yet physically verified
 
 - Protocol fixtures and edge cases for raw group CCMP receive, ARP, PIA, Reliable, RFU, LinkPlayer block delivery and Mystery Gift lifecycle are covered by Android unit tests.
 - Other FRLG cartridge and language variants represented by payload fixtures have not yet been physically verified through the Android workflow.
 - Other FRLG operations and other games remain planned or incomplete unless a later milestone records physical verification here.
-- Pokémon Legends: Z-A has a unit-tested, read-only Android LDN host, live trainer and Pokémon preview capture, incremental app-private snapshots, an offline viewer, and a foreground reader service. The app sends only the identity, sync, and selection messages needed for capture and leaves after a console pick. This is not physically verified and is not a full save dump, save write, or trade completion path.
-- The first Z-A hardware test reached the waiting screen, but the retail game did not discover or join the Android host. Protocol-1 advertisement and authentication framing were corrected against vendored kinnay/LDN fixtures.
-- The next Z-A hardware test discovered and joined the host and delivered a real `0x1400` trainer identity over PIA/protocol 10. It remained on player search because Android rejected Session update ACKs using bytes from one fixture's guest constant ID. The ACK parsing has been corrected; progression to selection and Pokémon previews still awaits a hardware retest.
+- The earlier Z-A discovery, authentication, and Session update ACK issues were resolved before the successful retail hardware verification above.
 
 ## Repository structure
 

@@ -19,7 +19,14 @@ data class ZaSnapshot(
     val linkCode: String?, val trainer: ZaTrainer?, val selectionRaw: ByteArray?,
     val pokemon: List<ZaCapturedPokemon>, val previewRecords: Int, val duplicatePreviews: Int,
     val lastMessageId: Int?, val lastDecodeError: String?,
+    val game: String = GAME_NAME,
+    val readerVersion: Int = 2,
+    val unreadablePreviews: Int = 0,
+    val lastUnreadableAt: Long? = null,
+    val unreadableRaw: ByteArray? = null,
 )
+
+private const val GAME_NAME = "Pokémon Legends: Z-A"
 
 /** Private versioned binary snapshot. Each meaningful observation is committed with fsync + rename. */
 internal class ZaSnapshotStore(
@@ -44,6 +51,7 @@ internal class ZaSnapshotStore(
                     val preview = ZaMessages.preview(message)
                     if (!preview.shown) snapshot.copy(updated = time, lastMessageId = id) // a pick is never captured as a preview
                     else {
+                        require(preview.pokemon.species > 0 && preview.pokemon.level > 0) { "Preview has no usable Pokémon identity" }
                         val index = snapshot.pokemon.indexOfFirst { it.fingerprint == preview.fingerprint }
                         val entries = snapshot.pokemon.toMutableList()
                         if (index < 0) entries += ZaCapturedPokemon(preview.fingerprint, preview.raw.copyOf(), preview.pokemon, time, time, 1)
@@ -56,14 +64,19 @@ internal class ZaSnapshotStore(
                 else -> snapshot
             }
         } catch (error: IllegalArgumentException) {
-            snapshot.copy(updated = time, lastMessageId = id, lastDecodeError = error.message)
+            if (id == 0x0101) snapshot.copy(updated = time, lastMessageId = id, lastDecodeError = error.message,
+                unreadablePreviews = snapshot.unreadablePreviews + 1, lastUnreadableAt = time,
+                unreadableRaw = message.takeIf { it.size <= 354 }?.copyOf())
+            else snapshot.copy(updated = time, lastMessageId = id, lastDecodeError = error.message)
         }
-        // Keep duplicate counts/lastSeen in RAM. New identities, records and errors are durable at once.
+        // Keep duplicate counts/lastSeen in RAM. Capture and unreadable counts are durable at once.
         val durableChange = when (id) {
             0x1400 -> next.trainer != snapshot.trainer || next.lastDecodeError != snapshot.lastDecodeError
             0x1403 -> next.lastDecodeError != snapshot.lastDecodeError
             0x0100 -> !next.selectionRaw.contentEqualNullable(snapshot.selectionRaw) || next.lastDecodeError != snapshot.lastDecodeError
-            0x0101 -> next.pokemon.size != snapshot.pokemon.size || next.lastDecodeError != snapshot.lastDecodeError
+            0x0101 -> next.pokemon.size != snapshot.pokemon.size ||
+                next.unreadablePreviews != snapshot.unreadablePreviews ||
+                next.lastDecodeError != snapshot.lastDecodeError
             else -> false
         }
         if (durableChange) save(next)
@@ -92,6 +105,9 @@ internal class ZaSnapshotStore(
                     out.writeUTF(entry.fingerprint); out.writeLong(entry.firstSeen); out.writeLong(entry.lastSeen); out.writeInt(entry.observations)
                     out.bytes(entry.raw)
                 }
+                out.writeUTF(snapshot.game); out.writeInt(snapshot.readerVersion)
+                out.writeInt(snapshot.unreadablePreviews); out.writeLong(snapshot.lastUnreadableAt ?: -1L)
+                out.bytes(snapshot.unreadableRaw)
                 out.flush(); file.fd.sync()
             }
         }
@@ -108,7 +124,8 @@ internal class ZaSnapshotStore(
         val file = File(directory, "$id.zas")
         return runCatching {
             DataInputStream(file.inputStream().buffered()).use { input ->
-                require(input.readInt() == MAGIC && input.readInt() == VERSION)
+                require(input.readInt() == MAGIC)
+                val version = input.readInt(); require(version in 1..VERSION)
                 require(input.readUTF() == id)
                 val started = input.readLong(); val updated = input.readLong(); val finished = input.readBoolean()
                 val code = input.optional()
@@ -123,7 +140,13 @@ internal class ZaSnapshotStore(
                     require(parsed.fingerprint == fingerprint)
                     ZaCapturedPokemon(fingerprint, raw, parsed.pokemon, first, last, observations)
                 }
-                ZaSnapshot(id, started, updated, finished, code, trainer, selection, pokemon, previews, duplicates, lastId, error)
+                val game = if (version >= 2) input.readUTF() else GAME_NAME
+                val readerVersion = if (version >= 2) input.readInt() else 1
+                val unreadable = if (version >= 2) input.readInt().also { require(it in 0..1_000_000) } else 0
+                val unreadableAt = if (version >= 2) input.readLong().takeIf { it >= 0 } else null
+                val unreadableRaw = if (version >= 2) input.bytes(354) else null
+                ZaSnapshot(id, started, updated, finished, code, trainer, selection, pokemon, previews, duplicates,
+                    lastId, error, game, readerVersion, unreadable, unreadableAt, unreadableRaw)
             }
         }.getOrNull()
     }
@@ -136,7 +159,7 @@ internal class ZaSnapshotStore(
     private fun DataOutputStream.bytes(value: ByteArray?) { writeInt(value?.size ?: -1); if (value != null) write(value) }
     private fun DataInputStream.bytes(max: Int): ByteArray? { val size = readInt(); require(size in -1..max); return if (size < 0) null else ByteArray(size).also { readFully(it) } }
 
-    companion object { private const val MAGIC = 0x5a41534e; private const val VERSION = 1 }
+    companion object { private const val MAGIC = 0x5a41534e; private const val VERSION = 2 }
 }
 
 private fun ByteArray?.contentEqualNullable(other: ByteArray?): Boolean = when {

@@ -167,8 +167,9 @@ internal class ZaReaderController(
         val previous = snapshot
         snapshot = store.observe(snapshot, message)
         val fresh = snapshot.pokemon.size != previous.pokemon.size
+        val unreadable = snapshot.unreadablePreviews != previous.unreadablePreviews
         if (fresh) current = snapshot.pokemon.lastOrNull()?.summary
-        if (fresh || snapshot.trainer != previous.trainer || snapshot.lastDecodeError != previous.lastDecodeError) {
+        if (fresh || unreadable || snapshot.trainer != previous.trainer || snapshot.lastDecodeError != previous.lastDecodeError) {
             publish(if (snapshot.trainer != null && snapshot.pokemon.isEmpty()) "TRAINER DETECTED" else "READING POKÉMON", force = true)
         }
     }
