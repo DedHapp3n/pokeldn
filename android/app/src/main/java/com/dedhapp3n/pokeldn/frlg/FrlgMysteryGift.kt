@@ -5,6 +5,14 @@ enum class FrlgGiftStage {
     WAITING_RESULT, CLOSING, COMPLETED, FAILED
 }
 
+enum class FrlgMysteryGiftOperation(
+    val sendingDetail: String,
+    val successDetail: String,
+) {
+    WALK_THROUGH_WALLS("Sending Walk Through Walls", "Walk Through Walls installed"),
+    POKEHAX_SCREEN("Sending PokeHax Screen", "PokeHax Screen completed"),
+}
+
 internal data class FrlgGiftSnapshot(
     val stage: FrlgGiftStage,
     val cartridge: FrlgCartridge?,
@@ -16,9 +24,10 @@ internal data class FrlgGiftSnapshot(
     val closeHandshakeConfirmed: Boolean,
 )
 
-/** Exact upstream buffer-script Mystery Gift flow used by the noclip resident installer. */
+/** Shared upstream-compatible buffer-script Mystery Gift flow for transient and resident payloads. */
 internal class FrlgMysteryGiftEngine(
     private val linkCartridge: FrlgCartridge,
+    private val operation: FrlgMysteryGiftOperation = FrlgMysteryGiftOperation.WALK_THROUGH_WALLS,
     startupStandbyCount: Int = 0,
     echoStartupStandby: Boolean = true,
 ) {
@@ -135,10 +144,14 @@ internal class FrlgMysteryGiftEngine(
             return
         }
         val code = data.copyOfRange(0x5c, 0x60).toString(Charsets.US_ASCII)
-        val payload = WalkThroughWallsPayloads.forGameCode(code)
-        if (payload == null) {
+        val knownCartridge = WalkThroughWallsPayloads.forGameCode(code) != null
+        if (!knownCartridge) {
             fail("Unsupported FRLG cartridge: $code")
             return
+        }
+        val payload = when (operation) {
+            FrlgMysteryGiftOperation.WALK_THROUGH_WALLS -> requireNotNull(WalkThroughWallsPayloads.forGameCode(code))
+            FrlgMysteryGiftOperation.POKEHAX_SCREEN -> PokeHaxScreenPayload.image()
         }
         val expectedGame = if (code.startsWith("BPR")) "FireRed" else if (code.startsWith("BPG")) "LeafGreen" else null
         val language = mapOf('F' to "French", 'E' to "English", 'S' to "Spanish", 'D' to "German",
@@ -155,10 +168,13 @@ internal class FrlgMysteryGiftEngine(
         detail = "${linkCartridge.game} / ${linkCartridge.language} detected"
         sendMessage(16, CLIENT_RUN_BUFFER) {
             stage = FrlgGiftStage.SENDING_BOOST
-            detail = "Sending Walk Through Walls"
+            detail = operation.sendingDetail
             sendMessage(25, payload, repeats = 3) {
                 stage = FrlgGiftStage.WAITING_RESULT
-                detail = "Waiting for console install result"
+                detail = when (operation) {
+                    FrlgMysteryGiftOperation.WALK_THROUGH_WALLS -> "Waiting for console install result"
+                    FrlgMysteryGiftOperation.POKEHAX_SCREEN -> "Waiting for PokeHax Screen result"
+                }
                 expect(19)
             }
         }
@@ -168,7 +184,7 @@ internal class FrlgMysteryGiftEngine(
         val status = if (data.size >= 4) le32Mg(data).toInt() else 0xbad0bad0.toInt()
         val success = status != 0xbad0bad0.toInt()
         operationSucceeded = success
-        terminalDetail = if (success) "Walk Through Walls installed" else "Console refused the resident install"
+        terminalDetail = if (success) operation.successDetail else "Console refused the payload"
         detail = terminalDetail
         val script = if (success) CLIENT_SUCCESS else CLIENT_FAILURE
         val message = if (success) SUCCESS_MESSAGE else FAILURE_MESSAGE
@@ -197,7 +213,7 @@ internal class FrlgMysteryGiftEngine(
         if (stage == FrlgGiftStage.COMPLETED || stage == FrlgGiftStage.FAILED) return
         if (operationSucceeded && closePhaseEntered) {
             stage = FrlgGiftStage.COMPLETED
-            detail = terminalDetail ?: "Walk Through Walls installed"
+            detail = terminalDetail ?: operation.successDetail
         } else {
             stage = FrlgGiftStage.FAILED
             detail = terminalDetail ?: "Console disconnected before the operation completed"

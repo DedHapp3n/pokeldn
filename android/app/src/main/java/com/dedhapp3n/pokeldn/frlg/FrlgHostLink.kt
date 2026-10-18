@@ -35,13 +35,13 @@ internal data class FrlgHostLinkSnapshot(
 internal class FrlgHostLink(
     private val pia: LdnPiaHost,
     parentSessionId: ByteArray,
-    private val runWalkThroughWalls: Boolean = false,
+    private val mysteryGiftOperation: FrlgMysteryGiftOperation? = null,
     private val runSaveBackup: Boolean = false,
     private val restoreSave: ByteArray? = null,
     private val persistSaveBackup: (FrlgCompletedBackup) -> Unit = {},
 ) {
     init {
-        require(listOf(runWalkThroughWalls, runSaveBackup, restoreSave != null).count { it } <= 1) { "Only one FRLG operation may own a host link" }
+        require(listOf(mysteryGiftOperation != null, runSaveBackup, restoreSave != null).count { it } <= 1) { "Only one FRLG operation may own a host link" }
     }
 
     private val rfu = FrlgRfuLeader(parentSessionId)
@@ -195,10 +195,10 @@ internal class FrlgHostLink(
     }
 
     private fun ensureOperation() {
-        if ((!runWalkThroughWalls && !runSaveBackup && restoreSave == null) || gift != null || backup != null || restore != null || !link.readyForGift) return
+        if ((mysteryGiftOperation == null && !runSaveBackup && restoreSave == null) || gift != null || backup != null || restore != null || !link.readyForGift) return
         link.child?.cartridge?.let {
-            if (runWalkThroughWalls) {
-                gift = FrlgMysteryGiftEngine(it, link.standbyCount ?: 0, echoStartupStandby = false)
+            if (mysteryGiftOperation != null) {
+                gift = FrlgMysteryGiftEngine(it, mysteryGiftOperation, link.standbyCount ?: 0, echoStartupStandby = false)
             } else if (runSaveBackup) {
                 backup = FrlgSaveBackupGiftEngine(
                     it,

@@ -40,6 +40,7 @@ import com.dedhapp3n.pokeldn.frlg.ProdKeysState
 import com.dedhapp3n.pokeldn.frlg.ProdKeysStore
 import com.dedhapp3n.pokeldn.frlg.ProdKeysPhase
 import com.dedhapp3n.pokeldn.frlg.FrlgGiftStage
+import com.dedhapp3n.pokeldn.frlg.FrlgMysteryGiftOperation
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationStartGate
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationState
@@ -351,6 +352,8 @@ class MainActivity : ComponentActivity() {
                     radioState = radioState,
                     onStartWalkThroughWalls = ::startWalkThroughWalls,
                     onCancelWalkThroughWalls = ::cancelWalkThroughWalls,
+                    onStartPokeHaxScreen = ::startPokeHaxScreen,
+                    onCancelPokeHaxScreen = ::cancelPokeHaxScreen,
                     onStartSaveBackup = ::startSaveBackup,
                     onCancelSaveBackup = ::cancelSaveBackup,
                     onExportSaveBackup = ::exportSaveBackup,
@@ -966,7 +969,13 @@ class MainActivity : ComponentActivity() {
         ldnApTestState = LdnApTestState(LdnApTestPhase.DISCONNECTED)
     }
 
-    private fun startWalkThroughWalls() = startFrlgOperation(saveBackup = false)
+    private fun startWalkThroughWalls() = startFrlgOperation(
+        mysteryGiftOperation = FrlgMysteryGiftOperation.WALK_THROUGH_WALLS,
+    )
+
+    private fun startPokeHaxScreen() = startFrlgOperation(
+        mysteryGiftOperation = FrlgMysteryGiftOperation.POKEHAX_SCREEN,
+    )
 
     private fun startSaveBackup() = startFrlgOperation(saveBackup = true)
 
@@ -979,9 +988,16 @@ class MainActivity : ComponentActivity() {
         startFrlgOperation(saveBackup = false, restoreSave = save)
     }
 
-    private fun startFrlgOperation(saveBackup: Boolean, restoreSave: ByteArray? = null) {
+    private fun startFrlgOperation(
+        saveBackup: Boolean = false,
+        restoreSave: ByteArray? = null,
+        mysteryGiftOperation: FrlgMysteryGiftOperation? = null,
+    ) {
         if (ZaReaderService.isActive()) return
         val saveRestore = restoreSave != null
+        require(listOf(mysteryGiftOperation != null, saveBackup, saveRestore).count { it } == 1) {
+            "Exactly one FRLG operation must be selected"
+        }
         val session = radioSession
         if (session?.state?.phase == Esp32RadioPhase.READY) releaseStaleRadioOwnership(session)
         val availability = FrlgOperationStartGate.evaluate(
@@ -1006,6 +1022,7 @@ class MainActivity : ComponentActivity() {
         val foregroundKind = when {
             saveRestore -> FrlgForegroundKind.SAVE_RESTORE
             saveBackup -> FrlgForegroundKind.SAVE_BACKUP
+            mysteryGiftOperation == FrlgMysteryGiftOperation.POKEHAX_SCREEN -> FrlgForegroundKind.POKEHAX_SCREEN
             else -> FrlgForegroundKind.WALK_THROUGH_WALLS
         }
         requestOperationNotificationPermission()
@@ -1037,7 +1054,7 @@ class MainActivity : ComponentActivity() {
                     session = session,
                     operation = activeOperation,
                     network = network,
-                    walkThroughWalls = !saveBackup && !saveRestore,
+                    mysteryGiftOperation = mysteryGiftOperation,
                     saveBackup = saveBackup,
                     restoreSave = restoreSave,
                     persistSaveBackup = if (saveBackup) ::persistCompletedBackup else { _ -> },
@@ -1103,7 +1120,8 @@ class MainActivity : ComponentActivity() {
                 when (progress.kind) {
                     FrlgForegroundKind.SAVE_RESTORE -> updateSaveRestoreState(snapshot)
                     FrlgForegroundKind.SAVE_BACKUP -> updateSaveBackupState(snapshot)
-                    FrlgForegroundKind.WALK_THROUGH_WALLS ->
+                    FrlgForegroundKind.WALK_THROUGH_WALLS,
+                    FrlgForegroundKind.POKEHAX_SCREEN ->
                         frlgOperationState = frlgOperationState.recordProgress(frlgState(snapshot))
                 }
             }
@@ -1277,6 +1295,18 @@ class MainActivity : ComponentActivity() {
 
     private fun cancelWalkThroughWalls() {
         if (FrlgOperationService.progress()?.takeIf { !it.terminal }?.kind == FrlgForegroundKind.WALK_THROUGH_WALLS) {
+            FrlgOperationService.cancel("Operation cancelled")
+            return
+        }
+        val id = synchronized(frlgOperationLock) {
+            if (activeFrlgOperation?.saveBackup != false || activeFrlgOperation?.saveRestore == true) return
+            frlgOperationId
+        }
+        finishFrlgOperation(id, FrlgOperationPhase.CANCELLED, "Operation cancelled")
+    }
+
+    private fun cancelPokeHaxScreen() {
+        if (FrlgOperationService.progress()?.takeIf { !it.terminal }?.kind == FrlgForegroundKind.POKEHAX_SCREEN) {
             FrlgOperationService.cancel("Operation cancelled")
             return
         }

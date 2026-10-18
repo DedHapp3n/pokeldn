@@ -30,7 +30,7 @@ class FrlgRfuTest {
         ))
         reliable.poll(34) // Emits the cumulative ACK that covers C.
 
-        val host = FrlgHostLink(pia, byteArrayOf(1, 0xf1.toByte()), runWalkThroughWalls = true)
+        val host = FrlgHostLink(pia, byteArrayOf(1, 0xf1.toByte()), mysteryGiftOperation = FrlgMysteryGiftOperation.WALK_THROUGH_WALLS)
         host.tick(35)
         val opened = host.snapshot()
         assertEquals(connectSequence, opened.connectSequence)
@@ -69,7 +69,7 @@ class FrlgRfuTest {
 
     @Test fun `peer departure during early RFU setup is a protocol failure`() {
         val pia = LdnPiaHost(ByteArray(32), byteArrayOf(2, 0, 0, 0, 0, 1), 14, 6)
-        val host = FrlgHostLink(pia, byteArrayOf(1, 0xf1.toByte()), runWalkThroughWalls = true)
+        val host = FrlgHostLink(pia, byteArrayOf(1, 0xf1.toByte()), mysteryGiftOperation = FrlgMysteryGiftOperation.WALK_THROUGH_WALLS)
 
         host.onPeerLeft()
 

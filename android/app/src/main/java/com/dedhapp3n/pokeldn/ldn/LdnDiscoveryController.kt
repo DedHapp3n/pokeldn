@@ -6,6 +6,7 @@ import com.dedhapp3n.pokeldn.esp32.Esp32RadioSession
 import com.dedhapp3n.pokeldn.esp32.formatMac
 import com.dedhapp3n.pokeldn.frlg.FrlgHostLink
 import com.dedhapp3n.pokeldn.frlg.FrlgCompletedBackup
+import com.dedhapp3n.pokeldn.frlg.FrlgMysteryGiftOperation
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveCloseResult
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveDataResult
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveBackupStage
@@ -182,7 +183,7 @@ class LdnDiscoveryController internal constructor(
         session: Esp32RadioSession,
         operation: Esp32RadioOperation,
         network: LdnDiscoveryNetwork,
-        walkThroughWalls: Boolean = false,
+        mysteryGiftOperation: FrlgMysteryGiftOperation? = null,
         saveBackup: Boolean = false,
         restoreSave: ByteArray? = null,
         persistSaveBackup: (FrlgCompletedBackup) -> Unit = {},
@@ -201,7 +202,7 @@ class LdnDiscoveryController internal constructor(
         frlgHost = FrlgHostLink(
             network.piaHost,
             network.parentSessionId,
-            runWalkThroughWalls = walkThroughWalls,
+            mysteryGiftOperation = mysteryGiftOperation,
             runSaveBackup = saveBackup,
             restoreSave = restoreSave,
             persistSaveBackup = persistSaveBackup,

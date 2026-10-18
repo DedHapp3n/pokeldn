@@ -4,6 +4,7 @@ import com.dedhapp3n.pokeldn.esp32.Esp32RadioEvent
 import com.dedhapp3n.pokeldn.esp32.Esp32RadioOperation
 import com.dedhapp3n.pokeldn.frlg.FrlgGiftStage
 import com.dedhapp3n.pokeldn.frlg.FrlgHostLink
+import com.dedhapp3n.pokeldn.frlg.FrlgMysteryGiftOperation
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -27,7 +28,7 @@ class LdnDiscoveryControllerTest {
             authenticate = { _, _ -> LdnAuthenticationOutcome(byteArrayOf(1), 0, true, participant) },
             removeParticipant = { null },
             piaHost = pia,
-            frlgHost = FrlgHostLink(pia, byteArrayOf(1, 0xf1.toByte()), runWalkThroughWalls = true),
+            frlgHost = FrlgHostLink(pia, byteArrayOf(1, 0xf1.toByte()), mysteryGiftOperation = FrlgMysteryGiftOperation.WALK_THROUGH_WALLS),
             subscribe = transport::subscribe, scheduler = FakeScheduler(),
         )
         controller.start()

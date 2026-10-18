@@ -36,6 +36,21 @@ class FrlgMysteryGiftTest {
         }
     }
 
+    @Test fun `PokeHax screen is a bounded shared RAM and VRAM payload`() {
+        val payload = PokeHaxScreenPayload.image()
+        assertEquals(760, payload.size)
+        assertEquals("9e486375a487c9297abc27f8b4529fc75f09f7d22cce4fd99551e7324e57485f",
+            MessageDigest.getInstance("SHA-256").digest(payload).hex())
+        assertTrue(payload.size <= 1024)
+        assertTrue(payload.contentEquals(PokeHaxScreenPayload.image()))
+    }
+
+    @Test fun `PokeHax screen uses the existing run buffer Mystery Gift flow`() {
+        val engine = preparedEngine(FrlgMysteryGiftOperation.POKEHAX_SCREEN)
+        assertEquals(FrlgGiftStage.WAITING_RESULT, engine.snapshot().stage)
+        assertTrue(engine.snapshot().detail!!.contains("PokeHax Screen"))
+    }
+
     @Test fun `successful close completes when console leaves first`() {
         val engine = closingSuccessfulEngine()
         val closing = engine.snapshot()
@@ -106,8 +121,10 @@ class FrlgMysteryGiftTest {
         assertTrue(engine.snapshot().detail!!.contains("refused"))
     }
 
-    private fun preparedEngine(): FrlgMysteryGiftEngine {
-        val engine = FrlgMysteryGiftEngine(FrlgCartridge("LeafGreen", "German", 0x4005, 5))
+    private fun preparedEngine(
+        operation: FrlgMysteryGiftOperation = FrlgMysteryGiftOperation.WALK_THROUGH_WALLS,
+    ): FrlgMysteryGiftEngine {
+        val engine = FrlgMysteryGiftEngine(FrlgCartridge("LeafGreen", "German", 0x4005, 5), operation)
         repeat(20) { engine.receive(ByteArray(14)) }
         repeat(300) { engine.tick() }
         val data = ByteArray(0x64).also {

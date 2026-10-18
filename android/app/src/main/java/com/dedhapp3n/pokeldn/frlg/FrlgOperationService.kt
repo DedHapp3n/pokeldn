@@ -28,7 +28,7 @@ import com.dedhapp3n.pokeldn.usb.UsbSerialTransport
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
 
-enum class FrlgForegroundKind { WALK_THROUGH_WALLS, SAVE_BACKUP, SAVE_RESTORE }
+enum class FrlgForegroundKind { WALK_THROUGH_WALLS, POKEHAX_SCREEN, SAVE_BACKUP, SAVE_RESTORE }
 
 data class FrlgForegroundProgress(
     val kind: FrlgForegroundKind,
@@ -55,6 +55,7 @@ internal object FrlgOperationNotificationText {
         progress.phase == FrlgOperationPhase.REFUSED && progress.kind == FrlgForegroundKind.SAVE_RESTORE -> "Restore refused"
         progress.kind == FrlgForegroundKind.SAVE_RESTORE -> "PokeLDN - Restoring ${progress.cartridge?.substringBefore(" / ") ?: "save"}"
         progress.kind == FrlgForegroundKind.SAVE_BACKUP -> "PokeLDN - Save Backup"
+        progress.kind == FrlgForegroundKind.POKEHAX_SCREEN -> "PokeLDN - PokeHax Screen"
         else -> "PokeLDN - Walk Through Walls"
     }
 
@@ -404,7 +405,8 @@ class FrlgOperationService : Service() {
         fun updateFromSnapshot(snapshot: LdnDiscoverySnapshot) {
             val previous = currentProgress ?: return
             val phase = when (previous.kind) {
-                FrlgForegroundKind.WALK_THROUGH_WALLS -> when (snapshot.giftStage) {
+                FrlgForegroundKind.WALK_THROUGH_WALLS,
+                FrlgForegroundKind.POKEHAX_SCREEN -> when (snapshot.giftStage) {
                     FrlgGiftStage.COMPLETED -> FrlgOperationPhase.COMPLETED
                     FrlgGiftStage.FAILED -> FrlgOperationPhase.FAILED
                     FrlgGiftStage.READING_CARTRIDGE -> FrlgOperationPhase.READING_CARTRIDGE
@@ -440,6 +442,8 @@ class FrlgOperationService : Service() {
                     snapshot.latestActivity ?: "Connection lost while restoring"
                 phase == FrlgOperationPhase.COMPLETED && previous.kind == FrlgForegroundKind.WALK_THROUGH_WALLS ->
                     "Walk Through Walls installed. Hold R while moving."
+                phase == FrlgOperationPhase.COMPLETED && previous.kind == FrlgForegroundKind.POKEHAX_SCREEN ->
+                    "PokeHax Screen completed."
                 phase == FrlgOperationPhase.COMPLETED && previous.kind == FrlgForegroundKind.SAVE_RESTORE ->
                     "Save restored successfully"
                 else -> snapshot.latestActivity ?: previous.detail

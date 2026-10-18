@@ -61,6 +61,7 @@ import com.dedhapp3n.pokeldn.frlg.FrlgSaveRestoreUiState
 import com.dedhapp3n.pokeldn.frlg.ProdKeysPhase
 import com.dedhapp3n.pokeldn.frlg.ProdKeysState
 import com.dedhapp3n.pokeldn.frlg.WalkThroughWallsPreset
+import com.dedhapp3n.pokeldn.frlg.PokeHaxScreenPreset
 import com.dedhapp3n.pokeldn.ldn.LdnApTestState
 import com.dedhapp3n.pokeldn.profile.TrainerGender
 import com.dedhapp3n.pokeldn.profile.TrainerLanguage
@@ -114,7 +115,7 @@ private data class GameModule(
 )
 
 private val gameModules = listOf(
-    GameModule("FireRed / LeafGreen", "GEN III", "Walk Through Walls, Save Backup, and Save Restore.", true),
+    GameModule("FireRed / LeafGreen", "GEN III", "Walk Through Walls, PokeHax Screen, Save Backup, and Save Restore.", true),
     GameModule("Let's Go Pikachu / Eevee", "GEN VII", "Upstream-supported game; Android features are not available yet."),
     GameModule("Sword / Shield", "GEN VIII", "Upstream-supported game; Android features are not available yet."),
     GameModule("Brilliant Diamond / Shining Pearl", "GEN VIII", "Upstream-supported game; Android features are not available yet."),
@@ -157,6 +158,8 @@ internal fun PokeLdnApp(
     radioState: Esp32RadioState,
     onStartWalkThroughWalls: () -> Unit,
     onCancelWalkThroughWalls: () -> Unit,
+    onStartPokeHaxScreen: () -> Unit,
+    onCancelPokeHaxScreen: () -> Unit,
     onStartSaveBackup: () -> Unit,
     onCancelSaveBackup: () -> Unit,
     onExportSaveBackup: () -> Unit,
@@ -214,6 +217,26 @@ internal fun PokeLdnApp(
                     onBack = { selectedOperation = null },
                     modifier = Modifier.padding(innerPadding),
                 )
+                selectedOperation == PokeHaxScreenPreset.OPERATION_ID -> MysteryGiftPayloadScreen(
+                    connectionState = connectionState,
+                    esp32State = esp32State,
+                    keysState = prodKeysState,
+                    operationState = frlgOperationState,
+                    radioState = radioState,
+                    title = "PokeHax Screen",
+                    subtitle = "Safe RAM/VRAM display payload",
+                    section = "Mystery Gift",
+                    badge = "Test payload",
+                    preparingLabel = "Preparing payload",
+                    sendingLabel = "Sending payload",
+                    instructions = "The GBA shows POKEHAX on black. Press A on the GBA to restore the Mystery Gift screen and finish.",
+                    persistence = "Only RAM, VRAM, OAM, palette, and display registers are touched. The payload does not access save or flash memory.",
+                    onImportKeys = onImportProdKeys,
+                    onStart = onStartPokeHaxScreen,
+                    onCancel = onCancelPokeHaxScreen,
+                    onBack = { selectedOperation = null },
+                    modifier = Modifier.padding(innerPadding),
+                )
                 selectedOperation == SAVE_BACKUP_ID -> SaveBackupScreen(
                     connectionState = connectionState,
                     esp32State = esp32State,
@@ -234,6 +257,7 @@ internal fun PokeLdnApp(
                 )
                 selectedGame == "frlg" -> FrlgOperationsScreen(
                     onOpenWalkThroughWalls = { selectedOperation = WalkThroughWallsPreset.BOOST_ID },
+                    onOpenPokeHaxScreen = { selectedOperation = PokeHaxScreenPreset.OPERATION_ID },
                     onOpenSaveBackup = { selectedOperation = SAVE_BACKUP_ID },
                     onOpenSaveRestore = { selectedOperation = SAVE_RESTORE_ID },
                     onBack = { selectedGame = null },
@@ -1061,6 +1085,7 @@ private fun GameModulePanel(module: GameModule, onOpen: (() -> Unit)?, modifier:
 @Composable
 private fun FrlgOperationsScreen(
     onOpenWalkThroughWalls: () -> Unit,
+    onOpenPokeHaxScreen: () -> Unit,
     onOpenSaveBackup: () -> Unit,
     onOpenSaveRestore: () -> Unit,
     onBack: () -> Unit,
@@ -1087,6 +1112,13 @@ private fun FrlgOperationsScreen(
         }
         item {
             OperationCategory("Mystery Gift") {
+                OperationRow(
+                    "PokeHax Screen",
+                    "Run a non-persistent RAM/VRAM screen test; press A to return.",
+                    "Safe test",
+                    StatusTone.POSITIVE,
+                    onOpenPokeHaxScreen,
+                )
                 PlannedOperation("Wonder News", "Planned")
                 PlannedOperation("Pokémon Gift", "Planned")
                 PlannedOperation("Wonder Card", "Planned")
@@ -1361,6 +1393,49 @@ private fun WalkThroughWallsScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    MysteryGiftPayloadScreen(
+        connectionState = connectionState,
+        esp32State = esp32State,
+        keysState = keysState,
+        operationState = operationState,
+        radioState = radioState,
+        title = "Walk Through Walls",
+        subtitle = "Hold R while moving",
+        section = "Game Boost",
+        badge = "Physically verified",
+        instructions = "On the GBA, enable Mystery Gift, open Wonder Cards, then choose Friend. Start here before selecting the host on the console.",
+        persistence = "The boost lasts until the game restarts or the console is powered off.",
+        onImportKeys = onImportKeys,
+        onStart = onStart,
+        onCancel = onCancel,
+        onBack = onBack,
+        modifier = modifier,
+        extraStatus = { Text("Activation: hold ${WalkThroughWallsPreset.ACTIVATION_BUTTON}", color = ScreenMuted) },
+    )
+}
+
+@Composable
+private fun MysteryGiftPayloadScreen(
+    connectionState: SerialConnectionState,
+    esp32State: Esp32HandshakeState,
+    keysState: ProdKeysState,
+    operationState: FrlgOperationState,
+    radioState: Esp32RadioState,
+    title: String,
+    subtitle: String,
+    section: String,
+    badge: String,
+    instructions: String,
+    persistence: String,
+    preparingLabel: String = FrlgOperationPhase.PREPARING_BOOST.label,
+    sendingLabel: String = FrlgOperationPhase.SENDING_BOOST.label,
+    onImportKeys: () -> Unit,
+    onStart: () -> Unit,
+    onCancel: () -> Unit,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    extraStatus: @Composable () -> Unit = {},
+) {
     val availability = FrlgOperationStartGate.evaluate(
         keysAvailable = keysState.phase == ProdKeysPhase.AVAILABLE,
         handshakeVerified = esp32State.phase == Esp32HandshakePhase.VERIFIED,
@@ -1372,12 +1447,16 @@ private fun WalkThroughWallsScreen(
     val adapterReady = connectionState.phase == SerialConnectionPhase.CONNECTED &&
         esp32State.phase == Esp32HandshakePhase.VERIFIED && radioState.phase == Esp32RadioPhase.READY
     CenteredDeviceList(modifier) {
-        item { DeviceScreenTitle("FRLG / Game Boost", "Walk Through Walls", "Hold R while moving") }
+        item { DeviceScreenTitle("FRLG / $section", title, subtitle) }
         item { DeviceButton("Back to operations", onBack, Modifier.fillMaxWidth()) }
         item {
             BezelDisplay("Operation status") {
                 DisplayStatus(
-                    operationState.phase.label,
+                    when (operationState.phase) {
+                        FrlgOperationPhase.PREPARING_BOOST -> preparingLabel
+                        FrlgOperationPhase.SENDING_BOOST -> sendingLabel
+                        else -> operationState.phase.label
+                    },
                     when (operationState.phase) {
                         com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.COMPLETED -> StatusTone.POSITIVE
                         com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase.FAILED -> StatusTone.ERROR
@@ -1385,9 +1464,9 @@ private fun WalkThroughWallsScreen(
                     },
                 )
                 operationState.detail?.let { Text(it, color = ScreenMuted) }
-                StatusBadge("Physically verified", StatusTone.POSITIVE)
+                StatusBadge(badge, StatusTone.POSITIVE)
                 Text("Game: FireRed / LeafGreen", color = ScreenMuted)
-                Text("Activation: hold ${WalkThroughWallsPreset.ACTIVATION_BUTTON}", color = ScreenMuted)
+                extraStatus()
                 DisplayStatus(
                     if (adapterReady) "ESP32 ready" else "ESP32 disconnected",
                     if (adapterReady) StatusTone.POSITIVE else StatusTone.NEUTRAL,
@@ -1410,8 +1489,8 @@ private fun WalkThroughWallsScreen(
             ShellPanel("Requirements") {
                 Text("Import your own prod.keys. The app stores the validated file only in private app storage.")
                 DeviceButton("Import prod.keys", onImportKeys, Modifier.fillMaxWidth())
-                Text("On the GBA, enable Mystery Gift, open Wonder Cards, then choose Friend. Start here before selecting the host on the console.")
-                Text("The boost lasts until the game restarts or the console is powered off.",
+                Text(instructions)
+                Text(persistence,
                     style = MaterialTheme.typography.bodySmall, color = DeviceInk.copy(alpha = 0.72f))
                 if (operationState.running) {
                     DeviceButton("Cancel", onCancel, Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY)
