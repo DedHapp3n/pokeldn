@@ -124,11 +124,21 @@ internal fun DiagnosticsScreen(
                         appendLine("authStatus=${reader.discovery.authenticationStatus ?: "-"}")
                         appendLine("stationsJoined=${reader.discovery.stationJoined}")
                         appendLine("lastManagement=${reader.discovery.lastManagement ?: "-"}")
+                        appendLine("unknownGameMessages=${reader.unknownMessages.received}")
+                        appendLine("unknownUniquePayloads=${reader.unknownMessages.uniquePayloads}")
+                        appendLine("unknownCapturedBytes=${reader.unknownMessages.capturedBytes}")
+                        appendLine("unknownUniqueBytes=${reader.unknownMessages.uniqueBytes}")
+                        appendLine("unknownLargestPayload=${reader.unknownMessages.largestPayload}")
                         appendLine("leavePhase=${reader.host.leavePhase ?: "-"}")
                         append("lastError=${reader.host.lastError ?: reader.detail ?: "-"}")
                     }
                     DeviceButton("COPY Z-A TRACE", { clipboard.setText(AnnotatedString(trace)) },
                         Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY)
+                    if (reader.unknownMessages.received > 0) {
+                        DeviceButton("COPY UNKNOWN Z-A MESSAGES", {
+                            clipboard.setText(AnnotatedString(reader.unknownMessages.export()))
+                        }, Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY)
+                    }
                     SelectionContainer {
                         Surface(color = ScreenBlack, contentColor = ScreenText,
                             shape = RoundedCornerShape(9.dp), border = BorderStroke(2.dp, DeviceBezel)) {

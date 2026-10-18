@@ -38,7 +38,7 @@ internal class ZaHostSession(
     private val code: String,
     private val identity: ByteArray,
     private val selection: ByteArray,
-    private val onGameMessage: (ByteArray) -> Unit,
+    private val onGameMessage: (ZaGameMessageObservation) -> Unit,
     private val random: SecureRandom = SecureRandom(),
     hostVariable: Int? = null,
 ) {
@@ -110,8 +110,13 @@ internal class ZaHostSession(
                 10, 11 -> {
                     val stream = if (item.protocol == 10) stream10 else stream11
                     stream.receive(item.payload, now).forEach { delivery ->
+                        if (delivery.payload.isNotEmpty()) {
+                            val peer = guest ?: return@forEach
+                            onGameMessage(ZaGameMessageObservation(item.protocol, delivery.sequence, delivery.flags, now,
+                                peer.ipAddress, join?.sourceConstant?.joinToString("") { "%02X".format(it.u()) }
+                                    ?: peer.mac.joinToString("") { "%02X".format(it.u()) }, delivery.payload))
+                        }
                         if (item.protocol == 10 && delivery.payload.size >= 2) {
-                            onGameMessage(delivery.payload)
                             if (ZaReadOnlyPolicy.shouldCloseForInbound(10, delivery.payload)) leave(now)
                         }
                     }

@@ -43,7 +43,7 @@ class ZaHostSessionTest {
     }
 
     @Test fun updateAcknowledgementsGateSelectionAndPickStartsSafeLeave() {
-        val observed = mutableListOf<ByteArray>()
+        val observed = mutableListOf<ZaGameMessageObservation>()
         val host = ZaHostSession(ssid, mac, "127.0.0.2", "00000000", fixture("identity10"), fixture("selection"), observed::add,
             hostVariable = 0xefb0)
         host.participantJoined(LdnParticipant(1, "127.0.0.3", "02007f000003".hex(), byteArrayOf(32), 6, 0), 0)
@@ -62,6 +62,8 @@ class ZaHostSessionTest {
         val stream = byteArrayOf(0x0f, 0x01, 0x62, 0xff.toByte(), 0xf0.toByte(), 0xff.toByte(), 0xf0.toByte(), 0) + pick
         host.receive(inbound(10, stream, 0xefb0), "127.0.0.3", 1600)
         assertEquals(1, observed.size)
+        assertArrayEquals(pick, observed.single().payload)
+        assertEquals(10, observed.single().protocol)
         assertEquals("migration", host.status.leavePhase)
         val leaving = payloads(host.tick(1600))
         assertTrue(leaving.any { it.first == 13 && it.second.first().toInt() == 9 })

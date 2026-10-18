@@ -19,6 +19,7 @@ internal data class ZaReaderState(
     val detail: String? = null,
     val terminal: Boolean = false,
     val discovery: ZaDiscoveryStatus = ZaDiscoveryStatus(),
+    val unknownMessages: ZaUnknownMessageCapture = ZaUnknownMessageCapture(),
 )
 
 internal data class ZaDiscoveryStatus(
@@ -62,6 +63,7 @@ internal class ZaReaderController(
     private var current: ZaPokemonInfo? = null
     private var state = ZaReaderState(initial.linkCode.orEmpty(), "PREPARING NETWORK", initial)
     private var discovery = ZaDiscoveryStatus(advertisementSize = network.authentication.currentAdvertisementFrame().size)
+    private var unknownMessages = ZaUnknownMessageCapture()
 
     fun start() = synchronized(lock) {
         check(!running)
@@ -162,10 +164,17 @@ internal class ZaReaderController(
         }
     }
 
-    fun gameMessage(message: ByteArray) = synchronized(lock) {
+    fun gameMessage(observation: ZaGameMessageObservation) = synchronized(lock) {
         if (!running || finishing) return@synchronized
+        if (!ZaUnknownMessageCapture.isKnown(observation)) {
+            unknownMessages = unknownMessages.record(observation)
+            publish(state.phase, force = true)
+            return@synchronized
+        }
+        // The verified snapshot reader consumes protocol 10 only, as before instrumentation.
+        if (observation.protocol != 10) return@synchronized
         val previous = snapshot
-        snapshot = store.observe(snapshot, message)
+        snapshot = store.observe(snapshot, observation.payload)
         val fresh = snapshot.pokemon.size != previous.pokemon.size
         val unreadable = snapshot.unreadablePreviews != previous.unreadablePreviews
         if (fresh) current = snapshot.pokemon.lastOrNull()?.summary
@@ -178,7 +187,8 @@ internal class ZaReaderController(
         val now = System.currentTimeMillis()
         if (!force && now - lastPublished < 1000) return
         lastPublished = now
-        state = ZaReaderState(snapshot.linkCode.orEmpty(), phase, snapshot, host.status, current, snapshot.lastDecodeError, false, discovery)
+        state = ZaReaderState(snapshot.linkCode.orEmpty(), phase, snapshot, host.status, current, snapshot.lastDecodeError, false,
+            discovery, unknownMessages)
         onState(state)
     }
 
