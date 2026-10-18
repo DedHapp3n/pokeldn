@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -23,6 +24,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.runtime.Composable
@@ -37,6 +41,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.dedhapp3n.pokeldn.BuildConfig
 import com.dedhapp3n.pokeldn.esp32.Esp32HandshakePhase
@@ -46,6 +51,7 @@ import com.dedhapp3n.pokeldn.esp32.RawReadBufferMode
 import com.dedhapp3n.pokeldn.esp32.Esp32RadioPhase
 import com.dedhapp3n.pokeldn.esp32.Esp32RadioState
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationState
+import com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationStartGate
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveBackupUiState
 import com.dedhapp3n.pokeldn.frlg.FrlgBackupStorageUiState
@@ -56,6 +62,9 @@ import com.dedhapp3n.pokeldn.frlg.ProdKeysPhase
 import com.dedhapp3n.pokeldn.frlg.ProdKeysState
 import com.dedhapp3n.pokeldn.frlg.WalkThroughWallsPreset
 import com.dedhapp3n.pokeldn.ldn.LdnApTestState
+import com.dedhapp3n.pokeldn.profile.TrainerGender
+import com.dedhapp3n.pokeldn.profile.TrainerLanguage
+import com.dedhapp3n.pokeldn.profile.TrainerProfile
 import com.dedhapp3n.pokeldn.ui.theme.CreamPanel
 import com.dedhapp3n.pokeldn.ui.theme.CreamPanelDark
 import com.dedhapp3n.pokeldn.ui.theme.DeviceAmber
@@ -83,22 +92,27 @@ private enum class AppDestination(val label: String) {
 
 private const val SAVE_BACKUP_ID = "frlg-save-backup"
 private const val SAVE_RESTORE_ID = "frlg-save-restore"
+private const val TRAINER_OPTION_ID = "trainer"
 
 private data class GameModule(
     val title: String,
     val generation: String,
     val detail: String,
     val primary: Boolean = false,
+    val researchItems: List<String> = emptyList(),
 )
 
 private val gameModules = listOf(
-    GameModule("FireRed / LeafGreen", "GEN III", "Game boosts and save tools.", true),
-    GameModule("Ruby / Sapphire / Emerald", "GEN III", "Planned Game Boy Advance link workflows."),
-    GameModule("Diamond / Pearl / Platinum", "GEN IV", "Planned module. Not available yet."),
-    GameModule("HeartGold / SoulSilver", "GEN IV", "Planned module. Not available yet."),
-    GameModule("Black / White", "GEN V", "Long-term planned module."),
-    GameModule("Scarlet / Violet", "GEN IX", "Future modern-game workflow ideas."),
-    GameModule("HOME-style tools", "UTILITY", "Future import, export, and collection workflows."),
+    GameModule("FireRed / LeafGreen", "GEN III", "Walk Through Walls, Save Backup, and Save Restore.", true),
+    GameModule("Let's Go Pikachu / Eevee", "GEN VII", "Upstream-supported game; Android features are not available yet."),
+    GameModule("Sword / Shield", "GEN VIII", "Upstream-supported game; Android features are not available yet."),
+    GameModule("Brilliant Diamond / Shining Pearl", "GEN VIII", "Upstream-supported game; Android features are not available yet."),
+    GameModule("Legends: Arceus", "GEN VIII", "Upstream-supported game; Android features are not available yet."),
+    GameModule("Scarlet / Violet", "GEN IX", "Upstream-supported game; Android features are not available yet."),
+    GameModule(
+        "Legends: Z-A", "GEN IX", "Android integration research has not started.",
+        researchItems = listOf("Save Inspector", "Research"),
+    ),
 )
 
 @Composable
@@ -120,6 +134,8 @@ fun PokeLdnApp(
     onCaptureRaw: (Int, RawReadBufferMode) -> Unit,
     prodKeysState: ProdKeysState,
     onImportProdKeys: () -> Unit,
+    trainerProfile: TrainerProfile,
+    onSaveTrainerProfile: (TrainerProfile) -> Unit,
     ldnApTestState: LdnApTestState,
     onStartLdnApTest: () -> Unit,
     onStopLdnApTest: () -> Unit,
@@ -143,6 +159,7 @@ fun PokeLdnApp(
     var destination by rememberSaveable { mutableStateOf(AppDestination.HOME) }
     var selectedGame by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedOperation by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedOption by rememberSaveable { mutableStateOf<String?>(null) }
     Scaffold(
         modifier = modifier,
         containerColor = ShellRed,
@@ -157,9 +174,10 @@ fun PokeLdnApp(
                 radioState = radioState,
                 keysState = prodKeysState,
                 backupStorageState = backupStorageState,
+                frlgOperationState = frlgOperationState,
+                saveBackupState = saveBackupState,
+                saveRestoreState = saveRestoreState,
                 onConnectEsp32 = onConnectEsp32,
-                onOpenGames = { destination = AppDestination.GAMES },
-                onOpenDiagnostics = { destination = AppDestination.DIAGNOSTICS },
                 modifier = Modifier.padding(innerPadding),
             )
             AppDestination.GAMES -> when {
@@ -206,14 +224,25 @@ fun PokeLdnApp(
                     modifier = Modifier.padding(innerPadding),
                 )
             }
-            AppDestination.OPTIONS -> OptionsScreen(
-                prodKeysState = prodKeysState,
-                onImportProdKeys = onImportProdKeys,
-                backupStorageState = backupStorageState,
-                onOpenBackupFolder = onOpenBackupFolder,
-                onChangeBackupFolder = onChangeBackupFolder,
-                modifier = Modifier.padding(innerPadding),
-            )
+            AppDestination.OPTIONS -> if (selectedOption == TRAINER_OPTION_ID) {
+                TrainerProfileScreen(
+                    profile = trainerProfile,
+                    onSave = onSaveTrainerProfile,
+                    onBack = { selectedOption = null },
+                    modifier = Modifier.padding(innerPadding),
+                )
+            } else {
+                OptionsScreen(
+                    trainerProfile = trainerProfile,
+                    onOpenTrainer = { selectedOption = TRAINER_OPTION_ID },
+                    prodKeysState = prodKeysState,
+                    onImportProdKeys = onImportProdKeys,
+                    backupStorageState = backupStorageState,
+                    onOpenBackupFolder = onOpenBackupFolder,
+                    onChangeBackupFolder = onChangeBackupFolder,
+                    modifier = Modifier.padding(innerPadding),
+                )
+            }
             AppDestination.DIAGNOSTICS -> DiagnosticsScreen(
                 result = result,
                 connectionState = connectionState,
@@ -339,14 +368,22 @@ private fun HomeScreen(
     radioState: Esp32RadioState,
     keysState: ProdKeysState,
     backupStorageState: FrlgBackupStorageUiState,
+    frlgOperationState: FrlgOperationState,
+    saveBackupState: FrlgSaveBackupUiState,
+    saveRestoreState: FrlgSaveRestoreUiState,
     onConnectEsp32: (String) -> Unit,
-    onOpenGames: () -> Unit,
-    onOpenDiagnostics: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val devices = (result as? UsbScanResult.Devices)?.items.orEmpty()
     val serialDevice = devices.firstOrNull { it.deviceName == connectionState.deviceName }
         ?: devices.firstOrNull { it.serialSupported }
+    val operations = listOf(
+        "Save Restore" to saveRestoreState.operation,
+        "Save Backup" to saveBackupState.operation,
+        "Walk Through Walls" to frlgOperationState,
+    )
+    val activeOperation = operations.firstOrNull { it.second.running }
+    val latestOperation = activeOperation ?: operations.firstOrNull { it.second.phase != FrlgOperationPhase.IDLE }
     CenteredDeviceList(modifier) {
         item { DeviceScreenTitle(null, "PokeLDN", "Connect, choose a game, and start an operation") }
         item {
@@ -378,9 +415,22 @@ private fun HomeScreen(
                     backupStorageState.latestBackupFilename ?: "None yet",
                     if (backupStorageState.latestBackupFilename != null) StatusTone.POSITIVE else StatusTone.NEUTRAL,
                 )
-                DeviceButton("Open games", onOpenGames, Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY)
-                Text("FireRed / LeafGreen tools are available in Games.", style = MaterialTheme.typography.bodySmall)
-                DeviceButton("Diagnostics", onOpenDiagnostics, Modifier.fillMaxWidth())
+                latestOperation?.let { (name, state) ->
+                    OverviewRow(
+                        "Latest operation",
+                        "$name: ${state.phase.label}",
+                        when (state.phase) {
+                            FrlgOperationPhase.COMPLETED -> StatusTone.POSITIVE
+                            FrlgOperationPhase.FAILED, FrlgOperationPhase.REFUSED -> StatusTone.ERROR
+                            FrlgOperationPhase.CANCELLED -> StatusTone.WARNING
+                            else -> if (state.running) StatusTone.WARNING else StatusTone.NEUTRAL
+                        },
+                    )
+                } ?: OverviewRow("Latest operation", "None yet", StatusTone.NEUTRAL)
+                activeOperation?.let { (name, state) ->
+                    OverviewRow("Current operation", "$name: ${state.phase.label}", StatusTone.WARNING)
+                    state.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                }
             }
         }
     }
@@ -493,13 +543,8 @@ private fun GamesScreen(
             DeviceScreenTitle(null, "Games", "Choose a supported game")
         }
         item {
-            BezelDisplay("FireRed / LeafGreen") {
-                DisplayStatus(
-                    if (radioState.phase == Esp32RadioPhase.READY) "ESP32 ready" else "ESP32 disconnected",
-                    if (radioState.phase == Esp32RadioPhase.READY) StatusTone.POSITIVE else StatusTone.NEUTRAL,
-                )
-                Text("Walk Through Walls, Save Backup, and Save Restore are available.", color = ScreenMuted)
-                StatusBadge("3 tools", StatusTone.POSITIVE)
+            ShellPanel("Status") {
+                OverviewRow("ESP32", if (radioState.phase == Esp32RadioPhase.READY) "Ready" else "Not ready", if (radioState.phase == Esp32RadioPhase.READY) StatusTone.POSITIVE else StatusTone.NEUTRAL)
             }
         }
         item {
@@ -524,6 +569,8 @@ private fun GamesScreen(
 
 @Composable
 private fun OptionsScreen(
+    trainerProfile: TrainerProfile,
+    onOpenTrainer: () -> Unit,
     prodKeysState: ProdKeysState,
     onImportProdKeys: () -> Unit,
     backupStorageState: FrlgBackupStorageUiState,
@@ -536,9 +583,14 @@ private fun OptionsScreen(
         item {
             ShellPanel("Trainer") {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Trainer profile", modifier = Modifier.weight(1f))
-                    StatusBadge("Planned", StatusTone.NEUTRAL)
+                    Text(
+                        if (trainerProfile.configured) trainerProfile.name else "Trainer profile",
+                        modifier = Modifier.weight(1f),
+                    )
+                    StatusBadge(if (trainerProfile.configured) "Configured" else "Not configured", if (trainerProfile.configured) StatusTone.POSITIVE else StatusTone.WARNING)
                 }
+                Text("App-wide identity for future game modules.", style = MaterialTheme.typography.bodySmall)
+                DeviceButton("Open Trainer", onOpenTrainer, Modifier.fillMaxWidth())
             }
         }
         item {
@@ -597,6 +649,88 @@ private fun OptionsScreen(
 }
 
 @Composable
+private fun TrainerProfileScreen(
+    profile: TrainerProfile,
+    onSave: (TrainerProfile) -> Unit,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var name by rememberSaveable(profile.name) { mutableStateOf(profile.name) }
+    var tid by rememberSaveable(profile.tid) { mutableStateOf(profile.tid?.toString().orEmpty()) }
+    var sid by rememberSaveable(profile.sid) { mutableStateOf(profile.sid?.toString().orEmpty()) }
+    var gender by rememberSaveable(profile.gender) { mutableStateOf(profile.gender) }
+    var language by rememberSaveable(profile.language) { mutableStateOf(profile.language) }
+    var genderMenu by rememberSaveable { mutableStateOf(false) }
+    var languageMenu by rememberSaveable { mutableStateOf(false) }
+    var feedback by rememberSaveable { mutableStateOf<String?>(null) }
+
+    val draft = TrainerProfile(name, tid.toIntOrNull(), sid.toIntOrNull(), gender, language)
+    val validationError = draft.normalized().validationError()
+    CenteredDeviceList(modifier) {
+        item { DeviceScreenTitle("Optionen / Trainer", "Trainer Profile", "App-wide identity for future game modules") }
+        item { DeviceButton("Back to Optionen", onBack, Modifier.fillMaxWidth()) }
+        item {
+            ShellPanel("Identity") {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it; feedback = null },
+                    label = { Text("Trainer name") },
+                    supportingText = { Text("Game modules may apply shorter name limits later.") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = tid,
+                        onValueChange = { if (it.length <= 5 && it.all(Char::isDigit)) tid = it; feedback = null },
+                        label = { Text("TID") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    OutlinedTextField(
+                        value = sid,
+                        onValueChange = { if (it.length <= 5 && it.all(Char::isDigit)) sid = it; feedback = null },
+                        label = { Text("SID") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                Box(Modifier.fillMaxWidth()) {
+                    DeviceButton("Gender: ${gender.label}", { genderMenu = true }, Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY)
+                    DropdownMenu(expanded = genderMenu, onDismissRequest = { genderMenu = false }) {
+                        TrainerGender.entries.forEach { choice ->
+                            DropdownMenuItem(text = { Text(choice.label) }, onClick = {
+                                gender = choice; genderMenu = false; feedback = null
+                            })
+                        }
+                    }
+                }
+                Box(Modifier.fillMaxWidth()) {
+                    DeviceButton("Language: ${language.label}", { languageMenu = true }, Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY)
+                    DropdownMenu(expanded = languageMenu, onDismissRequest = { languageMenu = false }) {
+                        TrainerLanguage.entries.forEach { choice ->
+                            DropdownMenuItem(text = { Text(choice.label) }, onClick = {
+                                language = choice; languageMenu = false; feedback = null
+                            })
+                        }
+                    }
+                }
+                validationError?.let { Text(it, color = ShellRedDark, style = MaterialTheme.typography.bodySmall) }
+                feedback?.let { Text(it, color = IndicatorGreen, fontWeight = FontWeight.Bold) }
+                DeviceButton(
+                    "Save profile",
+                    onClick = { onSave(draft.normalized()); feedback = "Trainer profile saved" },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = validationError == null,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun GameModulePanel(module: GameModule, onOpen: (() -> Unit)?, modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier,
@@ -613,12 +747,13 @@ private fun GameModulePanel(module: GameModule, onOpen: (() -> Unit)?, modifier:
             }
             Text(module.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
             Text(module.detail, style = MaterialTheme.typography.bodyMedium)
-            DeviceButton(
-                if (module.primary) "Open module" else "Coming later",
-                onClick = onOpen ?: {},
-                modifier = Modifier.fillMaxWidth(),
-                enabled = onOpen != null,
-            )
+            module.researchItems.forEach { item ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(item, modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                    StatusBadge("Research", StatusTone.NEUTRAL)
+                }
+            }
+            if (onOpen != null) DeviceButton("Open module", onOpen, Modifier.fillMaxWidth())
         }
     }
 }
@@ -675,8 +810,8 @@ private fun FrlgOperationsScreen(
                 OperationRow(
                     "Save Restore",
                     "Validate and write a selected .sav file.",
-                    "Experimental",
-                    StatusTone.WARNING,
+                    "Verified",
+                    StatusTone.POSITIVE,
                     onOpenSaveRestore,
                 )
             }
@@ -721,7 +856,7 @@ private fun SaveRestoreScreen(
         item { DeviceButton("Back to operations", onBack, Modifier.fillMaxWidth()) }
         item {
             ShellPanel("Selected save") {
-                StatusBadge("Experimental - first hardware test pending", StatusTone.WARNING)
+                StatusBadge("Physically verified", StatusTone.POSITIVE)
                 OverviewRow("1. Select save", state.filename ?: "No file selected", if (state.filename != null) StatusTone.POSITIVE else StatusTone.NEUTRAL)
                 state.filename?.let {
                     Text("Size: ${state.fileSize} bytes (${state.save?.size?.div(1024) ?: 0} KB)", style = MaterialTheme.typography.bodySmall)

@@ -193,13 +193,15 @@ Do not rely only on a live Switch for correctness.
 - The resident Walk Through Walls boost installs successfully and works on the console with the configured R-button activation.
 - A console-initiated network departure after the successful Mystery Gift close phase is valid completion behavior. Android must preserve the confirmed install result and report the operation as completed.
 - **FRLG Save Backup is physically verified for Pokémon LeafGreen / German.** Android received the complete 131072-byte flash image, verified a whole save slot and persisted the `.sav`. PKHeX opened the file and correctly parsed its cartridge, trainer, play time, money, Pokédex, party and Pokémon data.
+- **FRLG Save Restore is physically verified for Pokémon LeafGreen / German.** Android restored an edited, valid 131072-byte `.sav`; all 19 planned writes completed and the game loaded the restored save successfully.
+- The long-session restore freeze was fixed by latching the historical Reliable connect acknowledgement. Re-evaluating the original sequence after more than `0x8000` receive-sequence advancement could incorrectly suspend the session and its restore watchdog.
 
 ### Unit-tested or not yet physically verified
 
 - Protocol fixtures and edge cases for raw group CCMP receive, ARP, PIA, Reliable, RFU, LinkPlayer block delivery and Mystery Gift lifecycle are covered by Android unit tests.
-- **FRLG Save Restore is implemented and unit tested, but is not physically verified.** Real attempts used German LeafGreen and a known-good 131072-byte backup. Cartridge compatibility validation succeeded, but separate runs stalled around 11 / 19 and 12 / 19 before the Switch session ended. The game rejected the partially written target copy as damaged and loaded its previous backup copy, physically confirming the interrupted-slot safety strategy. Restore remains unverified until a complete real-cartridge restore succeeds.
 - Other FRLG cartridge and language variants represented by payload fixtures have not yet been physically verified through the Android workflow.
 - Other FRLG operations and other games remain planned or incomplete unless a later milestone records physical verification here.
+- Pokémon Legends: Z-A save inspection and save read/write are research targets only and have not been implemented or physically verified on Android.
 
 ## Repository structure
 

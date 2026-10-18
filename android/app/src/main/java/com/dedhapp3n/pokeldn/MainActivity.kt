@@ -68,6 +68,8 @@ import com.dedhapp3n.pokeldn.ldn.LdnDiscoveryController
 import com.dedhapp3n.pokeldn.ldn.LdnDiscoverySnapshot
 import com.dedhapp3n.pokeldn.ldn.LdnPiaStage
 import com.dedhapp3n.pokeldn.ldn.toEsp32AccessPointConfig
+import com.dedhapp3n.pokeldn.profile.TrainerProfile
+import com.dedhapp3n.pokeldn.profile.TrainerProfileStore
 import com.dedhapp3n.pokeldn.ui.PokeLdnApp
 import com.dedhapp3n.pokeldn.ui.theme.PokeLDNTheme
 import com.dedhapp3n.pokeldn.usb.UsbDeviceScanner
@@ -88,6 +90,7 @@ class MainActivity : ComponentActivity() {
     private val scanner by lazy { UsbDeviceScanner(this) }
     private lateinit var transport: UsbSerialTransport
     private val prodKeysStore by lazy { ProdKeysStore(this) }
+    private val trainerProfileStore by lazy { TrainerProfileStore(this) }
     private val backupFolder by lazy { AndroidFrlgBackupFolder(this) }
     private val backupStore by lazy {
         FrlgBackupStore(filesDir.resolve("frlg-backups"), externalDirectory = backupFolder::externalDirectory)
@@ -104,6 +107,7 @@ class MainActivity : ComponentActivity() {
     private var selectedDiagnosticBaud by mutableIntStateOf(UsbSerialTransport.BAUD_RATE)
     private var selectedReadBufferMode by mutableStateOf(RawReadBufferMode.REUSED)
     private var prodKeysState by mutableStateOf(ProdKeysState())
+    private var trainerProfile by mutableStateOf(TrainerProfile())
     private var ldnApTestState by mutableStateOf(LdnApTestState())
     private var frlgOperationState by mutableStateOf(FrlgOperationState())
     private var saveBackupState by mutableStateOf(FrlgSaveBackupUiState())
@@ -265,6 +269,7 @@ class MainActivity : ComponentActivity() {
         }
         foregroundOperationSubscription = FrlgOperationService.subscribe(::onForegroundOperationProgress)
         prodKeysState = prodKeysStore.state()
+        trainerProfile = trainerProfileStore.load()
         restoreLatestBackup()
         refreshBackupStorageState()
         enableEdgeToEdge()
@@ -298,6 +303,8 @@ class MainActivity : ComponentActivity() {
                     onCaptureRaw = ::captureRawSerial,
                     prodKeysState = prodKeysState,
                     onImportProdKeys = { prodKeysPicker.launch(arrayOf("text/plain", "application/octet-stream")) },
+                    trainerProfile = trainerProfile,
+                    onSaveTrainerProfile = { trainerProfile = trainerProfileStore.save(it) },
                     ldnApTestState = ldnApTestState,
                     onStartLdnApTest = ::startLdnApTest,
                     onStopLdnApTest = ::stopLdnApTest,
