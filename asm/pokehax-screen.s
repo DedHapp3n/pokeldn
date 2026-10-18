@@ -1,200 +1,276 @@
-@ Safe CLI_RUN_BUFFER_SCRIPT display test for FireRed/LeafGreen.
+@ Frame-driven, RAM/VRAM-only CLI_RUN_BUFFER_SCRIPT test for FRLG.
 @
-@ Uses only GBA I/O, palette, OAM, VRAM, stack, and the unused tail of
-@ gDecompressionBuffer. The OBJ tiles/OAM entries and display state touched by
-@ the overlay are restored before returning. No save block or cartridge flash
-@ address is read or written.
-@
-@ Client_RunBufferScript calls gDecompressionBuffer as
+@ Client_RunBufferScript calls this once per frame as
 @     u32 (*func)(u32 *param, struct SaveBlock2 *sav2, struct SaveBlock1 *sav1)
-@ r0 therefore points at the result word sent back by CLI_LOAD_TOSS_RESPONSE.
+@ The state lives in *param.  Every invocation is bounded: initialize/show,
+@ wait for an A release, wait for a new A press, restore, and return 1.
+@
+@ The display path mirrors asm/resident/overlay.inc: game-owned OAM and palette
+@ buffers are updated before VBlank, while OBJ tiles are written directly with
+@ 32-bit stores.  Interrupts are never disabled.  No save or flash address is
+@ read or written.
 
     .arm
     .text
     .global _start
 _start:
     stmdb   sp!, {r4-r11, lr}
-    mov     r10, r0                 @ result word
-    adr     r11, _start
-    add     r11, r11, #0x400        @ backup after the 1024-byte wire image
+    mov     r10, r0
+    ldr     r1, [r10]
+    ldr     r2, .Lstate_release
+    cmp     r1, r2
+    beq     .Lrelease
+    ldr     r2, .Lstate_press
+    cmp     r1, r2
+    beq     .Lpress
 
-    ldr     r4, =0x04000208         @ REG_IME
-    ldrh    r5, [r4]
-    strh    r5, [r11], #2
-    mov     r6, #0
-    strh    r6, [r4]                @ keep OAM stable while the overlay is up
-
-    ldr     r4, =0x04000000         @ REG_DISPCNT
-    ldrh    r5, [r4]
-    strh    r5, [r11], #2
-    ldr     r4, =0x05000000         @ backdrop color
-    ldrh    r5, [r4]
-    strh    r5, [r11], #2
-    ldr     r4, =0x050003E2         @ OBJ palette 15, color 1
-    ldrh    r5, [r4]
-    strh    r5, [r11], #2
-
-    ldr     r4, =0x070003C0         @ OAM entries 120..126
-    mov     r5, r11
-    mov     r6, #14                 @ 7 entries * 8 bytes
-1:  ldmia   r4!, {r7}
-    stmia   r5!, {r7}
-    subs    r6, r6, #1
-    bne     1b
-
-    ldr     r4, =0x06017900         @ OBJ tiles 968..1023
-    mov     r6, #0x1C0              @ 1792 bytes / 4
-2:  ldmia   r4!, {r7}
-    stmia   r5!, {r7}
-    subs    r6, r6, #1
-    bne     2b
-
-    ldr     r4, =0x04000000
-    ldr     r5, =0x00001040         @ OBJ enabled, 1D mapping, all BGs off
-    strh    r5, [r4]
-    ldr     r4, =0x05000000
-    mov     r5, #0
-    strh    r5, [r4]                @ black backdrop
-    ldr     r4, =0x050003E2
-    ldr     r5, =0x00007FFF
-    strh    r5, [r4]                @ white text
-
-    ldr     r4, =0x06017900
-    mov     r5, #0
-    mov     r6, #0x1C0
-3:  stmia   r4!, {r5}
-    subs    r6, r6, #1
-    bne     3b
-
-    ldr     r4, =0x070003C0
-    mov     r5, #0                   @ character index
-4:  ldr     r6, =0x00008040          @ tall OBJ, y = 64
-    strh    r6, [r4]
-    mov     r6, r5, lsl #4
-    add     r6, r6, #64
-    orr     r6, r6, #0x4000          @ size 1: 16 x 32
-    strh    r6, [r4, #2]
-    mov     r6, r5, lsl #3
-    add     r6, r6, #960
-    add     r6, r6, #8
-    orr     r6, r6, #0xF000          @ OBJ palette 15
-    strh    r6, [r4, #4]
-    mov     r6, #0
-    strh    r6, [r4, #6]
-    add     r4, r4, #8
-    add     r5, r5, #1
-    cmp     r5, #7
-    blo     4b
-
-    adr     r4, font
-    mov     r5, #0                   @ character
-char_loop:
-    mov     r6, #0                   @ row
-row_loop:
-    ldrb    r7, [r4], #1
-    mov     r8, #0                   @ column
-col_loop:
-    rsb     r9, r8, #4
-    mov     r9, r7, lsr r9
-    tst     r9, #1
-    beq     next_col
-    mov     r1, #0                   @ scale y
-scale_y:
-    mov     r2, #0                   @ scale x
-scale_x:
-    add     r3, r8, r8, lsl #1       @ x = column * 3 + scale x
-    add     r3, r3, r2
-    add     r9, r6, r6, lsl #1       @ y = row * 3 + scale y + 5
-    add     r9, r9, r1
-    add     r9, r9, #5
-    mov     r12, r9, lsr #3
-    add     r12, r12, r12            @ tile row * 2
-    add     r12, r12, r3, lsr #3
-    mov     r12, r12, lsl #5
-    and     r9, r9, #7
-    add     r12, r12, r9, lsl #2
-    mov     r9, r3, lsr #1
-    and     r9, r9, #3
-    add     r12, r12, r9
-    mov     r9, r5, lsl #8           @ 8 tiles / character
-    add     r12, r12, r9
-    ldr     r9, =0x06017900
-    add     r12, r12, r9
-    ldrb    r9, [r12]
-    tst     r3, #1
-    orreq   r9, r9, #1
-    orrne   r9, r9, #0x10
-    strb    r9, [r12]
-    add     r2, r2, #1
-    cmp     r2, #3
-    blo     scale_x
-    add     r1, r1, #1
-    cmp     r1, #3
-    blo     scale_y
-next_col:
-    add     r8, r8, #1
-    cmp     r8, #5
-    blo     col_loop
-    add     r6, r6, #1
-    cmp     r6, #7
-    blo     row_loop
-    add     r5, r5, #1
-    cmp     r5, #7
-    blo     char_loop
-
-    ldr     r4, =0x04000130          @ REG_KEYINPUT, bit 0 is A (active low)
-wait_release:
-    ldrh    r5, [r4]
-    tst     r5, #1
-    beq     wait_release
-wait_press:
-    ldrh    r5, [r4]
-    tst     r5, #1
-    bne     wait_press
-
-    ldr     r4, =0x04000000
-    mov     r5, #0x80                @ forced blank during restoration
-    strh    r5, [r4]
+    @ Backups live after the 1024-byte wire image in gDecompressionBuffer.
     adr     r11, _start
     add     r11, r11, #0x400
-    ldrh    r8, [r11], #2            @ saved IME
-    ldrh    r9, [r11], #2            @ saved DISPCNT
-    ldrh    r6, [r11], #2            @ saved backdrop
-    ldrh    r7, [r11], #2            @ saved OBJ color
 
-    ldr     r4, =0x070003C0
-    mov     r5, #14
-5:  ldmia   r11!, {r12}
-    stmia   r4!, {r12}
-    subs    r5, r5, #1
-    bne     5b
-    ldr     r4, =0x06017900
-    mov     r5, #0x1C0
-6:  ldmia   r11!, {r12}
-    stmia   r4!, {r12}
-    subs    r5, r5, #1
-    bne     6b
+    ldr     r4, .Lreg_dispcnt
+    ldrh    r5, [r4]
+    str     r5, [r11], #4
 
-    ldr     r4, =0x05000000
+    ldr     r4, .Lp_overlay_pal
+    sub     r5, r4, #2
+    ldr     r6, [r5]
+    str     r6, [r11], #4
+    sub     r5, r5, #0x400
+    ldr     r6, [r5]
+    str     r6, [r11], #4
+
+    ldr     r6, .Lobj_to_bg
+    sub     r5, r4, r6
+    ldrh    r6, [r5]
+    str     r6, [r11], #4
+    sub     r5, r5, #0x400
+    ldrh    r6, [r5]
+    str     r6, [r11], #4
+
+    @ Save all game OAM entries so the screen can be completely black.
+    ldr     r4, .Lp_overlay_oam
+    sub     r4, r4, #0x3C0
+    mov     r5, #256
+.Lsave_oam:
+    ldr     r6, [r4], #4
+    str     r6, [r11], #4
+    subs    r5, r5, #1
+    bne     .Lsave_oam
+
+    @ Save OBJ tiles 996..1023 (four 8x8 tiles per 16x16 glyph).
+    ldr     r4, .Ltile_base
+    mov     r5, #224
+.Lsave_tiles:
+    ldr     r6, [r4], #4
+    str     r6, [r11], #4
+    subs    r5, r5, #1
+    bne     .Lsave_tiles
+
+    bl      .Lmake_tiles
+    bl      .Ldraw
+    ldr     r1, .Lstate_release
+    str     r1, [r10]
+    b       .Lreturn_zero
+
+.Lrelease:
+    bl      .Ldraw
+    ldr     r4, .Lreg_keyinput
+    ldrh    r5, [r4]
+    tst     r5, #1
+    beq     .Lreturn_zero
+    ldr     r1, .Lstate_press
+    str     r1, [r10]
+    b       .Lreturn_zero
+
+.Lpress:
+    bl      .Ldraw
+    ldr     r4, .Lreg_keyinput
+    ldrh    r5, [r4]
+    tst     r5, #1
+    bne     .Lreturn_zero
+
+    @ Restore every touched byte before reporting completion.
+    adr     r11, _start
+    add     r11, r11, #0x400
+    ldr     r8, [r11], #4
+    ldr     r9, [r11], #4
+    ldr     r7, [r11], #4
+    ldr     r6, [r11], #4
+    ldr     r5, [r11], #4
+
+    ldr     r4, .Lp_overlay_oam
+    sub     r4, r4, #0x3C0
+    mov     r3, #256
+.Lrestore_oam:
+    ldr     r2, [r11], #4
+    str     r2, [r4], #4
+    subs    r3, r3, #1
+    bne     .Lrestore_oam
+
+    ldr     r4, .Ltile_base
+    mov     r3, #224
+.Lrestore_tiles:
+    ldr     r2, [r11], #4
+    str     r2, [r4], #4
+    subs    r3, r3, #1
+    bne     .Lrestore_tiles
+
+    ldr     r4, .Lp_overlay_pal
+    sub     r3, r4, #2
+    str     r9, [r3]
+    sub     r3, r3, #0x400
+    str     r7, [r3]
+    ldr     r3, .Lobj_to_bg
+    sub     r4, r4, r3
     strh    r6, [r4]
-    ldr     r4, =0x050003E2
-    strh    r7, [r4]
-    ldr     r4, =0x04000000
-    strh    r9, [r4]
-    ldr     r4, =0x04000208
+    sub     r4, r4, #0x400
+    strh    r5, [r4]
+    ldr     r4, .Lreg_dispcnt
     strh    r8, [r4]
 
     mov     r0, #1
-    str     r0, [r10]                @ success returned through Mystery Gift
+    str     r0, [r10]
     ldmia   sp!, {r4-r11, lr}
     bx      lr
 
-font:
-    .byte   0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10 @ P
-    .byte   0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E @ O
-    .byte   0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11 @ K
-    .byte   0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F @ E
-    .byte   0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 @ H
-    .byte   0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 @ A
-    .byte   0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11 @ X
+.Lreturn_zero:
+    mov     r0, #0
+    ldmia   sp!, {r4-r11, lr}
+    bx      lr
+
+@ Fill the 28 OBJ tiles with 3x5 glyphs scaled to 6x10 pixels.  Each complete
+@ 8-pixel row is emitted as one word; VRAM never receives a byte/halfword store.
+.Lmake_tiles:
+    ldr     r4, .Ltile_base
+    adr     r9, .Lfont
+    mov     r6, #0
+.Lchar_loop:
+    add     r2, r9, r6, lsl #1
+    ldrh    r8, [r2]
+    add     r5, r4, r6, lsl #7
+    mov     r7, #0
+.Lrow_loop:
+    ldr     r0, .Lblank_row
+    mov     r1, r0
+    cmp     r7, #3
+    blo     .Lstore_row
+    cmp     r7, #13
+    bhs     .Lstore_row
+    sub     r2, r7, #3
+    mov     r2, r2, lsr #1
+    add     r2, r2, r2, lsl #1
+    mov     r3, r8, lsr r2
+    tst     r3, #1
+    ldrne   r2, .Lleft_pair
+    subne   r0, r0, r2
+    tst     r3, #2
+    ldrne   r2, .Lmiddle_left
+    subne   r0, r0, r2
+    subne   r1, r1, #1
+    tst     r3, #4
+    ldrne   r2, .Lright_pair
+    subne   r1, r1, r2
+.Lstore_row:
+    cmp     r7, #8
+    addlo   r2, r5, r7, lsl #2
+    subhs   r2, r7, #8
+    addhs   r2, r5, r2, lsl #2
+    addhs   r2, r2, #64
+    str     r0, [r2]
+    str     r1, [r2, #32]
+    add     r7, r7, #1
+    cmp     r7, #16
+    blo     .Lrow_loop
+    add     r6, r6, #1
+    cmp     r6, #7
+    blo     .Lchar_loop
+    bx      lr
+
+@ Refresh game-owned display buffers every frame.  Mystery Gift/VBlank performs
+@ the actual OAM and palette transfer, exactly as for the resident overlay.
+.Ldraw:
+    ldr     r4, .Lreg_dispcnt
+    ldr     r5, .Lobj_only_dispcnt
+    strh    r5, [r4]
+
+    ldr     r4, .Lp_overlay_pal
+    ldr     r5, .Lpal_black_white
+    str     r5, [r4, #-2]
+    sub     r6, r4, #0x400
+    str     r5, [r6, #-2]
+    ldr     r6, .Lobj_to_bg
+    sub     r4, r4, r6
+    mov     r5, #0
+    strh    r5, [r4]
+    sub     r4, r4, #0x400
+    strh    r5, [r4]
+
+    @ Hide all game sprites, then use the overlay's proven slots 120..126.
+    ldr     r4, .Lp_overlay_oam
+    sub     r4, r4, #0x3C0
+    mov     r5, #128
+    mov     r6, #160
+    mov     r7, #0
+.Lhide_oam:
+    strh    r6, [r4]
+    strh    r7, [r4, #2]
+    str     r7, [r4, #4]
+    add     r4, r4, #8
+    subs    r5, r5, #1
+    bne     .Lhide_oam
+
+    ldr     r4, .Lp_overlay_oam
+    mov     r5, #0
+.Lshow_char:
+    mov     r6, #72
+    strh    r6, [r4]
+    mov     r6, r5, lsl #4
+    add     r6, r6, #64
+    orr     r6, r6, #0x4000
+    strh    r6, [r4, #2]
+    ldr     r6, .Lattr2_base
+    add     r6, r6, r5, lsl #2
+    strh    r6, [r4, #4]
+    strh    r7, [r4, #6]
+    add     r4, r4, #8
+    add     r5, r5, #1
+    cmp     r5, #7
+    blo     .Lshow_char
+    bx      lr
+
     .align  2
+.Lfont:
+    .hword  0x13EF, 0x7B6F, 0x5AED, 0x72CF
+    .hword  0x5BED, 0x5BEA, 0x5AAD
+    .align  2
+.Lstate_release:
+    .word   0x50485801
+.Lstate_press:
+    .word   0x50485802
+.Lreg_dispcnt:
+    .word   0x04000000
+.Lreg_keyinput:
+    .word   0x04000130
+.Ltile_base:
+    .word   0x06017C80
+.Lp_overlay_oam:
+    .word   0x030026C8
+.Lp_overlay_pal:
+    .word   0x020379D6
+.Lobj_to_bg:
+    .word   0x000003E2
+.Lobj_only_dispcnt:
+    .word   0x00001040
+.Lpal_black_white:
+    .word   0x7FFF0000
+.Lattr2_base:
+    .word   0x0000F3E4
+.Lblank_row:
+    .word   0x22222222
+.Lleft_pair:
+    .word   0x01100000
+.Lmiddle_left:
+    .word   0x10000000
+.Lright_pair:
+    .word   0x00000110

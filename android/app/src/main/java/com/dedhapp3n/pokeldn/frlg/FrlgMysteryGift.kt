@@ -151,7 +151,7 @@ internal class FrlgMysteryGiftEngine(
         }
         val payload = when (operation) {
             FrlgMysteryGiftOperation.WALK_THROUGH_WALLS -> requireNotNull(WalkThroughWallsPayloads.forGameCode(code))
-            FrlgMysteryGiftOperation.POKEHAX_SCREEN -> PokeHaxScreenPayload.image()
+            FrlgMysteryGiftOperation.POKEHAX_SCREEN -> requireNotNull(PokeHaxScreenPayload.forGameCode(code))
         }
         val expectedGame = if (code.startsWith("BPR")) "FireRed" else if (code.startsWith("BPG")) "LeafGreen" else null
         val language = mapOf('F' to "French", 'E' to "English", 'S' to "Spanish", 'D' to "German",
