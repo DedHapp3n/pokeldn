@@ -92,6 +92,13 @@ internal fun DiagnosticsScreen(
             item {
                 ShellPanel("Legends: Z-A reader") {
                     DetailLine("Stage", reader.phase)
+                    DetailLine("AP active", if (reader.discovery.apActive) "Yes" else "No")
+                    DetailLine("Advertisements queued / sent", "${reader.discovery.advertisementsQueued} / ${reader.discovery.advertisementsSent}")
+                    DetailLine("Advertisement protocol / format / bytes", "${reader.discovery.advertisementProtocol} / ${reader.discovery.advertisementFormat} / ${reader.discovery.advertisementSize}")
+                    DetailLine("Auth received / parsed / responded", "${reader.discovery.authenticationRequests} / ${reader.discovery.authenticationParsed} / ${reader.discovery.authenticationResponses}")
+                    DetailLine("Last auth status", reader.discovery.authenticationStatus?.toString() ?: "None")
+                    DetailLine("Stations joined", reader.discovery.stationJoined.toString())
+                    reader.discovery.lastManagement?.let { DetailLine("Last management source / subtype", it) }
                     DetailLine("Trainer", reader.snapshot.trainer?.name ?: "Waiting")
                     DetailLine("Unique previews", reader.snapshot.pokemon.size.toString())
                     DetailLine("Preview records", reader.snapshot.previewRecords.toString())

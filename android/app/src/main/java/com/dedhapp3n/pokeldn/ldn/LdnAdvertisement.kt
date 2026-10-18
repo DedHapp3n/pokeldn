@@ -3,8 +3,10 @@ package com.dedhapp3n.pokeldn.ldn
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.security.MessageDigest
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 class LdnDiscoveryNetwork internal constructor(
@@ -91,6 +93,7 @@ class LdnAdvertisementBuilder internal constructor(
         internal const val LDN_PROTOCOL = 3
         private const val NETWORK_VERSION = 4
         private const val ADVERTISE_FORMAT_AES_GCM = 3
+        private const val ADVERTISE_FORMAT_AES_CTR = 2
         private const val SECURITY_MODE_PROD = 1
         private const val ACCEPT_ALL = 0
         private const val PLATFORM_NX = 0
@@ -117,6 +120,7 @@ class LdnAdvertisementBuilder internal constructor(
             participants: List<LdnAdvertisedParticipant>,
             parameters: LdnHostParameters = LdnHostParameters(),
         ): ByteArray {
+            if (parameters.protocol == 1) return encodeProtocolOneActionFrame(keys, identity, nonce, participants, parameters)
             val networkId = ByteArrayOutputStream().apply {
                 writeU64(parameters.communicationId)
                 write(ByteArray(2))
@@ -171,6 +175,56 @@ class LdnAdvertisementBuilder internal constructor(
                 encrypted.copyOfRange(ciphertextSize, encrypted.size) +
                 encrypted.copyOfRange(0, ciphertextSize)
             return wrapActionFrame(identity.bssid, advertisement)
+        }
+
+        /** kinnay/LDN AdvertisementInfoEncoderV1: fixed 0x500 bytes, SHA-256, then AES-CTR. */
+        private fun encodeProtocolOneActionFrame(
+            keys: LdnProdKeys,
+            identity: LdnHostIdentity,
+            nonce: Int,
+            participants: List<LdnAdvertisedParticipant>,
+            parameters: LdnHostParameters,
+        ): ByteArray {
+            require(participants.size in 1..8 && identity.applicationData.size <= 384)
+            val networkId = ByteArrayOutputStream().apply {
+                writeU64(parameters.communicationId); write(ByteArray(2)); writeU16(parameters.sceneId)
+                write(ByteArray(4)); write(identity.ssid)
+            }.toByteArray()
+            val plaintext = ByteArrayOutputStream().apply {
+                write(identity.serverRandom)
+                writeU16(SECURITY_MODE_PROD); write(ACCEPT_ALL); write(0)
+                writeU16((BAND_2_4_GHZ shl 10) or parameters.channel)
+                write(parameters.maxParticipants); write(participants.size)
+                repeat(8) { index ->
+                    val participant = participants.getOrNull(index)
+                    if (participant == null) write(ByteArray(56)) else {
+                        require(participant.index == index && participant.ipAddress.size == 4 && participant.mac.size == 6)
+                        require(participant.name.size <= 32)
+                        write(participant.ipAddress); write(participant.mac); write(1); write(participant.platform)
+                        write(participant.name); write(ByteArray(32 - participant.name.size))
+                        writeU16(participant.appVersion); write(ByteArray(10))
+                    }
+                }
+                write(ByteArray(2)); writeU16(identity.applicationData.size)
+                write(identity.applicationData); write(ByteArray(384 - identity.applicationData.size))
+                write(ByteArray(412))
+                write(ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(identity.challengeToken).array())
+            }.toByteArray()
+            check(plaintext.size == 0x500)
+            val nonceBytes = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(nonce).array()
+            val header = ByteArrayOutputStream().apply {
+                write(networkId); write(NETWORK_VERSION); write(ADVERTISE_FORMAT_AES_CTR)
+                writeU16(plaintext.size); write(nonceBytes)
+            }.toByteArray()
+            val digest = MessageDigest.getInstance("SHA-256").digest(header + ByteArray(32) + plaintext)
+            val key = LdnKeyDerivation(keys, 1).deriveAdvertiseKey(networkId)
+            // PyCryptodome's MODE_CTR with a four-byte nonce starts at counter 0 (big endian).
+            val iv = nonceBytes + ByteArray(12)
+            val encrypted = Cipher.getInstance("AES/CTR/NoPadding").run {
+                init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
+                doFinal(digest + plaintext)
+            }
+            return wrapActionFrame(identity.bssid, ADVERTISEMENT_PREFIX + header + encrypted)
         }
 
         internal fun buildDiscoveryApplicationData(parentSessionId: ByteArray): ByteArray {

@@ -35,6 +35,7 @@ internal data class LdnAdvertisedParticipant(
     val mac: ByteArray,
     val platform: Int,
     val name: ByteArray,
+    val appVersion: Int = 0,
 )
 
 internal data class LdnAuthenticationOutcome(
@@ -183,6 +184,7 @@ internal class LdnAuthenticationHost(
                 mac = identity.bssid,
                 platform = PLATFORM_NX,
                 name = parameters.hostName,
+                appVersion = parameters.appVersion,
             )
         )
         participants.values.sortedBy(LdnParticipant::index).forEach { participant ->
@@ -192,6 +194,7 @@ internal class LdnAuthenticationHost(
                 mac = participant.mac,
                 platform = participant.platform,
                 name = participant.name,
+                appVersion = participant.appVersion,
             )
         }
         return LdnAdvertisementBuilder.encodeActionFrame(keys, identity, nonce, advertised, parameters)
@@ -226,7 +229,8 @@ internal data class LdnAuthenticationRequest(
 
 internal object LdnAuthenticationCodec {
     fun decodeRequest(keys: LdnProdKeys, data: ByteArray, parameters: LdnHostParameters = LdnHostParameters()): LdnAuthenticationRequest {
-        require(data.size >= OUTER_HEADER_SIZE + AUTH_HEADER_SIZE + GCM_TAG_SIZE) {
+        val plain = parameters.protocol == 1
+        require(data.size >= OUTER_HEADER_SIZE + AUTH_HEADER_SIZE + if (plain) 0 else GCM_TAG_SIZE) {
             "Authentication frame is too short"
         }
         require(data.copyOfRange(0, 3).contentEquals(NINTENDO_OUI)) { "Wrong authentication OUI" }
@@ -239,10 +243,10 @@ internal object LdnAuthenticationCodec {
         val payloadSize = (header[1].toInt() and 0xff) or ((header[4].toInt() and 0xff) shl 8)
         val statusCode = header[2].toInt() and 0xff
         val isResponse = header[3].toInt() != 0
-        require((header[5].toInt() and 0xff) == AUTH_FORMAT_AES_GCM) {
+        require((header[5].toInt() and 0xff) == if (plain) AUTH_FORMAT_PLAIN else AUTH_FORMAT_AES_GCM) {
             "Wrong authentication format"
         }
-        val expectedSize = OUTER_HEADER_SIZE + AUTH_HEADER_SIZE + GCM_TAG_SIZE + payloadSize
+        val expectedSize = OUTER_HEADER_SIZE + AUTH_HEADER_SIZE + (if (plain) 0 else GCM_TAG_SIZE) + payloadSize
         require(data.size == expectedSize) { "Authentication frame has wrong size" }
         val network = header.copyOfRange(8, 40)
         val localCommunicationId = ByteBuffer.wrap(network, 0, 8).order(ByteOrder.LITTLE_ENDIAN).long
@@ -251,18 +255,15 @@ internal object LdnAuthenticationCodec {
         val serverRandom = header.copyOfRange(40, 56)
         val clientRandom = header.copyOfRange(56, 72)
         val tagOffset = OUTER_HEADER_SIZE + AUTH_HEADER_SIZE
-        val tag = data.copyOfRange(tagOffset, tagOffset + GCM_TAG_SIZE)
-        val ciphertext = data.copyOfRange(tagOffset + GCM_TAG_SIZE, data.size)
-        val key = LdnKeyDerivation(keys, parameters.protocol)
-            .deriveAuthenticationKey(clientRandom)
-        val plaintext = Cipher.getInstance("AES/GCM/NoPadding").run {
-            init(
-                Cipher.DECRYPT_MODE,
-                SecretKeySpec(key, "AES"),
-                GCMParameterSpec(128, header.copyOfRange(0, 12)),
-            )
-            updateAAD(header)
-            doFinal(ciphertext + tag)
+        val plaintext = if (plain) data.copyOfRange(tagOffset, data.size) else {
+            val tag = data.copyOfRange(tagOffset, tagOffset + GCM_TAG_SIZE)
+            val ciphertext = data.copyOfRange(tagOffset + GCM_TAG_SIZE, data.size)
+            val key = LdnKeyDerivation(keys, parameters.protocol).deriveAuthenticationKey(clientRandom)
+            Cipher.getInstance("AES/GCM/NoPadding").run {
+                init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, header.copyOfRange(0, 12)))
+                updateAAD(header)
+                doFinal(ciphertext + tag)
+            }
         }
         require(plaintext.size >= REQUEST_BASE_SIZE) { "Authentication request payload is too short" }
         val username = plaintext.copyOfRange(0, 32).dropLastWhile { it == 0.toByte() }.toByteArray()
@@ -347,26 +348,21 @@ internal object LdnAuthenticationCodec {
             write(statusCode)
             write(1)
             write(payload.size ushr 8)
-            write(AUTH_FORMAT_AES_GCM)
+            write(if (parameters.protocol == 1) AUTH_FORMAT_PLAIN else AUTH_FORMAT_AES_GCM)
             write(ByteArray(2))
             write(networkId)
             write(identity.serverRandom)
             write(clientRandom)
         }.toByteArray()
-        val key = LdnKeyDerivation(keys, parameters.protocol)
-            .deriveAuthenticationKey(clientRandom)
+        if (parameters.protocol == 1) return NINTENDO_OUI + byteArrayOf(1, 2, 0) + header + payload
+        val key = LdnKeyDerivation(keys, parameters.protocol).deriveAuthenticationKey(clientRandom)
         val encrypted = Cipher.getInstance("AES/GCM/NoPadding").run {
-            init(
-                Cipher.ENCRYPT_MODE,
-                SecretKeySpec(key, "AES"),
-                GCMParameterSpec(128, header.copyOfRange(0, 12)),
-            )
+            init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, header.copyOfRange(0, 12)))
             updateAAD(header)
             doFinal(payload)
         }
         val ciphertextSize = encrypted.size - GCM_TAG_SIZE
-        return NINTENDO_OUI + byteArrayOf(1, 2, 0) + header +
-            encrypted.copyOfRange(ciphertextSize, encrypted.size) +
+        return NINTENDO_OUI + byteArrayOf(1, 2, 0) + header + encrypted.copyOfRange(ciphertextSize, encrypted.size) +
             encrypted.copyOfRange(0, ciphertextSize)
     }
 
@@ -395,6 +391,7 @@ internal object LdnAuthenticationCodec {
     }
 
     private const val AUTHENTICATION_FRAME_TYPE = 0x0102
+    private const val AUTH_FORMAT_PLAIN = 0
     private const val AUTH_FORMAT_AES_GCM = 1
     private const val NETWORK_VERSION = 4
     private const val PLATFORM_NX = 0

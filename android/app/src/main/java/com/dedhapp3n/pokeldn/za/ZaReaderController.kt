@@ -18,6 +18,22 @@ internal data class ZaReaderState(
     val current: ZaPokemonInfo? = null,
     val detail: String? = null,
     val terminal: Boolean = false,
+    val discovery: ZaDiscoveryStatus = ZaDiscoveryStatus(),
+)
+
+internal data class ZaDiscoveryStatus(
+    val apActive: Boolean = false,
+    val advertisementsQueued: Long = 0,
+    val advertisementsSent: Long = 0,
+    val advertisementProtocol: Int = 1,
+    val advertisementFormat: Int = 2,
+    val advertisementSize: Int = 0,
+    val authenticationRequests: Long = 0,
+    val authenticationParsed: Long = 0,
+    val authenticationResponses: Long = 0,
+    val authenticationStatus: Int? = null,
+    val stationJoined: Long = 0,
+    val lastManagement: String? = null,
 )
 
 /** Owns only the Z-A AP's read-only event loop; FRLG's discovery controller is untouched. */
@@ -45,12 +61,14 @@ internal class ZaReaderController(
     private var snapshot = initial
     private var current: ZaPokemonInfo? = null
     private var state = ZaReaderState(initial.linkCode.orEmpty(), "PREPARING NETWORK", initial)
+    private var discovery = ZaDiscoveryStatus(advertisementSize = network.authentication.currentAdvertisementFrame().size)
 
     fun start() = synchronized(lock) {
         check(!running)
         running = true
         subscription = radio.addOperationEventListener(operation, ::onEvent)
-        onState(state.copy(phase = "WAITING FOR Z-A"))
+        discovery = discovery.copy(apActive = true)
+        onState(state.copy(discovery = discovery))
         scheduled = scheduler.scheduleAtFixedRate({
             try { tick() } catch (error: Throwable) { fail(error) }
         }, 0, 17, TimeUnit.MILLISECONDS)
@@ -69,15 +87,19 @@ internal class ZaReaderController(
         val now = System.currentTimeMillis()
         if (now - lastAdvertisement >= 100) {
             check(radio.sendRaw(operation, network.authentication.currentAdvertisementFrame()))
+            discovery = discovery.copy(advertisementsQueued = discovery.advertisementsQueued + 1,
+                advertisementSize = network.authentication.currentAdvertisementFrame().size)
             lastAdvertisement = now
         }
         sendDatagrams(host.tick(now))
         if (host.departed && finishing) {
             stopLocked()
-            state = state.copy(phase = "COMPLETE", snapshot = snapshot, host = host.status, terminal = true)
+            state = state.copy(phase = "COMPLETE", snapshot = snapshot, host = host.status, terminal = true, discovery = discovery)
             onState(state)
-        } else if (now - lastPublished > 1000 && host.status != state.host) {
-            publish(host.status.phase)
+        } else if (now - lastPublished > 1000) {
+            val phase = if (state.phase == "PREPARING NETWORK" && discovery.advertisementsSent == 0L) state.phase
+                else if (host.status != state.host) host.status.phase else state.phase
+            publish(phase)
         }
     }
 
@@ -86,9 +108,13 @@ internal class ZaReaderController(
         try {
             when (event) {
                 is Esp32RadioEvent.LdnControlEthernet -> {
+                    discovery = discovery.copy(authenticationRequests = discovery.authenticationRequests + 1)
                     val result = network.authentication.process(event.source, event.payload)
+                    discovery = discovery.copy(authenticationParsed = discovery.authenticationParsed + if (result.requestParsed) 1 else 0,
+                        authenticationStatus = result.statusCode)
                     val response = event.source + event.target + byteArrayOf(0x88.toByte(), 0xb7.toByte()) + result.response
                     check(radio.sendEthernet(operation, response))
+                    discovery = discovery.copy(authenticationResponses = discovery.authenticationResponses + 1)
                     result.participant?.let { participant ->
                         peer = participant
                         host.participantJoined(participant, System.currentTimeMillis())
@@ -97,6 +123,7 @@ internal class ZaReaderController(
                 }
                 is Esp32RadioEvent.Ethernet -> acceptEthernet(event.frame)
                 is Esp32RadioEvent.ManagementFrame -> {
+                    discovery = discovery.copy(lastManagement = "${event.source.joinToString(":") { "%02x".format(it.toInt() and 255) }} / ${event.subtype}")
                     if (event.frameType == 2 && event.protectedFrame &&
                         peer?.mac?.contentEquals(event.source) == true && !event.toDs && !event.fromDs) {
                         runCatching { rawGroup.decode(event.frame).ethernet }.getOrNull()?.let(::acceptEthernet)
@@ -106,6 +133,11 @@ internal class ZaReaderController(
                     }
                 }
                 is Esp32RadioEvent.StationLeft -> if (peer?.mac?.contentEquals(event.mac) == true) finish()
+                is Esp32RadioEvent.StationJoined -> discovery = discovery.copy(stationJoined = discovery.stationJoined + 1)
+                is Esp32RadioEvent.TxDone -> if (event.payload.size >= 8 && event.payload.copyOfRange(4, 8).all { it == 0xff.toByte() }) {
+                    discovery = discovery.copy(advertisementsSent = discovery.advertisementsSent + 1)
+                    if (state.phase == "PREPARING NETWORK") publish("WAITING FOR Z-A", force = true)
+                }
                 else -> Unit
             }
         } catch (error: Throwable) { fail(error) }
@@ -145,7 +177,7 @@ internal class ZaReaderController(
         val now = System.currentTimeMillis()
         if (!force && now - lastPublished < 1000) return
         lastPublished = now
-        state = ZaReaderState(snapshot.linkCode.orEmpty(), phase, snapshot, host.status, current, snapshot.lastDecodeError, false)
+        state = ZaReaderState(snapshot.linkCode.orEmpty(), phase, snapshot, host.status, current, snapshot.lastDecodeError, false, discovery)
         onState(state)
     }
 
@@ -153,13 +185,14 @@ internal class ZaReaderController(
         if (!running) return@synchronized
         runCatching { snapshot = store.finish(snapshot) }
         stopLocked()
-        state = state.copy(phase = "FAILED", snapshot = snapshot, detail = error.message, terminal = true)
+        state = state.copy(phase = "FAILED", snapshot = snapshot, detail = error.message, terminal = true, discovery = discovery)
         onState(state)
         onFailure(error)
     }
 
     private fun stopLocked() {
         running = false
+        discovery = discovery.copy(apActive = false)
         scheduled?.cancel(false); scheduled = null
         subscription?.close(); subscription = null
         scheduler.shutdownNow()
