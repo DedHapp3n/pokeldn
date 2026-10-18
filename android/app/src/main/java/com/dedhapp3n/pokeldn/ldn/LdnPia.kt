@@ -70,6 +70,7 @@ internal class LdnPiaHost(
     private var rttSystemTime = 0x10000L
     private val rttPending = mutableMapOf<Long, Long>()
     private var lastReceiveMillis: Long? = null
+    private var suppressQuietRetransmits = true
     private var detail: String? = null
 
     fun participantJoined(value: LdnParticipant, nowMillis: Long) {
@@ -132,7 +133,9 @@ internal class LdnPiaHost(
         }
         if (stage == LdnPiaStage.ESTABLISHED) {
             val quiet = lastReceiveMillis?.let { nowMillis - it > QUIET_GATE_MS } == true
-            val emissions = reliable.poll(nowMillis).filterNot { quiet && it.retransmitted }
+            val emissions = filterQuietReliableEmissions(
+                reliable.poll(nowMillis), quiet, suppressQuietRetransmits,
+            )
             out += reliableDatagrams(emissions, carry = !quiet)
         }
         return out
@@ -231,6 +234,13 @@ internal class LdnPiaHost(
 
     val reliableOutstanding: Int get() = reliable.outstanding
 
+    /** Restore transfers must recover lost Reliable frames even while the GBA is busy and quiet. */
+    fun keepReliableRetransmitsWhileQuiet() {
+        suppressQuietRetransmits = false
+    }
+
+    internal val quietRetransmitsSuppressed: Boolean get() = suppressQuietRetransmits
+
     fun reset() {
         participant = null
         stage = LdnPiaStage.WAITING
@@ -249,6 +259,7 @@ internal class LdnPiaHost(
         nextRttMillis = Long.MAX_VALUE
         rttPending.clear()
         lastReceiveMillis = null
+        suppressQuietRetransmits = true
         nextPacketId = 2
         nextReliablePacketId = 2
         reliable.reset()
@@ -524,6 +535,12 @@ internal class LdnPiaHost(
 
     private data class PiaWireMessage(val protocol: Int, val payload: ByteArray, val flags: Int?)
 }
+
+internal fun filterQuietReliableEmissions(
+    emissions: List<LdnReliableEmission>,
+    quiet: Boolean,
+    suppressRetransmits: Boolean,
+): List<LdnReliableEmission> = emissions.filterNot { quiet && suppressRetransmits && it.retransmitted }
 
 internal class PiaNonceSequence(initial: ByteArray) {
     private var next = require(initial.size == 8) { "PIA nonce must be eight bytes" }.let {

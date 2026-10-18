@@ -102,6 +102,12 @@ data class LdnDiscoverySnapshot(
     val saveRestoreLoadResult: Int? = null,
     val saveRestoreSucceeded: Boolean = false,
     val saveRestoreTransferDiagnostics: String = "",
+    val saveRestoreCurrentPlanIndex: Int? = null,
+    val saveRestoreCurrentPlanTotal: Int = 0,
+    val saveRestoreLastProgressAtMillis: Long? = null,
+    val saveRestoreWaitingForResponse: Boolean = false,
+    val saveRestoreSenderActive: Boolean = false,
+    val saveRestoreBlocksRemaining: Int = 0,
     val latestActivity: String? = null,
 )
 
@@ -566,7 +572,13 @@ class LdnDiscoveryController internal constructor(
     }
 
     private fun updateFrlgSnapshotLocked() {
+        frlgHost?.updateEthernetCounters(
+            snapshot.ethernetFramesAccepted,
+            snapshot.ethernetTxCompleted,
+            snapshot.ethernetTxAcknowledged,
+        )
         val link = frlgHost?.snapshot() ?: return
+        val currentRestore = link.restore?.transferDiagnostics?.lastOrNull()
         if (link.linkPlayerExchanged && !applicationDataActivated) {
             activateApplicationData?.invoke()
             applicationDataActivated = true
@@ -618,6 +630,12 @@ class LdnDiscoveryController internal constructor(
             saveRestoreFailureMask = link.restore?.failureMask ?: snapshot.saveRestoreFailureMask,
             saveRestoreLoadResult = link.restore?.loadResult ?: snapshot.saveRestoreLoadResult,
             saveRestoreSucceeded = link.restore?.successful ?: snapshot.saveRestoreSucceeded,
+            saveRestoreCurrentPlanIndex = currentRestore?.planIndex,
+            saveRestoreCurrentPlanTotal = currentRestore?.total ?: snapshot.saveRestoreCurrentPlanTotal,
+            saveRestoreLastProgressAtMillis = currentRestore?.lastProgressAtMillis,
+            saveRestoreWaitingForResponse = currentRestore?.waitingForResponse == true,
+            saveRestoreSenderActive = currentRestore?.senderActive == true,
+            saveRestoreBlocksRemaining = currentRestore?.blocksRemaining ?: 0,
             saveRestoreTransferDiagnostics = link.restore?.transferDiagnostics?.joinToString("\n") { item ->
                 buildString {
                     append("restoreWrite=${item.planIndex}/${item.total}")
@@ -628,12 +646,20 @@ class LdnDiscoveryController internal constructor(
                     append(" messages=${item.messageCount}")
                     append(" chunks=${item.blockCount}")
                     append(" started=${item.startedAtMillis}")
-                    append(" response=${item.responseAtMillis ?: "waiting"}")
+                    append(" lastProgress=${item.lastProgressAtMillis}")
+                    append(" response=${item.responseAtMillis ?: "none"}")
                     append(" durationMs=${item.durationMillis ?: "waiting"}")
+                    append(" message=${item.currentMessageIndex}/${item.messageCount}")
+                    append(" block=${item.currentBlockIndex}/${item.blockCount}")
+                    append(" remaining=${item.blocksRemaining}")
+                    append(" senderActive=${item.senderActive}")
+                    append(" waitingResponse=${item.waitingForResponse}")
                     append(" failMask=${item.failureMask?.let { "0x" + it.toString(16).padStart(8, '0') } ?: "none"}")
                     append(" relOutstanding=${item.reliableOutstanding}")
+                    append(" relRxTx=${item.reliableReceived}/${item.reliableSent}")
                     append(" rfu=${item.rfuIn}/${item.rfuOut}")
-                    append(" status=${item.status}")
+                    append(" eth=${item.ethernetAccepted}/${item.ethernetCompleted}/${item.ethernetAcknowledged}")
+                    append(" result=${item.result}")
                 }
             } ?: snapshot.saveRestoreTransferDiagnostics,
             latestActivity = link.detail ?: snapshot.latestActivity,

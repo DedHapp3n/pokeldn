@@ -76,6 +76,21 @@ class FrlgSaveRestoreTest {
         }
     }
 
+    @Test fun `physical eleven and twelve write interruption points retain previous slot`() {
+        val wanted=FrlgSaveTest.syntheticSave(4,5,FrlgSave.Layout.LATIN)
+        val original=FrlgSaveTest.syntheticSave(100,101,FrlgSave.Layout.LATIN)
+        val originalNewest=requireNotNull(FrlgSave.describe(original).newest)
+        val plan=FrlgSave.sectorsToWrite(wanted,footers(original))
+        listOf(11,12).forEach{cut->
+            val interrupted=original.copyOf()
+            plan.take(cut).forEach{it.data.copyInto(interrupted,it.physicalSector*FrlgSave.SECTOR_SIZE)}
+            val summary=FrlgSave.describe(interrupted)
+            assertTrue("cut $cut must retain a whole slot",summary.sound)
+            assertEquals("cut $cut must load the old slot",originalNewest.index,summary.newest!!.index)
+            assertEquals(originalNewest.counter,summary.newest!!.counter)
+        }
+    }
+
     @Test fun `noisy sectors fit buffers reconstruct exactly and write twelve transitions cleanly to thirteen`() {
         val wanted=noisySave()
         val plan=FrlgSave.sectorsToWrite(wanted,footers(FrlgSaveTest.syntheticSave(100,101,FrlgSave.Layout.LATIN)))

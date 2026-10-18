@@ -106,6 +106,31 @@ class LdnPiaTest {
     }
 
     @Test
+    fun restorePolicyKeepsDueReliableRetransmitsWhenConsoleIsQuiet() {
+        val retransmit = LdnReliableEmission(1, RELIABLE_FLAGS_DATA, 0, byteArrayOf(1), retransmitted = true)
+        val fresh = LdnReliableEmission(2, RELIABLE_FLAGS_DATA, 0, byteArrayOf(2))
+        assertEquals(listOf(fresh), filterQuietReliableEmissions(listOf(retransmit, fresh), quiet = true, suppressRetransmits = true))
+        assertEquals(
+            listOf(retransmit, fresh),
+            filterQuietReliableEmissions(listOf(retransmit, fresh), quiet = true, suppressRetransmits = false),
+        )
+
+        fun established(): LdnPiaHost = host().also {
+            it.participantJoined(participant, 0)
+            it.receive(SESSION_JOIN.hex(), participant.ipAddress, 20)
+            it.receive(SESSION_ACK.hex(), participant.ipAddress, 30)
+        }
+        val normal = established()
+        normal.openReliable(byteArrayOf(1, 2, 3), 31)
+        assertTrue(normal.tick(400).isEmpty())
+
+        val restore = established()
+        restore.keepReliableRetransmitsWhileQuiet()
+        restore.openReliable(byteArrayOf(1, 2, 3), 31)
+        assertTrue(restore.tick(400).isNotEmpty())
+    }
+
+    @Test
     fun minimumUdpTransportConsumesOneDatagramAndAnswersArp() {
         val hostTransport = LdnPiaUdpTransport("169.254.88.1", hostMac)
         val consoleTransport = LdnPiaUdpTransport("169.254.88.2", consoleMac)

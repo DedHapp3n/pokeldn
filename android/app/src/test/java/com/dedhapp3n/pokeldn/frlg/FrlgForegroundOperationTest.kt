@@ -4,16 +4,20 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.nio.file.Files
 
 class FrlgForegroundOperationTest {
     @Test fun `notification restore progress advances from twelve to thirteen`() {
         val twelve = FrlgForegroundProgress(
             FrlgForegroundKind.SAVE_RESTORE, FrlgOperationPhase.RESTORING_SAVE,
             cartridge = "LeafGreen / German", completed = 11, total = 19,
+            restorePlanIndex = 12, restorePlanTotal = 19, restoreLastProgressAtMillis = 1_000,
         )
-        val thirteen = twelve.copy(completed = 12)
-        assertEquals("Writing sector 12 / 19", FrlgOperationNotificationText.text(twelve))
-        assertEquals("Writing sector 13 / 19", FrlgOperationNotificationText.text(thirteen))
+        val thirteen = twelve.copy(completed = 12, restorePlanIndex = 13, restoreWaitingForResponse = true)
+        assertEquals("Sector 12 / 19 - sending", FrlgOperationNotificationText.text(twelve, 5_000))
+        assertEquals("Sector 13 / 19 - verifying", FrlgOperationNotificationText.text(thirteen, 5_000))
+        assertEquals("Sector 13 / 19 - no progress for 45 s", FrlgOperationNotificationText.text(thirteen, 46_000))
+        assertEquals(12, thirteen.completed)
         assertEquals("PokeLDN - Restoring LeafGreen", FrlgOperationNotificationText.title(twelve))
     }
 
@@ -39,14 +43,58 @@ class FrlgForegroundOperationTest {
         }
     }
 
-    @Test fun `silent restore response watchdog expires once and can be reset`() {
-        val watchdog = FrlgRestoreResponseWatchdog(120_000)
+    @Test fun `wake lock remains held throughout restore writing`() {
+        val power = FakePower(); val sink = FakeSink(); val lease = FrlgForegroundLease(power, sink)
+        lease.begin(FrlgForegroundProgress(FrlgForegroundKind.SAVE_RESTORE, FrlgOperationPhase.RESTORING_SAVE))
+        repeat(20) {
+            lease.update(FrlgForegroundProgress(FrlgForegroundKind.SAVE_RESTORE, FrlgOperationPhase.RESTORING_SAVE))
+        }
+        assertTrue(lease.active)
+        assertEquals(1, power.acquired)
+        assertEquals(0, power.released)
+    }
+
+    @Test fun `restore progress watchdog covers queued blocks active sender and response wait`() {
+        listOf("queued-blocks", "sender-active", "response-wait").forEach { state ->
+            val watchdog = FrlgRestoreProgressWatchdog(120_000)
+            watchdog.begin(1_000)
+            assertFalse("$state expired early", watchdog.expired(120_999))
+            assertTrue("$state did not expire", watchdog.expired(121_000))
+        }
+    }
+
+    @Test fun `meaningful progress resets watchdog but timer ticks do not`() {
+        val watchdog = FrlgRestoreProgressWatchdog(120_000)
         watchdog.begin(1_000)
         assertFalse(watchdog.expired(120_999))
+        // Checking/ticking time does not mutate the forward-progress clock.
         assertTrue(watchdog.expired(121_000))
+        watchdog.progress(121_000)
+        assertFalse(watchdog.expired(240_999))
+        assertTrue(watchdog.expired(241_000))
         watchdog.complete()
         assertFalse(watchdog.active)
         assertFalse(watchdog.expired(Long.MAX_VALUE))
+    }
+
+    @Test fun `reliable retransmit output alone does not fake restore forward progress`() {
+        assertFalse(restoreTransportAdvanced(6, 6, 20, 20, 30, 30))
+        assertTrue(restoreTransportAdvanced(6, 5, 20, 20, 30, 30))
+        assertTrue(restoreTransportAdvanced(6, 6, 20, 21, 30, 30))
+        assertTrue(restoreTransportAdvanced(6, 6, 20, 20, 30, 31))
+    }
+
+    @Test fun `persistent restore trace survives operation cleanup`() {
+        val directory = Files.createTempDirectory("restore-trace").toFile()
+        try {
+            val store = FrlgRestoreTraceStore(directory.resolve(FrlgRestoreTraceStore.FILE_NAME))
+            val trace = "restoreWrite=12/19 result=timeout-send"
+            store.replace(trace)
+            // Foreground cleanup intentionally performs no clear.
+            assertEquals(trace, FrlgRestoreTraceStore(directory.resolve(FrlgRestoreTraceStore.FILE_NAME)).load())
+        } finally {
+            directory.deleteRecursively()
+        }
     }
 
     @Test fun `peer departure only completes after successful restore entered close`() {

@@ -50,7 +50,7 @@ internal class FrlgSaveRestoreEngine(
     private fun acceptFooters(bytes:ByteArray){ plan=FrlgSave.sectorsToWrite(save,bytes); total=plan.size; planAt=0; stage=Stage.WRITING; detail="Restoring sector 1 of $total"; writeNext() }
     private fun writeNext(){ if(planAt>=plan.size)return finishWrites(); val item=plan[planAt]; val messages=dataMessages(item.physicalSector,item.data); val script=sectorScript(messages.size)
         val erased=item.data.all{it==0xff.toByte()};val id=if(erased||item.physicalSector>=28)null else FrlgSave.footer(item.data,0).id
-        currentWrite=WritePlanInfo(planAt+1,total,item.physicalSector,id,when{item.physicalSector>=28->WriteKind.EXTRA;erased->WriteKind.ERASE;id==0->WriteKind.ID0;else->WriteKind.NORMAL},messages.sumOf{it.size-12},messages.size,MgMessage.build(CLIENT_SCRIPT,script).size+messages.sumOf{MgMessage.build(NEWS,it).size})
+        currentWrite=WritePlanInfo(planAt+1,total,item.physicalSector,id,when{item.physicalSector>=28->WriteKind.EXTRA;erased->WriteKind.ERASE;id==0->WriteKind.ID0;else->WriteKind.NORMAL},messages.sumOf{it.size-12},messages.size+1,MgMessage.build(CLIENT_SCRIPT,script).size+messages.sumOf{MgMessage.build(NEWS,it).size})
         sendSequence(listOf(Action.Send(CLIENT_SCRIPT,script))+messages.map{Action.Send(NEWS,it)}){ writesStarted=true; receive(RESPONSE){acceptWriteStatus(item.physicalSector,it)} }
     }
     private fun acceptWriteStatus(sector:Int,status:ByteArray){ val failed=if(status.size>=4)u32(status,0) else 0xffffffffL; if(failed!=0L){failureMask=failed;detail="Sector $sector readback failed (0x${failed.toString(16).padStart(8,'0')})";stage=Stage.FAILED;return end(NOT_RESTORED,false)}; written++; planAt++; detail="Restored $written of $total sectors";writeNext() }

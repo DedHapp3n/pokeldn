@@ -36,6 +36,7 @@ internal class FrlgHostLink(
 ) {
     init {
         require(listOf(runWalkThroughWalls, runSaveBackup, restoreSave != null).count { it } <= 1) { "Only one FRLG operation may own a host link" }
+        if (restoreSave != null) pia.keepReliableRetransmitsWhileQuiet()
     }
 
     private val rfu = FrlgRfuLeader(parentSessionId)
@@ -89,7 +90,15 @@ internal class FrlgHostLink(
             restore?.markDisconnected()
             return pia.sendReliable(payload, nowMillis)
         }
-        restore?.updateTransportCounters(pia.reliableOutstanding, rfu.uniIn, rfu.uniOut)
+        pia.snapshot().let { piaState ->
+            restore?.updateTransportCounters(
+                pia.reliableOutstanding,
+                piaState.reliableFramesReceived,
+                piaState.reliableFramesSent,
+                rfu.uniIn,
+                rfu.uniOut,
+            )
+        }
         restore?.checkLiveness()
         if (pia.reliableOutstanding >= 6) return emptyList()
         val linkPlayerWirePhase = gift == null && backup == null && restore == null && link.stage == FrlgLinkStage.SENDING_HOST
@@ -158,6 +167,10 @@ internal class FrlgHostLink(
 
     fun close(nowMillis: Long): List<LdnPiaDatagram> =
         rfu.disconnect()?.let { pia.sendReliable(it, nowMillis) }.orEmpty()
+
+    fun updateEthernetCounters(accepted: Long, completed: Long, acknowledged: Long) {
+        restore?.updateEthernetCounters(accepted, completed, acknowledged)
+    }
 
     private fun ensureOperation() {
         if ((!runWalkThroughWalls && !runSaveBackup && restoreSave == null) || gift != null || backup != null || restore != null || !link.readyForGift) return

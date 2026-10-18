@@ -93,7 +93,7 @@ internal fun DiagnosticsScreen(
                     DetailLine("Stage", frlgOperationState.phase.label)
                     frlgOperationState.detail?.let { DetailLine("Result", it) }
                     DeviceButton(
-                        "Copy FRLG diagnostics",
+                        if (diagnostics.contains("restoreWrite=")) "Copy restore trace" else "Copy FRLG diagnostics",
                         { clipboard.setText(AnnotatedString(diagnostics)) },
                         Modifier.fillMaxWidth(),
                         style = DeviceButtonStyle.SECONDARY,

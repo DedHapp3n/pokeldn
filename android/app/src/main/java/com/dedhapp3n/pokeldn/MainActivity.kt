@@ -58,6 +58,7 @@ import com.dedhapp3n.pokeldn.frlg.FrlgSaveRestoreUiState
 import com.dedhapp3n.pokeldn.frlg.FrlgForegroundKind
 import com.dedhapp3n.pokeldn.frlg.FrlgForegroundProgress
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationService
+import com.dedhapp3n.pokeldn.frlg.FrlgRestoreTraceStore
 import com.dedhapp3n.pokeldn.frlg.finishAfterPersistence
 import com.dedhapp3n.pokeldn.frlg.frlgProtocolDiagnostics
 import com.dedhapp3n.pokeldn.ldn.LdnAdvertisementBuilder
@@ -250,6 +251,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         transport = FrlgOperationService.ownedTransport() ?: UsbSerialTransport(usbManager)
         FrlgOperationService.restoreSelection()?.let { saveRestoreState = it }
+        if (!FrlgOperationService.isActive()) {
+            FrlgRestoreTraceStore(filesDir.resolve(FrlgRestoreTraceStore.FILE_NAME)).load()?.let { trace ->
+                saveRestoreState = saveRestoreState.copy(
+                    operation = saveRestoreState.operation.copy(diagnostics = trace),
+                )
+            }
+        }
         FrlgOperationService.ownedSession()?.let {
             installRadioSession(it)
             connectionState = SerialConnectionState(phase = SerialConnectionPhase.CONNECTED)

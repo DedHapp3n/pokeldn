@@ -197,7 +197,7 @@ Do not rely only on a live Switch for correctness.
 ### Unit-tested or not yet physically verified
 
 - Protocol fixtures and edge cases for raw group CCMP receive, ARP, PIA, Reliable, RFU, LinkPlayer block delivery and Mystery Gift lifecycle are covered by Android unit tests.
-- **FRLG Save Restore is implemented and unit tested, but is not physically verified.** The first physical attempt used German LeafGreen and a known-good 131072-byte backup. Cartridge compatibility validation succeeded and the restore reached 12 / 19 sectors before the Switch ended the connection with error 2318-0006. Android did not reliably detect that loss in the tested build. The restore remains unverified until a complete real-cartridge restore succeeds.
+- **FRLG Save Restore is implemented and unit tested, but is not physically verified.** Real attempts used German LeafGreen and a known-good 131072-byte backup. Cartridge compatibility validation succeeded, but separate runs stalled around 11 / 19 and 12 / 19 before the Switch session ended. The game rejected the partially written target copy as damaged and loaded its previous backup copy, physically confirming the interrupted-slot safety strategy. Restore remains unverified until a complete real-cartridge restore succeeds.
 - Other FRLG cartridge and language variants represented by payload fixtures have not yet been physically verified through the Android workflow.
 - Other FRLG operations and other games remain planned or incomplete unless a later milestone records physical verification here.
 

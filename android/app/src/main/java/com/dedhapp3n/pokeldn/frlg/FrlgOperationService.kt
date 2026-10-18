@@ -38,6 +38,10 @@ data class FrlgForegroundProgress(
     val completed: Int = 0,
     val total: Int = 0,
     val snapshot: LdnDiscoverySnapshot? = null,
+    val restorePlanIndex: Int? = null,
+    val restorePlanTotal: Int = 0,
+    val restoreWaitingForResponse: Boolean = false,
+    val restoreLastProgressAtMillis: Long? = null,
 ) {
     val terminal: Boolean get() = phase in setOf(
         FrlgOperationPhase.COMPLETED, FrlgOperationPhase.FAILED, FrlgOperationPhase.CANCELLED, FrlgOperationPhase.REFUSED,
@@ -54,7 +58,9 @@ internal object FrlgOperationNotificationText {
         else -> "PokeLDN - Walk Through Walls"
     }
 
-    fun text(progress: FrlgForegroundProgress): String = when {
+    fun text(progress: FrlgForegroundProgress, nowMillis: Long = System.currentTimeMillis()): String = when {
+        progress.phase == FrlgOperationPhase.FAILED && progress.kind == FrlgForegroundKind.SAVE_RESTORE && progress.restorePlanIndex != null ->
+            "Restore failed at sector ${progress.restorePlanIndex} / ${progress.restorePlanTotal}"
         progress.phase == FrlgOperationPhase.FAILED -> progress.detail ?: "Operation failed"
         progress.phase == FrlgOperationPhase.REFUSED -> progress.detail ?: "Operation refused"
         progress.phase == FrlgOperationPhase.COMPLETED -> progress.detail ?: "Operation complete"
@@ -63,7 +69,15 @@ internal object FrlgOperationNotificationText {
         progress.phase == FrlgOperationPhase.READING_CARTRIDGE && progress.kind == FrlgForegroundKind.SAVE_BACKUP -> "Reading cartridge"
         progress.phase == FrlgOperationPhase.RECEIVING_SAVE && progress.kind == FrlgForegroundKind.SAVE_BACKUP && progress.total > 0 ->
             "${progress.completed / 1024} / ${progress.total / 1024} KB"
-        progress.phase == FrlgOperationPhase.RESTORING_SAVE && progress.total > 0 -> "Writing sector ${progress.completed + 1} / ${progress.total}"
+        progress.phase == FrlgOperationPhase.RESTORING_SAVE && progress.restorePlanIndex != null -> {
+            val action = if (progress.restoreWaitingForResponse) "verifying" else "sending"
+            val quietSeconds = progress.restoreLastProgressAtMillis?.let {
+                ((nowMillis - it).coerceAtLeast(0) / 1000).toInt()
+            } ?: 0
+            "Sector ${progress.restorePlanIndex} / ${progress.restorePlanTotal} - " +
+                if (quietSeconds >= 10) "no progress for $quietSeconds s" else action
+        }
+        progress.phase == FrlgOperationPhase.RESTORING_SAVE && progress.total > 0 -> "Sector ${progress.completed + 1} / ${progress.total} - sending"
         progress.phase == FrlgOperationPhase.LOADING_RESTORED_SAVE -> "Loading restored save"
         progress.total > 0 -> "${progress.completed} / ${progress.total} sectors"
         else -> progress.detail ?: progress.phase.label
@@ -114,8 +128,12 @@ class FrlgOperationService : Service() {
 
     private val binder = LocalBinder()
     private val cleanupWorker = Executors.newSingleThreadExecutor()
+    private val traceWorker = Executors.newSingleThreadExecutor()
     private var owned: OwnedOperation? = null
     private var radioSubscription: AutoCloseable? = null
+    private lateinit var traceStore: FrlgRestoreTraceStore
+    private var lastNotificationSignature: String? = null
+    private var lastTracePersistAtMillis = 0L
     @Volatile private var cleanupStarted = false
     private val detachReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -138,6 +156,7 @@ class FrlgOperationService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        traceStore = FrlgRestoreTraceStore(filesDir.resolve(FrlgRestoreTraceStore.FILE_NAME))
         ContextCompat.registerReceiver(
             this, detachReceiver, IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED), ContextCompat.RECEIVER_EXPORTED,
         )
@@ -152,6 +171,14 @@ class FrlgOperationService : Service() {
             },
             object : FrlgForegroundSink {
                 override fun update(progress: FrlgForegroundProgress) {
+                    val signature = listOf(
+                        FrlgOperationNotificationText.title(progress),
+                        FrlgOperationNotificationText.text(progress),
+                        progress.completed,
+                        progress.total,
+                    ).joinToString("|")
+                    if (leaseStarted && signature == lastNotificationSignature) return
+                    lastNotificationSignature = signature
                     val notification = notification(progress)
                     if (!leaseStarted) {
                         startForeground(NOTIFICATION_ID, notification)
@@ -161,6 +188,7 @@ class FrlgOperationService : Service() {
                 override fun stop() {
                     if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_DETACH) else @Suppress("DEPRECATION") stopForeground(false)
                     leaseStarted = false
+                    lastNotificationSignature = null
                 }
             },
         )
@@ -195,6 +223,7 @@ class FrlgOperationService : Service() {
         radioSubscription?.close()
         radioSubscription = null
         cleanupWorker.shutdownNow()
+        traceWorker.shutdownNow()
         runCatching { unregisterReceiver(detachReceiver) }
         if (instance === this) instance = null
         super.onDestroy()
@@ -240,6 +269,7 @@ class FrlgOperationService : Service() {
                 phase = if (cleanupError == null) terminal else FrlgOperationPhase.FAILED,
                 detail = cleanupError?.let { "$detail; adapter cleanup failed: ${it.message}" } ?: detail,
             ) ?: return@execute
+            persistRestoreProgress(final)
             if (cleanupError == null) {
                 retainedTransport = operation.transport
                 retainedSession = operation.session
@@ -259,6 +289,28 @@ class FrlgOperationService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "PokeLDN operations", NotificationManager.IMPORTANCE_LOW),
         )
+    }
+
+    private fun persistRestoreProgress(progress: FrlgForegroundProgress) {
+        if (progress.kind != FrlgForegroundKind.SAVE_RESTORE) return
+        val trace = progress.snapshot?.saveRestoreTransferDiagnostics.orEmpty()
+        if (trace.isBlank()) return
+        val now = System.currentTimeMillis()
+        if (!progress.terminal && now - lastTracePersistAtMillis < TRACE_PERSIST_INTERVAL_MS) return
+        lastTracePersistAtMillis = now
+        val content = buildString {
+            appendLine("phase=${progress.phase} detail=${progress.detail ?: "none"}")
+            appendLine("cartridge=${progress.cartridge ?: "unknown"} completed=${progress.completed}/${progress.total}")
+            append(trace)
+        }
+        // Never make the time-sensitive RFU scheduler wait for app-private file I/O.
+        if (progress.terminal) {
+            // Cleanup runs off the protocol scheduler. Serialize the final write after any
+            // queued heartbeat trace so stale progress can never overwrite the terminal result.
+            traceWorker.submit { traceStore.replace(content) }.get()
+        } else {
+            traceWorker.execute { traceStore.replace(content) }
+        }
     }
 
     private fun notification(progress: FrlgForegroundProgress): Notification {
@@ -285,6 +337,7 @@ class FrlgOperationService : Service() {
     companion object {
         private const val CHANNEL_ID = "pokeldn_operations"
         private const val NOTIFICATION_ID = 0x504f4b45
+        private const val TRACE_PERSIST_INTERVAL_MS = 1_000L
         @Volatile private var instance: FrlgOperationService? = null
         @Volatile private var pendingOwned: OwnedOperation? = null
         @Volatile private var pendingProgress: FrlgForegroundProgress? = null
@@ -296,6 +349,10 @@ class FrlgOperationService : Service() {
         private var leaseStarted = false
 
         fun begin(context: Context, progress: FrlgForegroundProgress) {
+            if (progress.kind == FrlgForegroundKind.SAVE_RESTORE) {
+                FrlgRestoreTraceStore(context.filesDir.resolve(FrlgRestoreTraceStore.FILE_NAME)).clear()
+                instance?.lastTracePersistAtMillis = 0L
+            }
             pendingProgress = progress
             currentProgress = progress
             ContextCompat.startForegroundService(context, Intent(context, FrlgOperationService::class.java))
@@ -367,7 +424,12 @@ class FrlgOperationService : Service() {
                     else -> previous.total
                 },
                 snapshot = snapshot,
+                restorePlanIndex = snapshot.saveRestoreCurrentPlanIndex,
+                restorePlanTotal = snapshot.saveRestoreCurrentPlanTotal,
+                restoreWaitingForResponse = snapshot.saveRestoreWaitingForResponse,
+                restoreLastProgressAtMillis = snapshot.saveRestoreLastProgressAtMillis,
             )
+            if (!next.terminal) instance?.persistRestoreProgress(next)
             if (next.terminal) {
                 publish(next.copy(phase = FrlgOperationPhase.RETURNING_TO_READY))
                 finish(next.phase, requireNotNull(next.detail))
