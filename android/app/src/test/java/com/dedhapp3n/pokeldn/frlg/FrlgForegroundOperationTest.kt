@@ -80,8 +80,28 @@ class FrlgForegroundOperationTest {
     @Test fun `reliable retransmit output alone does not fake restore forward progress`() {
         assertFalse(restoreTransportAdvanced(6, 6, 20, 20, 30, 30))
         assertTrue(restoreTransportAdvanced(6, 5, 20, 20, 30, 30))
-        assertTrue(restoreTransportAdvanced(6, 6, 20, 21, 30, 30))
-        assertTrue(restoreTransportAdvanced(6, 6, 20, 20, 30, 31))
+        assertFalse(restoreTransportAdvanced(6, 6, 20, 21, 30, 30))
+        assertFalse(restoreTransportAdvanced(6, 6, 20, 20, 30, 31))
+    }
+
+    @Test fun `UI publication is semantic and throttled without dropping protocol ticks`() {
+        val gate = FrlgUiPublicationGate(250)
+        val base = FrlgForegroundProgress(
+            FrlgForegroundKind.SAVE_RESTORE, FrlgOperationPhase.RESTORING_SAVE,
+            restorePlanIndex = 11, restorePlanTotal = 19,
+        )
+        var protocolTicks = 0
+        var publications = 0
+        repeat(1_000) { now ->
+            protocolTicks++
+            if (gate.shouldPublish(base, now.toLong())) publications++
+        }
+        assertEquals(1_000, protocolTicks)
+        assertEquals(4, publications)
+
+        assertTrue(gate.shouldPublish(base.copy(restorePlanIndex = 12), 1_001))
+        assertTrue(gate.shouldPublish(base.copy(restorePlanIndex = 12, restoreWaitingForResponse = true), 1_002))
+        assertTrue(gate.shouldPublish(base.copy(phase = FrlgOperationPhase.FAILED), 1_003))
     }
 
     @Test fun `persistent restore trace survives operation cleanup`() {

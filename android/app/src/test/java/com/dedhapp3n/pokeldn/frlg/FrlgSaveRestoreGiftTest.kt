@@ -1,23 +1,11 @@
 package com.dedhapp3n.pokeldn.frlg
 
-import com.dedhapp3n.pokeldn.ldn.LdnPiaHost
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FrlgSaveRestoreGiftTest {
-    @Test fun `restore host disables quiet retransmit suppression without changing other operations`() {
-        fun pia() = LdnPiaHost(ByteArray(16), ByteArray(6), 14, 6) { ByteArray(it) }
-        val restorePia = pia()
-        FrlgHostLink(
-            restorePia, byteArrayOf(1, 0xf1.toByte()),
-            restoreSave = FrlgSaveTest.syntheticSave(8, 9, FrlgSave.Layout.LATIN),
-        )
-        assertFalse(restorePia.quietRetransmitsSuppressed)
-        assertTrue(pia().quietRetransmitsSuppressed)
-    }
-
     @Test fun `queued outbound sector blocks time out as send stall`() {
         val fixture = writingFixture()
         val current = fixture.engine.snapshot().transferDiagnostics.last()
@@ -68,6 +56,64 @@ class FrlgSaveRestoreGiftTest {
         fixture.now = 190
         fixture.engine.checkLiveness()
         assertEquals(FrlgSaveRestoreStage.FAILED, fixture.engine.snapshot().stage)
+    }
+
+    @Test fun `repeated inbound traffic cannot hide a saturated outbound window`() {
+        val fixture = writingFixture()
+        fixture.engine.updateTransportCounters(6, 6, 1, 1, 1, 1, true, 300, 1, 300)
+        repeat(9) { index ->
+            fixture.now = ((index + 1) * 10).toLong()
+            fixture.engine.updateTransportCounters(
+                6, 6, index + 2L, index + 2L, index + 2L, index + 2L,
+                true, 300 + fixture.now, 1, 300,
+            )
+            fixture.engine.checkLiveness()
+        }
+        assertEquals(FrlgSaveRestoreStage.WRITING, fixture.engine.snapshot().stage)
+        fixture.now = 100
+        fixture.engine.checkLiveness()
+        assertEquals(FrlgSaveRestoreStage.FAILED, fixture.engine.snapshot().stage)
+        assertEquals("timeout-send", fixture.engine.snapshot().transferDiagnostics.last().result)
+    }
+
+    @Test fun `decreasing reliable outstanding resets the send watchdog`() {
+        val fixture = writingFixture()
+        fixture.engine.updateTransportCounters(6, 6, 1, 1, 1, 1, true, 300, 1, 300)
+        fixture.now = 90
+        fixture.engine.updateTransportCounters(5, 6, 1, 1, 1, 1, true, 390, 1, 300)
+        fixture.now = 189
+        fixture.engine.checkLiveness()
+        assertEquals(FrlgSaveRestoreStage.WRITING, fixture.engine.snapshot().stage)
+        fixture.now = 190
+        fixture.engine.checkLiveness()
+        assertEquals(FrlgSaveRestoreStage.FAILED, fixture.engine.snapshot().stage)
+    }
+
+    @Test fun `restore diagnostics retain quiet and reliable window state`() {
+        val fixture = writingFixture()
+        fixture.engine.updateTransportCounters(6, 8, 12, 34, 56, 78, true, 4_321, 3, 4_000)
+        val item = fixture.engine.snapshot().transferDiagnostics.last()
+        assertEquals(6, item.reliableOutstanding)
+        assertEquals(8, item.reliableInflight)
+        assertEquals(12L, item.reliableReceived)
+        assertEquals(34L, item.reliableSent)
+        assertTrue(item.consoleQuiet)
+        assertEquals(4_321L, item.quietDurationMillis)
+        assertEquals(3L, item.quietRetransmitsSent)
+        assertEquals(4_000L, item.lastQuietRetransmitMillis)
+    }
+
+    @Test fun `restore diagnostic message and block indexes never exceed totals`() {
+        val fixture = writingFixture()
+        repeat(20_000) {
+            val item = fixture.engine.snapshot().transferDiagnostics.last()
+            assertTrue("message ${item.currentMgMessageIndex}/${item.mgMessageCount}", item.currentMgMessageIndex <= item.mgMessageCount)
+            assertTrue("block ${item.currentBlockIndex}/${item.blockCount}", item.currentBlockIndex <= item.blockCount)
+            if (!item.waitingForResponse) fixture.engine.tick()
+        }
+        val final = fixture.engine.snapshot().transferDiagnostics.last()
+        assertEquals(final.mgMessageCount, final.currentMgMessageIndex)
+        assertEquals(final.blockCount, final.currentBlockIndex)
     }
 
     private fun writingFixture(): Fixture {

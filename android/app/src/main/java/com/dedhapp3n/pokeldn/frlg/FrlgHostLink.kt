@@ -36,7 +36,6 @@ internal class FrlgHostLink(
 ) {
     init {
         require(listOf(runWalkThroughWalls, runSaveBackup, restoreSave != null).count { it } <= 1) { "Only one FRLG operation may own a host link" }
-        if (restoreSave != null) pia.keepReliableRetransmitsWhileQuiet()
     }
 
     private val rfu = FrlgRfuLeader(parentSessionId)
@@ -93,10 +92,15 @@ internal class FrlgHostLink(
         pia.snapshot().let { piaState ->
             restore?.updateTransportCounters(
                 pia.reliableOutstanding,
+                piaState.reliableInflight,
                 piaState.reliableFramesReceived,
                 piaState.reliableFramesSent,
                 rfu.uniIn,
                 rfu.uniOut,
+                piaState.consoleQuiet,
+                piaState.quietDurationMillis,
+                piaState.quietRetransmitsSent,
+                piaState.lastQuietRetransmitMillis,
             )
         }
         restore?.checkLiveness()

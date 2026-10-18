@@ -9,23 +9,28 @@ internal data class FrlgRestoreTransferDiagnostic(
     val sectorId: Int?,
     val kind: FrlgSaveRestoreEngine.WriteKind,
     val tokenBytes: Int,
-    val messageCount: Int,
+    val mgMessageCount: Int,
     val blockCount: Int,
     val startedAtMillis: Long,
     val lastProgressAtMillis: Long,
     val responseAtMillis: Long?,
     val durationMillis: Long?,
-    val currentMessageIndex: Int,
+    val currentMgMessageIndex: Int,
     val currentBlockIndex: Int,
     val blocksRemaining: Int,
     val senderActive: Boolean,
     val waitingForResponse: Boolean,
     val failureMask: Long?,
     val reliableOutstanding: Int,
+    val reliableInflight: Int,
     val reliableReceived: Long,
     val reliableSent: Long,
     val rfuIn: Long,
     val rfuOut: Long,
+    val consoleQuiet: Boolean,
+    val quietDurationMillis: Long,
+    val quietRetransmitsSent: Long,
+    val lastQuietRetransmitMillis: Long?,
     val ethernetAccepted: Long,
     val ethernetCompleted: Long,
     val ethernetAcknowledged: Long,
@@ -63,11 +68,11 @@ internal fun restorePeerDepartureCompletes(successful: Boolean, stage: FrlgSaveR
 internal fun restoreTransportAdvanced(
     oldOutstanding: Int,
     newOutstanding: Int,
-    oldReliableReceived: Long,
-    newReliableReceived: Long,
-    oldRfuIn: Long,
-    newRfuIn: Long,
-): Boolean = newReliableReceived > oldReliableReceived || newRfuIn > oldRfuIn || newOutstanding < oldOutstanding
+    @Suppress("UNUSED_PARAMETER") oldReliableReceived: Long,
+    @Suppress("UNUSED_PARAMETER") newReliableReceived: Long,
+    @Suppress("UNUSED_PARAMETER") oldRfuIn: Long,
+    @Suppress("UNUSED_PARAMETER") newRfuIn: Long,
+): Boolean = newOutstanding < oldOutstanding
 
 private data class RestoreQueuedBlock(val data: ByteArray, val repeats: Int, val blockIndex: Int)
 
@@ -101,14 +106,19 @@ internal class FrlgSaveRestoreGiftEngine(
     private val diagnostics = mutableListOf<FrlgRestoreTransferDiagnostic>()
     private val watchdog = FrlgRestoreProgressWatchdog(responseTimeoutMillis)
     private var trackedWrite: FrlgSaveRestoreEngine.WritePlanInfo? = null
-    private var currentMessageIndex = 0
+    private var currentMgMessageIndex = 0
     private var currentBlockIndex = 0
     private var nextBlockIndex = 0
     private var reliableOutstanding = 0
+    private var reliableInflight = 0
     private var reliableReceived = 0L
     private var reliableSent = 0L
     private var rfuIn = 0L
     private var rfuOut = 0L
+    private var consoleQuiet = false
+    private var quietDurationMillis = 0L
+    private var quietRetransmitsSent = 0L
+    private var lastQuietRetransmitMillis: Long? = null
     private var ethernetAccepted = 0L
     private var ethernetCompleted = 0L
     private var ethernetAcknowledged = 0L
@@ -133,7 +143,10 @@ internal class FrlgSaveRestoreGiftEngine(
             if (stage == FrlgSaveRestoreStage.CLOSING && closeGrace == null) closeGrace = 300
             return
         }
-        receiver.receive(slot)?.let(::onBlock)
+        receiver.receive(slot)?.let { block ->
+            if (expecting != null && watchdog.active) noteProgress()
+            onBlock(block)
+        }
     }
 
     fun checkLiveness() = checkTimeout()
@@ -183,16 +196,33 @@ internal class FrlgSaveRestoreGiftEngine(
         )
     }
 
-    fun updateTransportCounters(outstanding: Int, received: Long, sent: Long, input: Long, output: Long) {
-        // Outbound retries alone are not progress. Inbound data or a shrinking window is.
+    fun updateTransportCounters(
+        outstanding: Int,
+        inflight: Int,
+        received: Long,
+        sent: Long,
+        input: Long,
+        output: Long,
+        quiet: Boolean,
+        quietDuration: Long,
+        quietRetransmits: Long,
+        lastQuietRetransmit: Long?,
+    ) {
+        // Only an advancing outbound acknowledgement opens the restore send window. Arbitrary
+        // inbound Reliable/RFU traffic is diagnostic data and must not mask a send deadlock.
         val progressed = restoreTransportAdvanced(
             reliableOutstanding, outstanding, reliableReceived, received, rfuIn, input,
         )
         reliableOutstanding = outstanding
+        reliableInflight = inflight
         reliableReceived = received
         reliableSent = sent
         rfuIn = input
         rfuOut = output
+        consoleQuiet = quiet
+        quietDurationMillis = quietDuration
+        quietRetransmitsSent = quietRetransmits
+        lastQuietRetransmitMillis = lastQuietRetransmit
         if (progressed && watchdog.active) noteProgress() else refreshTracked()
     }
 
@@ -283,7 +313,7 @@ internal class FrlgSaveRestoreGiftEngine(
     }
 
     private fun sendMessage(id: Int, payload: ByteArray, repeats: Int, done: () -> Unit) {
-        currentMessageIndex++
+        currentMgMessageIndex++
         MgMessage.build(id, payload).forEach { block ->
             nextBlockIndex++
             blocks += RestoreQueuedBlock(block, repeats, nextBlockIndex)
@@ -338,16 +368,17 @@ internal class FrlgSaveRestoreGiftEngine(
     private fun trackWriteStart(plan: FrlgSaveRestoreEngine.WritePlanInfo) {
         if (trackedWrite?.index == plan.index) return
         trackedWrite = plan
-        currentMessageIndex = 0
+        currentMgMessageIndex = 0
         currentBlockIndex = 0
         nextBlockIndex = 0
         val now = clockMillis()
         watchdog.begin(now)
         diagnostics += FrlgRestoreTransferDiagnostic(
             plan.index, plan.total, plan.physicalSector, plan.sectorId, plan.kind,
-            plan.tokenBytes, plan.messageCount, plan.blockCount, now, now, null, null,
+            plan.tokenBytes, plan.mgMessageCount, plan.blockCount, now, now, null, null,
             0, 0, 0, false, false, null,
-            reliableOutstanding, reliableReceived, reliableSent, rfuIn, rfuOut,
+            reliableOutstanding, reliableInflight, reliableReceived, reliableSent, rfuIn, rfuOut,
+            consoleQuiet, quietDurationMillis, quietRetransmitsSent, lastQuietRetransmitMillis,
             ethernetAccepted, ethernetCompleted, ethernetAcknowledged, "sending",
         )
     }
@@ -370,16 +401,21 @@ internal class FrlgSaveRestoreGiftEngine(
     }
 
     private fun currentDiagnostic(old: FrlgRestoreTransferDiagnostic, result: String, waiting: Boolean) = old.copy(
-        currentMessageIndex = currentMessageIndex,
+        currentMgMessageIndex = currentMgMessageIndex,
         currentBlockIndex = currentBlockIndex,
         blocksRemaining = blocks.size + if (sender != null) 1 else 0,
         senderActive = sender != null,
         waitingForResponse = waiting,
         reliableOutstanding = reliableOutstanding,
+        reliableInflight = reliableInflight,
         reliableReceived = reliableReceived,
         reliableSent = reliableSent,
         rfuIn = rfuIn,
         rfuOut = rfuOut,
+        consoleQuiet = consoleQuiet,
+        quietDurationMillis = quietDurationMillis,
+        quietRetransmitsSent = quietRetransmitsSent,
+        lastQuietRetransmitMillis = lastQuietRetransmitMillis,
         ethernetAccepted = ethernetAccepted,
         ethernetCompleted = ethernetCompleted,
         ethernetAcknowledged = ethernetAcknowledged,

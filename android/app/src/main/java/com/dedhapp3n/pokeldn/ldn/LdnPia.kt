@@ -25,6 +25,12 @@ internal data class LdnPiaSnapshot(
     val reliableEstablished: Boolean = false,
     val reliableFramesReceived: Long = 0,
     val reliableFramesSent: Long = 0,
+    val reliableOutstanding: Int = 0,
+    val reliableInflight: Int = 0,
+    val consoleQuiet: Boolean = false,
+    val quietDurationMillis: Long = 0,
+    val quietRetransmitsSent: Long = 0,
+    val lastQuietRetransmitMillis: Long? = null,
     val detail: String? = null,
 )
 
@@ -70,7 +76,9 @@ internal class LdnPiaHost(
     private var rttSystemTime = 0x10000L
     private val rttPending = mutableMapOf<Long, Long>()
     private var lastReceiveMillis: Long? = null
-    private var suppressQuietRetransmits = true
+    private var lastObservedMillis = 0L
+    private var lastQuietRetransmitMillis: Long? = null
+    private var quietRetransmitsSent = 0L
     private var detail: String? = null
 
     fun participantJoined(value: LdnParticipant, nowMillis: Long) {
@@ -85,10 +93,16 @@ internal class LdnPiaHost(
         if (participant?.mac?.contentEquals(mac) == true) reset()
     }
 
-    fun snapshot() = LdnPiaSnapshot(
-        stage, netRequests, sessionRequests, sessionResponses, propertyUpdates, propertyAcknowledgements,
-        reliable.peerOpened, reliableFramesReceived, reliableFramesSent, detail,
-    )
+    fun snapshot(): LdnPiaSnapshot {
+        val quietDuration = lastReceiveMillis?.let { (lastObservedMillis - it).coerceAtLeast(0) } ?: 0
+        return LdnPiaSnapshot(
+            stage, netRequests, sessionRequests, sessionResponses, propertyUpdates, propertyAcknowledgements,
+            reliable.peerOpened, reliableFramesReceived, reliableFramesSent,
+            reliable.outstanding, reliable.inflight,
+            quietDuration > QUIET_GATE_MS, quietDuration, quietRetransmitsSent, lastQuietRetransmitMillis,
+            detail,
+        )
+    }
 
     fun activateApplicationData(value: ByteArray, nowMillis: Long = System.currentTimeMillis()) {
         activeApplicationData = value.copyOf()
@@ -100,6 +114,7 @@ internal class LdnPiaHost(
     }
 
     fun tick(nowMillis: Long): List<LdnPiaDatagram> {
+        lastObservedMillis = nowMillis
         val peer = participant ?: return emptyList()
         val out = mutableListOf<LdnPiaDatagram>()
         if (stage == LdnPiaStage.NET_PROBING && nowMillis >= nextNetMillis) {
@@ -132,16 +147,13 @@ internal class LdnPiaHost(
             nextPropertyMillis = nowMillis + NET_RETRY_MS
         }
         if (stage == LdnPiaStage.ESTABLISHED) {
-            val quiet = lastReceiveMillis?.let { nowMillis - it > QUIET_GATE_MS } == true
-            val emissions = filterQuietReliableEmissions(
-                reliable.poll(nowMillis), quiet, suppressQuietRetransmits,
-            )
-            out += reliableDatagrams(emissions, carry = !quiet)
+            out += emitReliable(reliable.poll(nowMillis), nowMillis)
         }
         return out
     }
 
     fun receive(datagram: ByteArray, sourceIp: String, nowMillis: Long): List<LdnPiaDatagram> {
+        lastObservedMillis = nowMillis
         val peer = participant ?: return emptyList()
         if (sourceIp != peer.ipAddress) return emptyList()
         lastReceiveMillis = nowMillis
@@ -223,23 +235,16 @@ internal class LdnPiaHost(
     }
 
     fun openReliable(payload: ByteArray, nowMillis: Long): List<LdnPiaDatagram> =
-        reliable.open(payload, nowMillis)?.let { reliableDatagrams(listOf(it)) }.orEmpty()
+        reliable.open(payload, nowMillis)?.let { emitReliable(listOf(it), nowMillis) }.orEmpty()
 
     /** Carry-forward may legitimately split one send across multiple upstream PIA packets. */
     fun sendReliable(payload: ByteArray, nowMillis: Long): List<LdnPiaDatagram> =
-        reliableDatagrams(listOf(reliable.send(payload, nowMillis)))
+        emitReliable(listOf(reliable.send(payload, nowMillis)), nowMillis)
 
     fun reliableReceiveAcknowledgementSent(sequence: Int): Boolean =
         reliable.receiveAcknowledgementSent(sequence)
 
     val reliableOutstanding: Int get() = reliable.outstanding
-
-    /** Restore transfers must recover lost Reliable frames even while the GBA is busy and quiet. */
-    fun keepReliableRetransmitsWhileQuiet() {
-        suppressQuietRetransmits = false
-    }
-
-    internal val quietRetransmitsSuppressed: Boolean get() = suppressQuietRetransmits
 
     fun reset() {
         participant = null
@@ -259,7 +264,9 @@ internal class LdnPiaHost(
         nextRttMillis = Long.MAX_VALUE
         rttPending.clear()
         lastReceiveMillis = null
-        suppressQuietRetransmits = true
+        lastObservedMillis = 0
+        lastQuietRetransmitMillis = null
+        quietRetransmitsSent = 0
         nextPacketId = 2
         nextReliablePacketId = 2
         reliable.reset()
@@ -268,6 +275,22 @@ internal class LdnPiaHost(
         reliableFramesSent = 0
         reliableCarry.clear()
         detail = null
+    }
+
+    private fun emitReliable(outputs: List<LdnReliableEmission>, nowMillis: Long): List<LdnPiaDatagram> {
+        if (outputs.isEmpty()) return emptyList()
+        lastObservedMillis = nowMillis
+        val quiet = lastReceiveMillis?.let { nowMillis - it > QUIET_GATE_MS } == true
+        if (!quiet) return reliableDatagrams(outputs, carry = true)
+
+        val selected = outputs.filterNot { it.retransmitted }.toMutableList()
+        val due = outputs.firstOrNull { it.retransmitted }
+        if (due != null && lastQuietRetransmitMillis?.let { nowMillis - it < QUIET_RETRANSMIT_MS } != true) {
+            selected.add(0, due)
+            lastQuietRetransmitMillis = nowMillis
+            quietRetransmitsSent++
+        }
+        return reliableDatagrams(selected, carry = false)
     }
 
     private fun buildNetProbe(peer: LdnParticipant): ByteArray {
@@ -406,8 +429,10 @@ internal class LdnPiaHost(
                 }
             }
         }.sortedBy { (it.sequence - (have.minOrNull() ?: it.sequence)) and 0xffff }
-        reliableCarry.addLast(outputs.filter { it.flags != RELIABLE_FLAGS_CONTROL })
-        while (reliableCarry.size > HOST_CARRY_DEPTH) reliableCarry.removeFirst()
+        if (carry) {
+            reliableCarry.addLast(outputs.filter { it.flags != RELIABLE_FLAGS_CONTROL })
+            while (reliableCarry.size > HOST_CARRY_DEPTH) reliableCarry.removeFirst()
+        }
         val messages = carried + outputs
         reliableFramesSent += messages.size
         return reliableBatches(messages).map { batch ->
@@ -525,6 +550,7 @@ internal class LdnPiaHost(
         private const val SESSION_RETRY_MS = 250L
         private const val RTT_PERIOD_MS = 315L
         private const val QUIET_GATE_MS = 250L
+        private const val QUIET_RETRANSMIT_MS = 1_000L
         private const val PIA_APPLICATION_HEADER_SIZE = 0x5c
         private const val PIA_COMPRESS_MIN = 62
         private const val HOST_CARRY_DEPTH = 4
@@ -535,12 +561,6 @@ internal class LdnPiaHost(
 
     private data class PiaWireMessage(val protocol: Int, val payload: ByteArray, val flags: Int?)
 }
-
-internal fun filterQuietReliableEmissions(
-    emissions: List<LdnReliableEmission>,
-    quiet: Boolean,
-    suppressRetransmits: Boolean,
-): List<LdnReliableEmission> = emissions.filterNot { quiet && suppressRetransmits && it.retransmitted }
 
 internal class PiaNonceSequence(initial: ByteArray) {
     private var next = require(initial.size == 8) { "PIA nonce must be eight bytes" }.let {

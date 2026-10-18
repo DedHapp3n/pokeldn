@@ -2,6 +2,7 @@ package com.dedhapp3n.pokeldn.ldn
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -106,28 +107,36 @@ class LdnPiaTest {
     }
 
     @Test
-    fun restorePolicyKeepsDueReliableRetransmitsWhenConsoleIsQuiet() {
-        val retransmit = LdnReliableEmission(1, RELIABLE_FLAGS_DATA, 0, byteArrayOf(1), retransmitted = true)
-        val fresh = LdnReliableEmission(2, RELIABLE_FLAGS_DATA, 0, byteArrayOf(2))
-        assertEquals(listOf(fresh), filterQuietReliableEmissions(listOf(retransmit, fresh), quiet = true, suppressRetransmits = true))
-        assertEquals(
-            listOf(retransmit, fresh),
-            filterQuietReliableEmissions(listOf(retransmit, fresh), quiet = true, suppressRetransmits = false),
-        )
+    fun quietReliableRetransmitsMatchUpstreamRateLimitAndDisableCarry() {
+        val host = establishedHost()
+        host.openReliable(byteArrayOf(1, 2, 3), 31)
 
-        fun established(): LdnPiaHost = host().also {
-            it.participantJoined(participant, 0)
-            it.receive(SESSION_JOIN.hex(), participant.ipAddress, 20)
-            it.receive(SESSION_ACK.hex(), participant.ipAddress, 30)
-        }
-        val normal = established()
-        normal.openReliable(byteArrayOf(1, 2, 3), 31)
-        assertTrue(normal.tick(400).isEmpty())
+        assertTrue(host.tick(400).isNotEmpty())
+        assertTrue(host.snapshot().consoleQuiet)
+        assertEquals(370, host.snapshot().quietDurationMillis)
+        assertEquals(1, host.snapshot().quietRetransmitsSent)
+        assertEquals(400L, host.snapshot().lastQuietRetransmitMillis)
 
-        val restore = established()
-        restore.keepReliableRetransmitsWhileQuiet()
-        restore.openReliable(byteArrayOf(1, 2, 3), 31)
-        assertTrue(restore.tick(400).isNotEmpty())
+        assertTrue(host.tick(600).isEmpty())
+        assertEquals(1, host.snapshot().quietRetransmitsSent)
+        assertEquals(400L, host.snapshot().lastQuietRetransmitMillis)
+
+        val sentBeforeFresh = host.snapshot().reliableFramesSent
+        assertTrue(host.sendReliable(byteArrayOf(4, 5, 6), 650).isNotEmpty())
+        assertEquals(1, host.snapshot().reliableFramesSent - sentBeforeFresh)
+
+        assertTrue(host.tick(1_400).isNotEmpty())
+        assertEquals(2, host.snapshot().quietRetransmitsSent)
+        assertEquals(1_400L, host.snapshot().lastQuietRetransmitMillis)
+
+        host.receive(SESSION_ACK.hex(), participant.ipAddress, 1_450)
+        host.tick(1_451)
+        assertFalse(host.snapshot().consoleQuiet)
+        assertEquals(1, host.snapshot().quietDurationMillis)
+
+        host.reset()
+        assertEquals(0, host.snapshot().quietRetransmitsSent)
+        assertEquals(null, host.snapshot().lastQuietRetransmitMillis)
     }
 
     @Test
@@ -166,6 +175,12 @@ class LdnPiaTest {
         maxParticipants = 6,
         randomBytes = { size -> ByteArray(size) { size.toByte() } },
     )
+
+    private fun establishedHost() = host().also {
+        it.participantJoined(participant, 0)
+        it.receive(SESSION_JOIN.hex(), participant.ipAddress, 20)
+        it.receive(SESSION_ACK.hex(), participant.ipAddress, 30)
+    }
 
     companion object {
         private const val UPSTREAM_NET_PROBE =

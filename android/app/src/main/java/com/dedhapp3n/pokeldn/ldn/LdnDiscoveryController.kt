@@ -58,6 +58,11 @@ data class LdnDiscoverySnapshot(
     val reliableEstablished: Boolean = false,
     val reliableFramesReceived: Long = 0,
     val reliableFramesSent: Long = 0,
+    val reliableInflight: Int = 0,
+    val consoleQuiet: Boolean = false,
+    val quietDurationMillis: Long = 0,
+    val quietRetransmitsSent: Long = 0,
+    val lastQuietRetransmitMillis: Long? = null,
     val rfuConnected: Boolean = false,
     val rfuReady: Boolean = false,
     val linkPlayerExchanged: Boolean = false,
@@ -310,6 +315,13 @@ class LdnDiscoveryController internal constructor(
                     reliableEstablished = snapshot.reliableEstablished || piaBeforeLeave?.reliableEstablished == true,
                     reliableFramesReceived = maxOf(snapshot.reliableFramesReceived, piaBeforeLeave?.reliableFramesReceived ?: 0),
                     reliableFramesSent = maxOf(snapshot.reliableFramesSent, piaBeforeLeave?.reliableFramesSent ?: 0),
+                    reliableOutstanding = maxOf(snapshot.reliableOutstanding, piaBeforeLeave?.reliableOutstanding ?: 0),
+                    reliableInflight = maxOf(snapshot.reliableInflight, piaBeforeLeave?.reliableInflight ?: 0),
+                    consoleQuiet = snapshot.consoleQuiet || piaBeforeLeave?.consoleQuiet == true,
+                    quietDurationMillis = maxOf(snapshot.quietDurationMillis, piaBeforeLeave?.quietDurationMillis ?: 0),
+                    quietRetransmitsSent = maxOf(snapshot.quietRetransmitsSent, piaBeforeLeave?.quietRetransmitsSent ?: 0),
+                    lastQuietRetransmitMillis = piaBeforeLeave?.lastQuietRetransmitMillis
+                        ?: snapshot.lastQuietRetransmitMillis,
                     latestActivity = "Station left: ${event.mac.formatMac()}",
                 )
                 is Esp32RadioEvent.EthernetCommandWritten -> snapshot.copy(
@@ -567,6 +579,12 @@ class LdnDiscoveryController internal constructor(
             reliableEstablished = pia.reliableEstablished,
             reliableFramesReceived = pia.reliableFramesReceived,
             reliableFramesSent = pia.reliableFramesSent,
+            reliableOutstanding = pia.reliableOutstanding,
+            reliableInflight = pia.reliableInflight,
+            consoleQuiet = pia.consoleQuiet,
+            quietDurationMillis = pia.quietDurationMillis,
+            quietRetransmitsSent = pia.quietRetransmitsSent,
+            lastQuietRetransmitMillis = pia.lastQuietRetransmitMillis,
             latestActivity = pia.detail ?: pia.stage.activity(snapshot.latestActivity),
         )
     }
@@ -643,19 +661,24 @@ class LdnDiscoveryController internal constructor(
                     append(" sectorId=${item.sectorId ?: "none"}")
                     append(" kind=${item.kind.name.lowercase()}")
                     append(" tokens=${item.tokenBytes}")
-                    append(" messages=${item.messageCount}")
+                    append(" mgMessages=${item.mgMessageCount}")
                     append(" chunks=${item.blockCount}")
                     append(" started=${item.startedAtMillis}")
                     append(" lastProgress=${item.lastProgressAtMillis}")
                     append(" response=${item.responseAtMillis ?: "none"}")
                     append(" durationMs=${item.durationMillis ?: "waiting"}")
-                    append(" message=${item.currentMessageIndex}/${item.messageCount}")
+                    append(" mgMessage=${item.currentMgMessageIndex}/${item.mgMessageCount}")
                     append(" block=${item.currentBlockIndex}/${item.blockCount}")
                     append(" remaining=${item.blocksRemaining}")
                     append(" senderActive=${item.senderActive}")
                     append(" waitingResponse=${item.waitingForResponse}")
                     append(" failMask=${item.failureMask?.let { "0x" + it.toString(16).padStart(8, '0') } ?: "none"}")
+                    append(" consoleQuiet=${item.consoleQuiet}")
+                    append(" quietMs=${item.quietDurationMillis}")
+                    append(" quietRetx=${item.quietRetransmitsSent}")
+                    append(" lastQuietRetx=${item.lastQuietRetransmitMillis ?: "none"}")
                     append(" relOutstanding=${item.reliableOutstanding}")
+                    append(" relInflight=${item.reliableInflight}")
                     append(" relRxTx=${item.reliableReceived}/${item.reliableSent}")
                     append(" rfu=${item.rfuIn}/${item.rfuOut}")
                     append(" eth=${item.ethernetAccepted}/${item.ethernetCompleted}/${item.ethernetAcknowledged}")

@@ -87,6 +87,35 @@ internal object FrlgOperationNotificationText {
 internal interface FrlgPowerLease { fun acquire(); fun release() }
 internal interface FrlgForegroundSink { fun update(progress: FrlgForegroundProgress); fun stop() }
 
+/** Limits observer/UI work without changing how often the protocol scheduler updates state. */
+internal class FrlgUiPublicationGate(private val intervalMillis: Long = 250L) {
+    private var lastPublished: FrlgForegroundProgress? = null
+    private var lastPublishedAtMillis: Long? = null
+
+    @Synchronized fun shouldPublish(next: FrlgForegroundProgress, nowMillis: Long): Boolean {
+        val previous = lastPublished
+        val semanticChange = previous == null ||
+            previous.phase != next.phase ||
+            previous.restorePlanIndex != next.restorePlanIndex ||
+            previous.restoreWaitingForResponse != next.restoreWaitingForResponse ||
+            next.terminal
+        val intervalElapsed = lastPublishedAtMillis?.let { nowMillis - it >= intervalMillis } != false
+        if (!semanticChange && !intervalElapsed) return false
+        force(next, nowMillis)
+        return true
+    }
+
+    @Synchronized fun force(next: FrlgForegroundProgress, nowMillis: Long) {
+        lastPublished = next
+        lastPublishedAtMillis = nowMillis
+    }
+
+    @Synchronized fun reset() {
+        lastPublished = null
+        lastPublishedAtMillis = null
+    }
+}
+
 /** Pure ownership gate used by the service; Activity recreation never releases active hardware. */
 internal class FrlgForegroundLease(
     private val power: FrlgPowerLease,
@@ -346,6 +375,7 @@ class FrlgOperationService : Service() {
         @Volatile private var retainedSession: Esp32RadioSession? = null
         @Volatile private var restoreSelection: FrlgSaveRestoreUiState? = null
         private val listeners = CopyOnWriteArraySet<(FrlgForegroundProgress) -> Unit>()
+        private val uiPublicationGate = FrlgUiPublicationGate()
         private var leaseStarted = false
 
         fun begin(context: Context, progress: FrlgForegroundProgress) {
@@ -355,6 +385,7 @@ class FrlgOperationService : Service() {
             }
             pendingProgress = progress
             currentProgress = progress
+            uiPublicationGate.force(progress, System.currentTimeMillis())
             ContextCompat.startForegroundService(context, Intent(context, FrlgOperationService::class.java))
             listeners.forEach { it(progress) }
         }
@@ -433,7 +464,7 @@ class FrlgOperationService : Service() {
             if (next.terminal) {
                 publish(next.copy(phase = FrlgOperationPhase.RETURNING_TO_READY))
                 finish(next.phase, requireNotNull(next.detail))
-            } else publish(next)
+            } else publishSnapshot(next)
         }
 
         private fun sharedPhase(snapshot: LdnDiscoverySnapshot): FrlgOperationPhase = when {
@@ -450,6 +481,18 @@ class FrlgOperationService : Service() {
         private fun publish(progress: FrlgForegroundProgress) {
             currentProgress = progress
             pendingProgress = progress
+            uiPublicationGate.force(progress, System.currentTimeMillis())
+            deliver(progress)
+        }
+
+        private fun publishSnapshot(progress: FrlgForegroundProgress, nowMillis: Long = System.currentTimeMillis()) {
+            currentProgress = progress
+            pendingProgress = progress
+            if (!uiPublicationGate.shouldPublish(progress, nowMillis)) return
+            deliver(progress)
+        }
+
+        private fun deliver(progress: FrlgForegroundProgress) {
             instance?.let { if (!it.lease.active) it.lease.begin(progress) else it.lease.update(progress) }
             listeners.forEach { it(progress) }
         }
@@ -479,6 +522,7 @@ class FrlgOperationService : Service() {
             pendingOwned = null; pendingProgress = null; currentProgress = null
             retainedTransport = null; retainedSession = null; listeners.clear()
             restoreSelection = null
+            uiPublicationGate.reset()
         }
     }
 }

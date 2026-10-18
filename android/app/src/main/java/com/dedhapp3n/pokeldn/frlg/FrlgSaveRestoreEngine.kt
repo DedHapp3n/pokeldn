@@ -14,7 +14,7 @@ internal class FrlgSaveRestoreEngine(
         val sectorId: Int?,
         val kind: WriteKind,
         val tokenBytes: Int,
-        val messageCount: Int,
+        val mgMessageCount: Int,
         val blockCount: Int,
     )
     enum class Stage { REQUESTING_GAME_DATA, VALIDATING, READING_FOOTERS, WRITING, LOADING, ENDING, COMPLETED, REFUSED, FAILED }
