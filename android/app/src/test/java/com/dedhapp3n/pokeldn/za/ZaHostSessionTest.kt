@@ -34,7 +34,12 @@ class ZaHostSessionTest {
         assertArrayEquals(fixture("update0"), opening.single { it.first == 13 && it.second.first().toInt() == 5 }.second)
         assertArrayEquals(fixture("net_property"), opening.single { it.first == 1 && it.second[1].toInt() == 0x50 }.second)
         assertTrue(opening.any { it.first == 10 && it.second.size > 8 && it.second.copyOfRange(8, 10).contentEquals(byteArrayOf(0x14, 0)) })
-        assertTrue(opening.count { it.first == 11 } >= 2)
+        val broadcast = opening.filter { it.first == 11 }.map { it.second }
+        // Upstream bundles these two protocol-11 messages in one PIA datagram. Android
+        // currently sends two datagrams, but the inner Reliable frames must be identical.
+        assertEquals(2, broadcast.size)
+        assertArrayEquals("0f006afff0fff00300000002".hex() + fixture("identity10"), broadcast[0])
+        assertArrayEquals("070009fff1fff00300000002".hex() + fixture("identity11b"), broadcast[1])
     }
 
     @Test fun updateAcknowledgementsGateSelectionAndPickStartsSafeLeave() {
@@ -66,6 +71,35 @@ class ZaHostSessionTest {
         host.tick(12600)
         assertTrue(host.departed)
         assertEquals("done", host.status.leavePhase)
+    }
+
+    @Test fun updateAcknowledgementsAcceptDifferentGuestConstantIds() {
+        for (guestConstant in listOf("7f00030000020000", "1122334455667788")) {
+            val host = host()
+            host.participantJoined(LdnParticipant(1, "127.0.0.3", "02007f000003".hex(), byteArrayOf(32), 6, 0), 0)
+            host.tick(0)
+            val join = fixture("join").also { guestConstant.hex().copyInto(it, 28) }
+            host.receive(inbound(13, join), "127.0.0.3", 100)
+            host.tick(100)
+            val ack0 = byteArrayOf(6) + guestConstant.hex() + byteArrayOf(0, 0, 0, 0, 0, 1)
+            host.receive(inbound(13, ack0), "127.0.0.3", 150)
+            assertTrue(host.status.update0Ack)
+            assertFalse(host.status.update1Ack)
+            assertFalse(payloads(host.tick(1299)).any { it.first == 13 && it.second.firstOrNull()?.toInt() == 5 && it.second[2].toInt() == 1 })
+            val update1 = payloads(host.tick(1300)).single { it.first == 13 && it.second.firstOrNull()?.toInt() == 5 }.second
+            assertEquals(1, update1[2].toInt())
+            val ack1 = byteArrayOf(6) + guestConstant.hex() + byteArrayOf(0, 0, 0, 1, 0, 1)
+            host.receive(inbound(13, ack1), "127.0.0.3", 1400)
+            assertTrue(host.status.update1Ack)
+            assertEquals("READING POKÉMON", host.status.phase)
+            assertEquals(0, host.status.selectionSent)
+            host.tick(1459)
+            assertEquals(0, host.status.selectionSent)
+            host.tick(1460)
+            assertEquals(1, host.status.selectionSent)
+            host.tick(1520)
+            assertEquals(2, host.status.selectionSent)
+        }
     }
 
     private fun String.hex() = chunked(2).map { it.toInt(16).toByte() }.toByteArray()

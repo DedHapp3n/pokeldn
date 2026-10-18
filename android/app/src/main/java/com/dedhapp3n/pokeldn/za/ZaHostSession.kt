@@ -190,7 +190,9 @@ internal class ZaHostSession(
                     nextRtt = now + 190
                 }
             }
-            6 -> if (payload.size >= 15 && payload.copyOfRange(3, 7).contentEquals(byteArrayOf(3, 0, 0, 2))) {
+            // Type-6 ACK: type, eight-byte guest constant ID, big-endian update sequence, 0x0001.
+            // The constant ID belongs to this console; it is never a protocol literal.
+            6 -> if (payload.size >= 15) {
                 val sequence = payload.u32(9).toInt()
                 if (sequence == 0 && !update0Ack) { update0Ack = true; nextUpdate = now + 1150 }
                 if (sequence == 1 && !update1Ack) {

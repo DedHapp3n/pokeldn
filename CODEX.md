@@ -202,7 +202,8 @@ Do not rely only on a live Switch for correctness.
 - Other FRLG cartridge and language variants represented by payload fixtures have not yet been physically verified through the Android workflow.
 - Other FRLG operations and other games remain planned or incomplete unless a later milestone records physical verification here.
 - Pokémon Legends: Z-A has a unit-tested, read-only Android LDN host, live trainer and Pokémon preview capture, incremental app-private snapshots, an offline viewer, and a foreground reader service. The app sends only the identity, sync, and selection messages needed for capture and leaves after a console pick. This is not physically verified and is not a full save dump, save write, or trade completion path.
-- The first Z-A hardware test reached the waiting screen, but the retail game did not discover or join the Android host. Protocol-1 advertisement and authentication framing were corrected against vendored kinnay/LDN fixtures; a hardware retest is still required.
+- The first Z-A hardware test reached the waiting screen, but the retail game did not discover or join the Android host. Protocol-1 advertisement and authentication framing were corrected against vendored kinnay/LDN fixtures.
+- The next Z-A hardware test discovered and joined the host and delivered a real `0x1400` trainer identity over PIA/protocol 10. It remained on player search because Android rejected Session update ACKs using bytes from one fixture's guest constant ID. The ACK parsing has been corrected; progression to selection and Pokémon previews still awaits a hardware retest.
 
 ## Repository structure
 

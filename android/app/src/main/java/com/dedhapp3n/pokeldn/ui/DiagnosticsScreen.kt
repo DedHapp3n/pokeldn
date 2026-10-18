@@ -93,19 +93,44 @@ internal fun DiagnosticsScreen(
                 ShellPanel("Legends: Z-A reader") {
                     DetailLine("Stage", reader.phase)
                     DetailLine("AP active", if (reader.discovery.apActive) "Yes" else "No")
-                    DetailLine("Advertisements queued / sent", "${reader.discovery.advertisementsQueued} / ${reader.discovery.advertisementsSent}")
-                    DetailLine("Advertisement protocol / format / bytes", "${reader.discovery.advertisementProtocol} / ${reader.discovery.advertisementFormat} / ${reader.discovery.advertisementSize}")
-                    DetailLine("Auth received / parsed / responded", "${reader.discovery.authenticationRequests} / ${reader.discovery.authenticationParsed} / ${reader.discovery.authenticationResponses}")
-                    DetailLine("Last auth status", reader.discovery.authenticationStatus?.toString() ?: "None")
-                    DetailLine("Stations joined", reader.discovery.stationJoined.toString())
-                    reader.discovery.lastManagement?.let { DetailLine("Last management source / subtype", it) }
-                    DetailLine("Trainer", reader.snapshot.trainer?.name ?: "Waiting")
-                    DetailLine("Unique previews", reader.snapshot.pokemon.size.toString())
-                    DetailLine("Preview records", reader.snapshot.previewRecords.toString())
-                    DetailLine("Duplicates", reader.snapshot.duplicatePreviews.toString())
-                    reader.detail?.let { DetailLine("Detail", it) }
-                    DetailLine("Session", reader.host.phase)
-                    reader.host.leavePhase?.let { DetailLine("Leave", it) }
+                    val trace = buildString {
+                        appendLine("phase=${reader.phase}")
+                        appendLine("participant=${reader.host.participant}")
+                        appendLine("sessionJoins=${reader.host.sessionJoins}")
+                        appendLine("update0Ack=${reader.host.update0Ack}")
+                        appendLine("update1Ack=${reader.host.update1Ack}")
+                        appendLine("protocol10Open=${reader.host.protocol10Open}")
+                        appendLine("protocol11Open=${reader.host.protocol11Open}")
+                        appendLine("selectionSent=${reader.host.selectionSent}")
+                        appendLine("outstanding10=${reader.host.outstanding10}")
+                        appendLine("outstanding11=${reader.host.outstanding11}")
+                        appendLine("trainer=${reader.snapshot.trainer?.name ?: "-"}")
+                        appendLine("previewRecords=${reader.snapshot.previewRecords}")
+                        appendLine("uniquePokemon=${reader.snapshot.pokemon.size}")
+                        appendLine("apActive=${reader.discovery.apActive}")
+                        appendLine("advertisementsQueued=${reader.discovery.advertisementsQueued}")
+                        appendLine("advertisementsSent=${reader.discovery.advertisementsSent}")
+                        appendLine("advertisementProtocol=${reader.discovery.advertisementProtocol}")
+                        appendLine("advertisementFormat=${reader.discovery.advertisementFormat}")
+                        appendLine("advertisementSize=${reader.discovery.advertisementSize}")
+                        appendLine("authRequests=${reader.discovery.authenticationRequests}")
+                        appendLine("authParsed=${reader.discovery.authenticationParsed}")
+                        appendLine("authResponses=${reader.discovery.authenticationResponses}")
+                        appendLine("authStatus=${reader.discovery.authenticationStatus ?: "-"}")
+                        appendLine("stationsJoined=${reader.discovery.stationJoined}")
+                        appendLine("lastManagement=${reader.discovery.lastManagement ?: "-"}")
+                        appendLine("leavePhase=${reader.host.leavePhase ?: "-"}")
+                        append("lastError=${reader.host.lastError ?: reader.detail ?: "-"}")
+                    }
+                    DeviceButton("COPY Z-A TRACE", { clipboard.setText(AnnotatedString(trace)) },
+                        Modifier.fillMaxWidth(), style = DeviceButtonStyle.SECONDARY)
+                    SelectionContainer {
+                        Surface(color = ScreenBlack, contentColor = ScreenText,
+                            shape = RoundedCornerShape(9.dp), border = BorderStroke(2.dp, DeviceBezel)) {
+                            Text(trace, fontFamily = FontFamily.Monospace,
+                                style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(12.dp))
+                        }
+                    }
                 }
             }
         }
