@@ -83,6 +83,7 @@ import com.dedhapp3n.pokeldn.usb.SerialConnectionState
 import com.dedhapp3n.pokeldn.usb.UsbDeviceInfo
 import com.dedhapp3n.pokeldn.usb.UsbScanResult
 import com.dedhapp3n.pokeldn.za.ZaSnapshot
+import com.dedhapp3n.pokeldn.za.ZaReaderState
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -114,12 +115,12 @@ private val gameModules = listOf(
     GameModule("Legends: Arceus", "GEN VIII", "Upstream-supported game; Android features are not available yet."),
     GameModule("Scarlet / Violet", "GEN IX", "Upstream-supported game; Android features are not available yet."),
     GameModule(
-        "Legends: Z-A", "GEN IX", "Save Reader under development.",
+        "Legends: Z-A", "GEN IX", "Read-only local Save Reader.",
     ),
 )
 
 @Composable
-fun PokeLdnApp(
+internal fun PokeLdnApp(
     result: UsbScanResult?,
     connectionState: SerialConnectionState,
     esp32State: Esp32HandshakeState,
@@ -158,6 +159,9 @@ fun PokeLdnApp(
     onOpenBackupFolder: () -> Unit,
     onChangeBackupFolder: () -> Unit,
     zaSnapshots: List<ZaSnapshot>,
+    zaReaderState: ZaReaderState?,
+    onStartZaReader: () -> Unit,
+    onFinishZaReader: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var destination by rememberSaveable { mutableStateOf(AppDestination.HOME) }
@@ -226,8 +230,13 @@ fun PokeLdnApp(
                 )
                 selectedGame == "za" -> ZaReaderScreen(
                     zaSnapshots,
+                    zaReaderState,
+                    radioState,
+                    prodKeysState,
                     selectedZaSnapshot,
                     selectedZaPokemon,
+                    onStartZaReader,
+                    onFinishZaReader,
                     onSelectSnapshot = { selectedZaSnapshot = it; selectedZaPokemon = null },
                     onSelectPokemon = { selectedZaPokemon = it },
                     onBack = {
@@ -285,6 +294,7 @@ fun PokeLdnApp(
                 ldnApTestState = ldnApTestState,
                 frlgOperationState = listOf(saveRestoreState.operation, saveBackupState.operation, frlgOperationState)
                     .firstOrNull { it.diagnostics != null } ?: frlgOperationState,
+                zaReaderState = zaReaderState,
                 onStartLdnApTest = onStartLdnApTest,
                 onStopLdnApTest = onStopLdnApTest,
                 modifier = Modifier.padding(innerPadding),
@@ -597,8 +607,13 @@ private fun GamesScreen(
 @Composable
 private fun ZaReaderScreen(
     snapshots: List<ZaSnapshot>,
+    reader: ZaReaderState?,
+    radioState: Esp32RadioState,
+    keysState: ProdKeysState,
     selectedId: String?,
     selectedPokemon: Int?,
+    onStart: () -> Unit,
+    onFinish: () -> Unit,
     onSelectSnapshot: (String?) -> Unit,
     onSelectPokemon: (Int?) -> Unit,
     onBack: () -> Unit,
@@ -651,8 +666,22 @@ private fun ZaReaderScreen(
             item {
                 ShellPanel("Save Reader") {
                     Text("Reads save-related data exposed by the game's local communication. Full save-file export is not available yet.")
-                    DeviceButton("Read Save Data", {}, Modifier.fillMaxWidth(), enabled = false)
-                    Text("The Z-A wireless host is still being implemented.", style = MaterialTheme.typography.bodySmall)
+                    val active = reader != null && !reader.terminal
+                    if (active) {
+                        DetailLine("Link code", reader!!.code.chunked(4).joinToString(" "))
+                        DetailLine("Status", reader.phase)
+                        reader.snapshot.trainer?.let { DetailLine("Trainer", it.name) }
+                        DetailLine("Pokémon previews", reader.snapshot.pokemon.size.toString())
+                        reader.current?.let { Text("Latest: #${it.species} · Lv. ${it.level}${if (it.shiny) " · Shiny" else ""}") }
+                        reader.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                        DeviceButton("Finish Reading", onFinish, Modifier.fillMaxWidth())
+                    } else {
+                        DeviceButton("Read Save Data", onStart, Modifier.fillMaxWidth(),
+                            enabled = radioState.phase == Esp32RadioPhase.READY && keysState.phase == ProdKeysPhase.AVAILABLE)
+                        if (keysState.phase != ProdKeysPhase.AVAILABLE) Text("Import valid prod.keys to start.")
+                        else if (radioState.phase != Esp32RadioPhase.READY) Text("Connect and verify the ESP32 to start.")
+                        reader?.let { Text("${it.phase}${it.detail?.let { detail -> ": $detail" } ?: ""}") }
+                    }
                     DeviceButton("Show Saved Data", { onSelectSnapshot("history") }, Modifier.fillMaxWidth())
                 }
             }

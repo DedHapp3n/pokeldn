@@ -115,11 +115,12 @@ class LdnAdvertisementBuilder internal constructor(
             identity: LdnHostIdentity,
             nonce: Int,
             participants: List<LdnAdvertisedParticipant>,
+            parameters: LdnHostParameters = LdnHostParameters(),
         ): ByteArray {
             val networkId = ByteArrayOutputStream().apply {
-                writeU64(LOCAL_COMMUNICATION_ID)
+                writeU64(parameters.communicationId)
                 write(ByteArray(2))
-                writeU16(SCENE_ID)
+                writeU16(parameters.sceneId)
                 write(ByteArray(4))
                 write(identity.ssid)
             }.toByteArray()
@@ -128,10 +129,10 @@ class LdnAdvertisementBuilder internal constructor(
                 write(ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(identity.challengeToken).array())
                 write(SECURITY_MODE_PROD)
                 write(ACCEPT_ALL)
-                writeU16(APP_VERSION)
+                writeU16(parameters.appVersion)
                 write(ByteArray(8))
-                writeU16((BAND_2_4_GHZ shl 10) or CHANNEL)
-                write(MAX_PARTICIPANTS)
+                writeU16((BAND_2_4_GHZ shl 10) or parameters.channel)
+                write(parameters.maxParticipants)
                 write(participants.size)
                 participants.forEach { participant ->
                     require(participant.ipAddress.size == 4 && participant.mac.size == 6)
@@ -155,7 +156,7 @@ class LdnAdvertisementBuilder internal constructor(
                 writeU16(plaintext.size)
                 write(nonceBytes)
             }.toByteArray()
-            val key = LdnKeyDerivation(keys, LDN_PROTOCOL).deriveAdvertiseKey(networkId)
+            val key = LdnKeyDerivation(keys, parameters.protocol).deriveAdvertiseKey(networkId)
             val encrypted = Cipher.getInstance("AES/GCM/NoPadding").run {
                 init(
                     Cipher.ENCRYPT_MODE,

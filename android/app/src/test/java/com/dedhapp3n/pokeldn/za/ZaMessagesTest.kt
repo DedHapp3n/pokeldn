@@ -16,6 +16,17 @@ class ZaMessagesTest {
         assertEquals("English", trainer.languageLabel)
         assertEquals(5071, trainer.asTrainerProfile()!!.tid)
         assertEquals(0x8f30fb69L, ZaMessages.identitySync(fixture("identity11b")))
+        assertArrayEquals(fixture("identity11b"), ZaReference.syncMessage(fixture("identity10")))
+        val changed = ZaReference.namedIdentity(fixture("identity10"), "POKELDN")
+        assertEquals("POKELDN", ZaMessages.trainer(changed).name)
+        assertFalse(ZaReference.syncMessage(changed).contentEquals(fixture("identity11b")))
+    }
+
+    @Test fun exactCurrentUpstreamAdvertisements() {
+        assertEquals("1068a742ac3a8787ab6066a161f5d5e1", ZaAdvertisementBuilder.linkCodeMask().joinToString("") { "%02x".format(it.toInt() and 255) })
+        assertArrayEquals(fixture("advertisement_00000000"), ZaAdvertisementBuilder.buildApplicationData("00000000"))
+        assertArrayEquals(fixture("advertisement_12345678"), ZaAdvertisementBuilder.buildApplicationData("12345678"))
+        assertEquals(112, ZaAdvertisementBuilder.buildApplicationData("12345678").size)
     }
 
     @Test fun upstreamGeneratedPreviewAndMarker() {
@@ -31,6 +42,8 @@ class ZaMessagesTest {
         val pick = message.copyOf().also { it[it.lastIndex] = 0 }
         assertFalse(ZaMessages.preview(pick).shown)
         assertEquals(parsed.fingerprint, ZaMessages.preview(pick).fingerprint)
+        val roundOne = message.copyOf().also { it[4] = 1 }
+        assertEquals(parsed.fingerprint, ZaMessages.preview(roundOne).fingerprint)
     }
 
     @Test fun incrementalDedupAndOfflineReload() {
@@ -60,6 +73,27 @@ class ZaMessagesTest {
         } finally { folder.deleteRecursively() }
     }
 
+    @Test fun duplicatePacketsDoNotCauseRepeatedDiskWrites() {
+        val folder = Files.createTempDirectory("za-disk-test").toFile()
+        try {
+            var writes = 0
+            val store = ZaSnapshotStore(folder, onDiskWrite = { writes++ })
+            var snapshot = store.start()
+            assertEquals(1, writes)
+            val preview = fixture("preview")
+            snapshot = store.observe(snapshot, preview)
+            assertEquals(2, writes)
+            repeat(100) { snapshot = store.observe(snapshot, preview) }
+            assertEquals(2, writes)
+            assertEquals(100, snapshot.duplicatePreviews)
+            snapshot = store.observe(snapshot, fixture("preview_other"))
+            assertEquals(3, writes)
+            assertEquals(2, ZaSnapshotStore(folder).load(snapshot.id)!!.pokemon.size)
+            store.finish(snapshot)
+            assertEquals(4, writes)
+        } finally { folder.deleteRecursively() }
+    }
+
     @Test fun materiallyDifferentRecordStaysDistinct() {
         // The fixture's encrypted record cannot be edited without invalidating the checksum.
         // A separate upstream-built record is generated with a different species and PID.
@@ -83,4 +117,15 @@ class ZaMessagesTest {
             assertTrue(ZaReadOnlyPolicy.shouldCloseForInbound(10, message))
         }
     }
+
+    @Test fun protocolElevenFrameAndRetransmissionMatchUpstreamShape() {
+        val stream = ZaReliableStream(11)
+        val opened = stream.open(byteArrayOf(0x14, 0x02, 0xb9.toByte(), 0), 0).single()
+        assertEquals("0f0004fff0fff003000000021402b900", stream.frame(opened).toHex())
+        val due = stream.poll(500).first { it.retransmitted }
+        assertEquals(stream.frame(opened).toHex(), stream.frame(due).let { it.copyOf().also { data -> data[0] = 0x0f }.toHex() })
+        assertEquals(1, stream.outstanding)
+    }
+
+    private fun ByteArray.toHex() = joinToString("") { "%02x".format(it.toInt() and 255) }
 }

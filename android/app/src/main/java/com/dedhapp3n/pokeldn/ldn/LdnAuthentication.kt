@@ -44,10 +44,21 @@ internal data class LdnAuthenticationOutcome(
     val participant: LdnParticipant?,
 )
 
+internal data class LdnHostParameters(
+    val protocol: Int = LdnAdvertisementBuilder.LDN_PROTOCOL,
+    val communicationId: Long = LdnAdvertisementBuilder.LOCAL_COMMUNICATION_ID,
+    val sceneId: Int = LdnAdvertisementBuilder.SCENE_ID,
+    val appVersion: Int = LdnAdvertisementBuilder.APP_VERSION,
+    val maxParticipants: Int = LdnAdvertisementBuilder.MAX_PARTICIPANTS,
+    val channel: Int = LdnAdvertisementBuilder.CHANNEL,
+    val hostName: ByteArray = "POKELDN".toByteArray(Charsets.UTF_8),
+)
+
 /** Host-side Nintendo LDN authentication and participant table, without Pia or IP traffic. */
 internal class LdnAuthenticationHost(
     private val keys: LdnProdKeys,
     identity: LdnHostIdentity,
+    private val parameters: LdnHostParameters = LdnHostParameters(),
 ) {
     private val lock = Any()
     private var identity = identity
@@ -70,7 +81,7 @@ internal class LdnAuthenticationHost(
 
     fun process(source: ByteArray, payload: ByteArray): LdnAuthenticationOutcome = synchronized(lock) {
         val request = try {
-            LdnAuthenticationCodec.decodeRequest(keys, payload)
+            LdnAuthenticationCodec.decodeRequest(keys, payload, parameters)
         } catch (_: Exception) {
             return@synchronized LdnAuthenticationOutcome(
                 response = LdnAuthenticationCodec.encodeResponse(
@@ -79,6 +90,7 @@ internal class LdnAuthenticationHost(
                     statusCode = AUTH_MALFORMED_REQUEST,
                     clientRandom = ByteArray(16),
                     challenge = byteArrayOf(),
+                    parameters = parameters,
                 ),
                 statusCode = AUTH_MALFORMED_REQUEST,
                 requestParsed = false,
@@ -114,6 +126,7 @@ internal class LdnAuthenticationHost(
                 statusCode = status,
                 clientRandom = request.clientRandom,
                 challenge = if (status == AUTH_SUCCESS) challengeResponse else byteArrayOf(),
+                parameters = parameters,
             ),
             statusCode = status,
             requestParsed = true,
@@ -131,8 +144,8 @@ internal class LdnAuthenticationHost(
     private fun validate(request: LdnAuthenticationRequest): Int = when {
         request.version !in 2..4 -> AUTH_INVALID_VERSION
         request.statusCode != 0 || request.isResponse -> AUTH_MALFORMED_REQUEST
-        request.localCommunicationId != LdnAdvertisementBuilder.LOCAL_COMMUNICATION_ID -> AUTH_MALFORMED_REQUEST
-        request.sceneId != LdnAdvertisementBuilder.SCENE_ID -> AUTH_MALFORMED_REQUEST
+        request.localCommunicationId != parameters.communicationId -> AUTH_MALFORMED_REQUEST
+        request.sceneId != parameters.sceneId -> AUTH_MALFORMED_REQUEST
         !request.ssid.contentEquals(identity.ssid) -> AUTH_MALFORMED_REQUEST
         !request.serverRandom.contentEquals(identity.serverRandom) -> AUTH_MALFORMED_REQUEST
         else -> AUTH_SUCCESS
@@ -142,7 +155,7 @@ internal class LdnAuthenticationHost(
         require(source.size == 6) { "LDN participant MAC must contain six bytes" }
         participants[source.key()]?.let { return it }
         val used = participants.values.mapTo(mutableSetOf()) { it.index }
-        val index = (1 until LdnAdvertisementBuilder.MAX_PARTICIPANTS).firstOrNull { it !in used }
+        val index = (1 until parameters.maxParticipants).firstOrNull { it !in used }
             ?: return null
         val participant = LdnParticipant(
             index = index,
@@ -169,7 +182,7 @@ internal class LdnAuthenticationHost(
                 ipAddress = byteArrayOf(169.toByte(), 254.toByte(), identity.networkNumber.toByte(), 1),
                 mac = identity.bssid,
                 platform = PLATFORM_NX,
-                name = HOST_NAME,
+                name = parameters.hostName,
             )
         )
         participants.values.sortedBy(LdnParticipant::index).forEach { participant ->
@@ -181,7 +194,7 @@ internal class LdnAuthenticationHost(
                 name = participant.name,
             )
         }
-        return LdnAdvertisementBuilder.encodeActionFrame(keys, identity, nonce, advertised)
+        return LdnAdvertisementBuilder.encodeActionFrame(keys, identity, nonce, advertised, parameters)
     }
 
     private fun ByteArray.key(): String = joinToString("") { "%02x".format(it.toInt() and 0xff) }
@@ -193,7 +206,6 @@ internal class LdnAuthenticationHost(
         private const val AUTH_INVALID_VERSION = 4
         private const val AUTH_CHALLENGE_FAILURE = 6
         private const val PLATFORM_NX = 0
-        private val HOST_NAME = "POKELDN".toByteArray(Charsets.UTF_8)
     }
 }
 
@@ -213,7 +225,7 @@ internal data class LdnAuthenticationRequest(
 )
 
 internal object LdnAuthenticationCodec {
-    fun decodeRequest(keys: LdnProdKeys, data: ByteArray): LdnAuthenticationRequest {
+    fun decodeRequest(keys: LdnProdKeys, data: ByteArray, parameters: LdnHostParameters = LdnHostParameters()): LdnAuthenticationRequest {
         require(data.size >= OUTER_HEADER_SIZE + AUTH_HEADER_SIZE + GCM_TAG_SIZE) {
             "Authentication frame is too short"
         }
@@ -241,7 +253,7 @@ internal object LdnAuthenticationCodec {
         val tagOffset = OUTER_HEADER_SIZE + AUTH_HEADER_SIZE
         val tag = data.copyOfRange(tagOffset, tagOffset + GCM_TAG_SIZE)
         val ciphertext = data.copyOfRange(tagOffset + GCM_TAG_SIZE, data.size)
-        val key = LdnKeyDerivation(keys, LdnAdvertisementBuilder.LDN_PROTOCOL)
+        val key = LdnKeyDerivation(keys, parameters.protocol)
             .deriveAuthenticationKey(clientRandom)
         val plaintext = Cipher.getInstance("AES/GCM/NoPadding").run {
             init(
@@ -314,6 +326,7 @@ internal object LdnAuthenticationCodec {
         statusCode: Int,
         clientRandom: ByteArray,
         challenge: ByteArray,
+        parameters: LdnHostParameters = LdnHostParameters(),
     ): ByteArray {
         require(clientRandom.size == 16)
         val payload = ByteArrayOutputStream().apply {
@@ -322,9 +335,9 @@ internal object LdnAuthenticationCodec {
             write(challenge)
         }.toByteArray()
         val networkId = ByteArrayOutputStream().apply {
-            writeU64LittleEndian(LdnAdvertisementBuilder.LOCAL_COMMUNICATION_ID)
+            writeU64LittleEndian(parameters.communicationId)
             write(ByteArray(2))
-            writeU16LittleEndian(LdnAdvertisementBuilder.SCENE_ID)
+            writeU16LittleEndian(parameters.sceneId)
             write(ByteArray(4))
             write(identity.ssid)
         }.toByteArray()
@@ -340,7 +353,7 @@ internal object LdnAuthenticationCodec {
             write(identity.serverRandom)
             write(clientRandom)
         }.toByteArray()
-        val key = LdnKeyDerivation(keys, LdnAdvertisementBuilder.LDN_PROTOCOL)
+        val key = LdnKeyDerivation(keys, parameters.protocol)
             .deriveAuthenticationKey(clientRandom)
         val encrypted = Cipher.getInstance("AES/GCM/NoPadding").run {
             init(

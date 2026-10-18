@@ -583,9 +583,13 @@ internal data class PiaHeader(
 internal data class PiaMessage(val protocol: Int, val payload: ByteArray)
 internal data class PiaDecoded(val header: PiaHeader, val messages: List<PiaMessage>)
 
-internal class PiaCrypto(ssid: ByteArray) {
+internal class PiaCrypto(
+    ssid: ByteArray,
+    gameKey: ByteArray = FRLG_KEY,
+    private val version: Int = 16,
+) {
     private val key = Cipher.getInstance("AES/ECB/NoPadding").run {
-        init(Cipher.ENCRYPT_MODE, SecretKeySpec(FRLG_KEY, "AES")); doFinal(ssid)
+        init(Cipher.ENCRYPT_MODE, SecretKeySpec(gameKey, "AES")); doFinal(ssid)
     }
     private val networkId = CRC32().apply { update(ssid, 1, 15) }.value.toInt()
 
@@ -597,6 +601,7 @@ internal class PiaCrypto(ssid: ByteArray) {
 
     fun decode(packet: ByteArray, sourceIp: String): PiaDecoded {
         require(packet.size >= 29 && packet.copyOfRange(0, 4).contentEquals(MAGIC)) { "not a PIA packet" }
+        require(packet[4].u8() and 0x7f == version) { "wrong PIA version" }
         val header = PiaHeader(readU16(packet, 6), readU16(packet, 8), readU16(packet, 10),
             packet.copyOfRange(13, 21), packet[5].u8(), packet[12].u8())
         val nonce = nonce(sourceIp, header.nonce)
@@ -619,7 +624,7 @@ internal class PiaCrypto(ssid: ByteArray) {
     private fun nonce(ip: String, nonce: ByteArray): ByteArray =
         ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(networkId xor readU32(ipBytes(ip), 0).toInt()).array() + nonce
 
-    private fun pack(h: PiaHeader) = MAGIC + byteArrayOf(0x90.toByte(), h.flags.toByte()) +
+    private fun pack(h: PiaHeader) = MAGIC + byteArrayOf((version or 0x80).toByte(), h.flags.toByte()) +
         u16(h.destination) + u16(h.source) + u16(h.packetId) + byteArrayOf(h.footer.toByte()) + h.nonce
 
     private fun gcmCounter(input: ByteArray, nonce: ByteArray): ByteArray {
@@ -726,13 +731,13 @@ internal class LdnPiaUdpTransport(private val hostIp: String, private val hostMa
     }
 }
 
-private fun message(protocol: Int, payload: ByteArray, messageFlags: Int? = null): ByteArray {
+internal fun message(protocol: Int, payload: ByteArray, messageFlags: Int? = null): ByteArray {
     val flags = 6 or if (messageFlags == null) 0 else 1
     return byteArrayOf(flags.toByte()) +
         (if (messageFlags == null) byteArrayOf() else byteArrayOf(messageFlags.toByte())) +
         u16(payload.size) + byteArrayOf(protocol.toByte()) + payload
 }
-private fun zstdCompress(data: ByteArray): ByteArray {
+internal fun zstdCompress(data: ByteArray): ByteArray {
     val context = ZstdCompressCtx()
     val frame = try {
         context.setLevel(4).setContentSize(false).compress(data)
@@ -763,12 +768,12 @@ private fun parseMessages(data: ByteArray): List<PiaMessage> {
     require(p == data.size) { "invalid PIA message tiling" }
     return out
 }
-private fun constantId(mac: ByteArray) = byteArrayOf(mac[2], mac[4], mac[5], mac[3], mac[1], mac[0], 0, 0)
-private fun ipBytes(ip: String) = ip.split('.').map { it.toInt().toByte() }.toByteArray()
+internal fun constantId(mac: ByteArray) = byteArrayOf(mac[2], mac[4], mac[5], mac[3], mac[1], mac[0], 0, 0)
+internal fun ipBytes(ip: String) = ip.split('.').map { it.toInt().toByte() }.toByteArray()
 private fun ipString(ip: ByteArray) = ip.joinToString(".") { (it.toInt() and 0xff).toString() }
 private fun readU16(data: ByteArray, offset: Int) = (data[offset].u8() shl 8) or data[offset + 1].u8()
 private fun readU32(data: ByteArray, offset: Int) = ByteBuffer.wrap(data, offset, 4).order(ByteOrder.BIG_ENDIAN).int.toLong() and 0xffffffffL
-private fun u16(value: Int) = byteArrayOf((value ushr 8).toByte(), value.toByte())
+internal fun u16(value: Int) = byteArrayOf((value ushr 8).toByte(), value.toByte())
 private fun Byte.u8() = toInt() and 0xff
 private fun String.hex() = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 private fun checksum(data: ByteArray): Int {

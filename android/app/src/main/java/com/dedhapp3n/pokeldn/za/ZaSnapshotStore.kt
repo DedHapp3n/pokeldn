@@ -22,7 +22,11 @@ data class ZaSnapshot(
 )
 
 /** Private versioned binary snapshot. Each meaningful observation is committed with fsync + rename. */
-internal class ZaSnapshotStore(private val directory: File, private val now: () -> Long = System::currentTimeMillis) {
+internal class ZaSnapshotStore(
+    private val directory: File,
+    private val now: () -> Long = System::currentTimeMillis,
+    private val onDiskWrite: () -> Unit = {},
+) {
     @Synchronized fun start(linkCode: String? = null): ZaSnapshot {
         val time = now()
         return ZaSnapshot(UUID.randomUUID().toString(), time, time, false, linkCode, null, null, emptyList(), 0, 0, null, null).also(::save)
@@ -54,7 +58,15 @@ internal class ZaSnapshotStore(private val directory: File, private val now: () 
         } catch (error: IllegalArgumentException) {
             snapshot.copy(updated = time, lastMessageId = id, lastDecodeError = error.message)
         }
-        if (next !== snapshot) save(next)
+        // Keep duplicate counts/lastSeen in RAM. New identities, records and errors are durable at once.
+        val durableChange = when (id) {
+            0x1400 -> next.trainer != snapshot.trainer || next.lastDecodeError != snapshot.lastDecodeError
+            0x1403 -> next.lastDecodeError != snapshot.lastDecodeError
+            0x0100 -> !next.selectionRaw.contentEqualNullable(snapshot.selectionRaw) || next.lastDecodeError != snapshot.lastDecodeError
+            0x0101 -> next.pokemon.size != snapshot.pokemon.size || next.lastDecodeError != snapshot.lastDecodeError
+            else -> false
+        }
+        if (durableChange) save(next)
         return next
     }
 
@@ -88,6 +100,7 @@ internal class ZaSnapshotStore(private val directory: File, private val now: () 
         } catch (_: AtomicMoveNotSupportedException) {
             Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
         }
+        onDiskWrite()
     }
 
     @Synchronized fun load(id: String): ZaSnapshot? {
@@ -124,4 +137,10 @@ internal class ZaSnapshotStore(private val directory: File, private val now: () 
     private fun DataInputStream.bytes(max: Int): ByteArray? { val size = readInt(); require(size in -1..max); return if (size < 0) null else ByteArray(size).also { readFully(it) } }
 
     companion object { private const val MAGIC = 0x5a41534e; private const val VERSION = 1 }
+}
+
+private fun ByteArray?.contentEqualNullable(other: ByteArray?): Boolean = when {
+    this == null -> other == null
+    other == null -> false
+    else -> contentEquals(other)
 }

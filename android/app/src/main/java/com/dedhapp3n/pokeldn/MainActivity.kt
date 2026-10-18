@@ -80,6 +80,13 @@ import com.dedhapp3n.pokeldn.usb.UsbSerialTransport
 import com.dedhapp3n.pokeldn.usb.devicePhase
 import com.dedhapp3n.pokeldn.za.ZaSnapshot
 import com.dedhapp3n.pokeldn.za.ZaSnapshotStore
+import com.dedhapp3n.pokeldn.za.ZaReaderState
+import com.dedhapp3n.pokeldn.za.ZaReaderService
+import com.dedhapp3n.pokeldn.za.ZaReaderController
+import com.dedhapp3n.pokeldn.za.ZaLdnNetworkBuilder
+import com.dedhapp3n.pokeldn.za.ZaHostSession
+import com.dedhapp3n.pokeldn.za.ZaReference
+import java.security.SecureRandom
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
@@ -117,6 +124,8 @@ class MainActivity : ComponentActivity() {
     private var saveRestoreState by mutableStateOf(FrlgSaveRestoreUiState())
     private var backupStorageState by mutableStateOf(FrlgBackupStorageUiState())
     private var zaSnapshots by mutableStateOf<List<ZaSnapshot>>(emptyList())
+    private var zaReaderState by mutableStateOf<ZaReaderState?>(null)
+    private var zaReaderSubscription: AutoCloseable? = null
     private var radioState by mutableStateOf(Esp32RadioState())
     private var pendingDeviceId: Int? = null
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -257,7 +266,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        transport = FrlgOperationService.ownedTransport() ?: UsbSerialTransport(usbManager)
+        transport = ZaReaderService.ownedTransport() ?: FrlgOperationService.ownedTransport() ?: UsbSerialTransport(usbManager)
         FrlgOperationService.restoreSelection()?.let { saveRestoreState = it }
         if (!FrlgOperationService.isActive()) {
             FrlgRestoreTraceStore(filesDir.resolve(FrlgRestoreTraceStore.FILE_NAME)).load()?.let { trace ->
@@ -266,12 +275,18 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
-        FrlgOperationService.ownedSession()?.let {
+        (ZaReaderService.ownedSession() ?: FrlgOperationService.ownedSession())?.let {
             installRadioSession(it)
             connectionState = SerialConnectionState(phase = SerialConnectionPhase.CONNECTED)
             esp32State = Esp32HandshakeState(Esp32HandshakePhase.VERIFIED, detail = "ESP32 operation active")
         }
         foregroundOperationSubscription = FrlgOperationService.subscribe(::onForegroundOperationProgress)
+        zaReaderSubscription = ZaReaderService.subscribe { state ->
+            runOnUiThread {
+                zaReaderState = state
+                zaSnapshots = zaSnapshotStore.list()
+            }
+        }
         prodKeysState = prodKeysStore.state()
         trainerProfile = trainerProfileStore.load()
         zaSnapshots = zaSnapshotStore.list()
@@ -329,6 +344,9 @@ class MainActivity : ComponentActivity() {
                     onOpenBackupFolder = { backupFolderPicker.launch(backupFolder.uri()) },
                     onChangeBackupFolder = { backupFolderPicker.launch(null) },
                     zaSnapshots = zaSnapshots,
+                    zaReaderState = zaReaderState,
+                    onStartZaReader = ::startZaReader,
+                    onFinishZaReader = ZaReaderService::finish,
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -350,9 +368,11 @@ class MainActivity : ComponentActivity() {
         invalidateLdnApTest()
         foregroundOperationSubscription?.close()
         foregroundOperationSubscription = null
+        zaReaderSubscription?.close()
+        zaReaderSubscription = null
         if (!FrlgOperationService.isActive()) invalidateFrlgOperation()
         operationId++
-        if (!FrlgOperationService.owns(radioSession)) serialWorker.execute { closeRadioAndTransport() }
+        if (!FrlgOperationService.owns(radioSession) && !ZaReaderService.owns(radioSession)) serialWorker.execute { closeRadioAndTransport() }
         serialWorker.shutdown()
         helloWorker.shutdownNow()
         ldnOperationWorker.shutdownNow()
@@ -739,7 +759,49 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun startZaReader() {
+        val session = radioSession
+        if (ZaReaderService.isActive() || FrlgOperationService.isActive() || activeLdnTest != null || activeFrlgOperation != null) return
+        if (esp32State.phase != Esp32HandshakePhase.VERIFIED || session?.state?.phase != Esp32RadioPhase.READY) {
+            zaReaderState = zaReaderState?.copy(phase = "FAILED", detail = "Connect and verify the ESP32 first", terminal = true)
+            return
+        }
+        val code = SecureRandom().nextInt(100_000_000).toString().padStart(8, '0')
+        val snapshot = zaSnapshotStore.start(code)
+        val initial = ZaReaderState(code, "PREPARING NETWORK", snapshot)
+        zaReaderState = initial
+        requestOperationNotificationPermission()
+        ZaReaderService.begin(this, transport, session, initial)
+        ldnOperationWorker.execute {
+            var operation: Esp32RadioOperation? = null
+            var attached = false
+            try {
+                val keys = prodKeysStore.loadLdnKeys()
+                val network = ZaLdnNetworkBuilder().build(keys, code)
+                val hostName = trainerProfile.name.takeIf { it.isNotBlank() } ?: "POKELDN"
+                val identity = ZaReference.namedIdentity(assets.open("za/identity10.bin").use { it.readBytes() }, hostName)
+                val selection = assets.open("za/selection.bin").use { it.readBytes() }
+                val activeOperation = session.startAccessPoint(network.accessPoint.toEsp32AccessPointConfig())
+                operation = activeOperation
+                lateinit var controller: ZaReaderController
+                val host = ZaHostSession(network.accessPoint.ssid, network.accessPoint.bssid,
+                    network.authentication.hostIp, code, identity, selection, { message -> controller.gameMessage(message) })
+                controller = ZaReaderController(session, activeOperation, network, host, zaSnapshotStore, snapshot,
+                    ZaReaderService::update, { error -> Log.e("PokeLDN-ZA", "Reader failed", error) })
+                ZaReaderService.attach(transport, session, activeOperation, controller)
+                attached = true
+                controller.start()
+            } catch (error: Throwable) {
+                if (!attached) operation?.let { runCatching { session.stopAccessPoint(it) } }
+                val failed = zaSnapshotStore.finish(snapshot)
+                ZaReaderService.clearPreparation()
+                ZaReaderService.update(initial.copy(phase = "FAILED", snapshot = failed, detail = error.message, terminal = true))
+            }
+        }
+    }
+
     private fun startLdnApTest() {
+        if (ZaReaderService.isActive()) return
         if (activeFrlgOperation != null) return
         if (prodKeysState.phase != ProdKeysPhase.AVAILABLE) {
             ldnApTestState = LdnApTestState(LdnApTestPhase.FAILED, "Valid prod.keys are required")
@@ -899,6 +961,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startFrlgOperation(saveBackup: Boolean, restoreSave: ByteArray? = null) {
+        if (ZaReaderService.isActive()) return
         val saveRestore = restoreSave != null
         val session = radioSession
         if (session?.state?.phase == Esp32RadioPhase.READY) releaseStaleRadioOwnership(session)

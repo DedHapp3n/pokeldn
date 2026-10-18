@@ -71,6 +71,7 @@ internal fun DiagnosticsScreen(
     onImportProdKeys: () -> Unit,
     ldnApTestState: LdnApTestState,
     frlgOperationState: FrlgOperationState,
+    zaReaderState: com.dedhapp3n.pokeldn.za.ZaReaderState?,
     onStartLdnApTest: () -> Unit,
     onStopLdnApTest: () -> Unit,
     modifier: Modifier = Modifier,
@@ -86,6 +87,20 @@ internal fun DiagnosticsScreen(
     CenteredDeviceList(modifier) {
         item {
             DeviceScreenTitle(null, "Diagnostics", "USB, serial, protocol, and capture controls")
+        }
+        zaReaderState?.let { reader ->
+            item {
+                ShellPanel("Legends: Z-A reader") {
+                    DetailLine("Stage", reader.phase)
+                    DetailLine("Trainer", reader.snapshot.trainer?.name ?: "Waiting")
+                    DetailLine("Unique previews", reader.snapshot.pokemon.size.toString())
+                    DetailLine("Preview records", reader.snapshot.previewRecords.toString())
+                    DetailLine("Duplicates", reader.snapshot.duplicatePreviews.toString())
+                    reader.detail?.let { DetailLine("Detail", it) }
+                    DetailLine("Session", reader.host.phase)
+                    reader.host.leavePhase?.let { DetailLine("Leave", it) }
+                }
+            }
         }
         frlgOperationState.diagnostics?.let { diagnostics ->
             item {

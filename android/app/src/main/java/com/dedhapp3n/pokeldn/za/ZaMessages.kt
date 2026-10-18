@@ -49,7 +49,10 @@ internal object ZaMessages {
     }
 
     fun preview(message: ByteArray): ZaPreview {
-        require(message.size == 354 && message.sliceArray(0..8).contentEquals(byteArrayOf(1, 1, 0xb9.toByte(), 3, 0, 0xbc.toByte(), 0x81.toByte(), 0x58, 1))) { "Invalid 0101 offer" }
+        require(message.size == 354 && message[0].u() == 1 && message[1].u() == 1 &&
+            message[2].u() == 0xb9 && message[3].u() == 3 && message[4].u() < 0x80 &&
+            message[5].u() == 0xbc && message[6].u() == 0x81 && message[7].u() == 0x58 && message[8].u() == 1
+        ) { "Invalid 0101 offer framing" }
         val marker = message.last().u()
         require(marker == 0 || marker == 1) { "Unknown offer marker" }
         val raw = message.copyOfRange(9, 353)
