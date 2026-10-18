@@ -87,6 +87,7 @@ import com.dedhapp3n.pokeldn.za.ZaLdnNetworkBuilder
 import com.dedhapp3n.pokeldn.za.ZaHostSession
 import com.dedhapp3n.pokeldn.za.ZaReference
 import com.dedhapp3n.pokeldn.za.ZaNames
+import com.dedhapp3n.pokeldn.sprites.PokemonSpriteRepository
 import com.dedhapp3n.pokeldn.profile.TrainerIdentityStore
 import com.dedhapp3n.pokeldn.profile.TrainerIdentitySettings
 import com.dedhapp3n.pokeldn.profile.TrainerSource
@@ -107,6 +108,7 @@ class MainActivity : ComponentActivity() {
     private val trainerIdentityStore by lazy { TrainerIdentityStore(this) }
     private val zaSnapshotStore by lazy { ZaSnapshotStore(filesDir.resolve("za-snapshots")) }
     private val zaNames by lazy { ZaNames.fromAssets(assets) }
+    private val pokemonSprites by lazy { PokemonSpriteRepository(filesDir.resolve("pokemon-sprites")) }
     private val backupFolder by lazy { AndroidFrlgBackupFolder(this) }
     private val backupStore by lazy {
         FrlgBackupStore(filesDir.resolve("frlg-backups"), externalDirectory = backupFolder::externalDirectory)
@@ -360,6 +362,7 @@ class MainActivity : ComponentActivity() {
                     onChangeBackupFolder = { backupFolderPicker.launch(null) },
                     zaSnapshots = zaSnapshots,
                     zaNames = zaNames,
+                    pokemonSprites = pokemonSprites,
                     zaReaderState = zaReaderState,
                     onStartZaReader = ::startZaReader,
                     onFinishZaReader = ZaReaderService::finish,

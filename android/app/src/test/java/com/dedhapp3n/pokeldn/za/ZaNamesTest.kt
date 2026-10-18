@@ -33,4 +33,9 @@ class ZaNamesTest {
         assertEquals("Form 2 · Lv. 30 · Female", names().summary(pokemon.copy(form = 2)))
         assertEquals(listOf("HP", "Atk", "Def", "SpA", "SpD", "Spe"), ZaNames.statRows(pokemon.ivs).map { it.first })
     }
+
+    @Test fun statRowsReorderWireValuesForDisplay() {
+        assertEquals(listOf("HP" to 1, "Atk" to 2, "Def" to 3, "SpA" to 5, "SpD" to 6, "Spe" to 4),
+            ZaNames.statRows(listOf(1, 2, 3, 4, 5, 6)))
+    }
 }

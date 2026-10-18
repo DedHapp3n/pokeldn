@@ -35,7 +35,12 @@ internal class ZaNames(
         }
 
         fun gender(value: Int) = when (value) { 0 -> "Male"; 1 -> "Female"; 2 -> "Genderless"; else -> "Unknown" }
-        fun statRows(values: List<Int>): List<Pair<String, Int>> = listOf("HP", "Atk", "Def", "SpA", "SpD", "Spe").zip(values)
+        /** Record order is HP, Atk, Def, Spe, SpA, SpD; display the conventional order. */
+        fun statRows(values: List<Int>): List<Pair<String, Int>> {
+            require(values.size == 6)
+            return listOf("HP", "Atk", "Def", "SpA", "SpD", "Spe")
+                .zip(listOf(0, 1, 2, 4, 5, 3).map(values::get))
+        }
         private fun unknown(id: Int) = "Unknown (#$id)"
         private val BALLS = listOf(
             "None", "Master Ball", "Ultra Ball", "Great Ball", "Poké Ball", "Safari Ball", "Net Ball",

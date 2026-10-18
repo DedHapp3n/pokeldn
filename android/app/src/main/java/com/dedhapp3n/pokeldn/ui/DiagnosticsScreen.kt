@@ -110,6 +110,8 @@ internal fun DiagnosticsScreen(
                         appendLine("unreadablePreviews=${reader.snapshot.unreadablePreviews}")
                         appendLine("duplicates=${reader.snapshot.duplicatePreviews}")
                         appendLine("lastUnreadableAt=${reader.snapshot.lastUnreadableAt ?: "-"}")
+                        appendLine("lastUnreadableError=${reader.snapshot.lastUnreadableError ?: "-"}")
+                        appendLine("unreadableRaw=${reader.snapshot.unreadableRaw?.joinToString("") { "%02X".format(it.toInt() and 0xff) } ?: "-"}")
                         appendLine("apActive=${reader.discovery.apActive}")
                         appendLine("advertisementsQueued=${reader.discovery.advertisementsQueued}")
                         appendLine("advertisementsSent=${reader.discovery.advertisementsSent}")

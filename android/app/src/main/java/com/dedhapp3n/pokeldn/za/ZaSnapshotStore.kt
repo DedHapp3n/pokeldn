@@ -24,6 +24,7 @@ data class ZaSnapshot(
     val unreadablePreviews: Int = 0,
     val lastUnreadableAt: Long? = null,
     val unreadableRaw: ByteArray? = null,
+    val lastUnreadableError: String? = null,
 )
 
 private const val GAME_NAME = "Pokémon Legends: Z-A"
@@ -66,7 +67,7 @@ internal class ZaSnapshotStore(
         } catch (error: IllegalArgumentException) {
             if (id == 0x0101) snapshot.copy(updated = time, lastMessageId = id, lastDecodeError = error.message,
                 unreadablePreviews = snapshot.unreadablePreviews + 1, lastUnreadableAt = time,
-                unreadableRaw = message.takeIf { it.size <= 354 }?.copyOf())
+                unreadableRaw = message.takeIf { it.size <= 354 }?.copyOf(), lastUnreadableError = error.message)
             else snapshot.copy(updated = time, lastMessageId = id, lastDecodeError = error.message)
         }
         // Keep duplicate counts/lastSeen in RAM. Capture and unreadable counts are durable at once.
@@ -108,6 +109,7 @@ internal class ZaSnapshotStore(
                 out.writeUTF(snapshot.game); out.writeInt(snapshot.readerVersion)
                 out.writeInt(snapshot.unreadablePreviews); out.writeLong(snapshot.lastUnreadableAt ?: -1L)
                 out.bytes(snapshot.unreadableRaw)
+                out.optional(snapshot.lastUnreadableError)
                 out.flush(); file.fd.sync()
             }
         }
@@ -145,8 +147,10 @@ internal class ZaSnapshotStore(
                 val unreadable = if (version >= 2) input.readInt().also { require(it in 0..1_000_000) } else 0
                 val unreadableAt = if (version >= 2) input.readLong().takeIf { it >= 0 } else null
                 val unreadableRaw = if (version >= 2) input.bytes(354) else null
+                val unreadableError = if (version >= 3) input.optional()
+                    else if (unreadable > 0) error else null
                 ZaSnapshot(id, started, updated, finished, code, trainer, selection, pokemon, previews, duplicates,
-                    lastId, error, game, readerVersion, unreadable, unreadableAt, unreadableRaw)
+                    lastId, error, game, readerVersion, unreadable, unreadableAt, unreadableRaw, unreadableError)
             }
         }.getOrNull()
     }
@@ -159,7 +163,7 @@ internal class ZaSnapshotStore(
     private fun DataOutputStream.bytes(value: ByteArray?) { writeInt(value?.size ?: -1); if (value != null) write(value) }
     private fun DataInputStream.bytes(max: Int): ByteArray? { val size = readInt(); require(size in -1..max); return if (size < 0) null else ByteArray(size).also { readFully(it) } }
 
-    companion object { private const val MAGIC = 0x5a41534e; private const val VERSION = 2 }
+    companion object { private const val MAGIC = 0x5a41534e; private const val VERSION = 3 }
 }
 
 private fun ByteArray?.contentEqualNullable(other: ByteArray?): Boolean = when {

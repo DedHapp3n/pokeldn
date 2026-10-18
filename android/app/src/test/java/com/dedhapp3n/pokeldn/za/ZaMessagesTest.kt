@@ -107,16 +107,43 @@ class ZaMessagesTest {
             assertEquals(1, snapshot.unreadablePreviews)
             assertEquals(0, snapshot.pokemon.size)
             assertNotNull(snapshot.lastDecodeError)
+            val unreadableError = snapshot.lastUnreadableError
+            assertNotNull(unreadableError)
             assertArrayEquals(unreadable, snapshot.unreadableRaw)
             assertNotNull(snapshot.lastUnreadableAt)
             snapshot = store.observe(snapshot, fixture("preview"))
             assertEquals(1, snapshot.pokemon.size)
+            assertNull(snapshot.lastDecodeError)
+            assertEquals(unreadableError, snapshot.lastUnreadableError)
+            assertArrayEquals(unreadable, snapshot.unreadableRaw)
             val restored = ZaSnapshotStore(folder).load(snapshot.id)!!
             assertEquals(1, restored.unreadablePreviews)
             assertArrayEquals(unreadable, restored.unreadableRaw)
+            assertEquals(unreadableError, restored.lastUnreadableError)
             assertEquals(1, restored.pokemon.size)
             assertEquals("Pokémon Legends: Z-A", restored.game)
             assertEquals(2, restored.readerVersion)
+        } finally { folder.deleteRecursively() }
+    }
+
+    @Test fun versionTwoSnapshotStillLoads() {
+        val folder = Files.createTempDirectory("za-v2-test").toFile()
+        try {
+            val id = UUID.randomUUID().toString()
+            DataOutputStream(folder.resolve("$id.zas").outputStream()).use { out ->
+                out.writeInt(0x5a41534e); out.writeInt(2); out.writeUTF(id)
+                out.writeLong(100); out.writeLong(200); out.writeBoolean(true)
+                out.writeBoolean(false); out.writeBoolean(false); out.writeInt(-1)
+                out.writeInt(0); out.writeInt(0); out.writeInt(0x0101)
+                out.writeBoolean(true); out.writeUTF("Invalid preview")
+                out.writeInt(0)
+                out.writeUTF("Pokémon Legends: Z-A"); out.writeInt(2)
+                out.writeInt(1); out.writeLong(180); out.writeInt(2); out.write(byteArrayOf(1, 1))
+            }
+            val old = ZaSnapshotStore(folder).load(id)!!
+            assertEquals(1, old.unreadablePreviews)
+            assertEquals("Invalid preview", old.lastUnreadableError)
+            assertArrayEquals(byteArrayOf(1, 1), old.unreadableRaw)
         } finally { folder.deleteRecursively() }
     }
 
