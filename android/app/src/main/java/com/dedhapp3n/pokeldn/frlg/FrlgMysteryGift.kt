@@ -10,7 +10,7 @@ enum class FrlgMysteryGiftOperation(
     val successDetail: String,
 ) {
     WALK_THROUGH_WALLS("Sending Walk Through Walls", "Walk Through Walls installed"),
-    POKEHAX_SCREEN("Sending PokeHax Screen", "PokeHax Screen completed"),
+    POKEHAX_SCREEN("Sending PokeHax Lab", "PokeHax Lab completed"),
 }
 
 internal data class FrlgGiftSnapshot(
@@ -167,7 +167,7 @@ internal class FrlgMysteryGiftEngine(
         detectedCartridge = FrlgCartridge(expectedGame, language, linkCartridge.version, linkCartridge.languageId)
         stage = FrlgGiftStage.PREPARING_BOOST
         detail = "${linkCartridge.game} / ${linkCartridge.language} detected"
-        val clientScript = if (transfer.leads.isEmpty()) CLIENT_RUN_BUFFER else CLIENT_RUN_BUFFER_TWO_LEADS
+        val clientScript = clientRunBuffer(transfer.leads.size + 1)
         sendMessage(16, clientScript) {
             stage = FrlgGiftStage.SENDING_BOOST
             detail = operation.sendingDetail
@@ -175,7 +175,7 @@ internal class FrlgMysteryGiftEngine(
                 stage = FrlgGiftStage.WAITING_RESULT
                 detail = when (operation) {
                     FrlgMysteryGiftOperation.WALK_THROUGH_WALLS -> "Waiting for console install result"
-                    FrlgMysteryGiftOperation.POKEHAX_SCREEN -> "Waiting for PokeHax Screen result"
+                    FrlgMysteryGiftOperation.POKEHAX_SCREEN -> "Waiting for PokeHax Lab result"
                 }
                 expect(19)
             }
@@ -230,13 +230,17 @@ internal class FrlgMysteryGiftEngine(
 
     companion object {
         private val CLIENT_SEND_GAME_DATA = hexMg("0800000000000000030000000000000002000000100000000400000000000000")
-        private val CLIENT_RUN_BUFFER = hexMg("020000001900000015000000000000000e00000000000000030000000000000002000000100000000400000000000000")
-        private val CLIENT_RUN_BUFFER_TWO_LEADS = hexMg(
-            "02000000190000001500000000000000" +
-                "02000000190000001500000000000000" +
-                "02000000190000001500000000000000" +
-                "0e000000000000000300000000000000" +
+        private val CLIENT_RUN_ONE = hexMg("02000000190000001500000000000000")
+        private val CLIENT_RUN_FINISH = hexMg(
+            "0e000000000000000300000000000000" +
                 "02000000100000000400000000000000")
+        private fun clientRunBuffer(payloadCount: Int) =
+            ByteArray(payloadCount * CLIENT_RUN_ONE.size + CLIENT_RUN_FINISH.size).also { script ->
+                repeat(payloadCount) { index ->
+                    CLIENT_RUN_ONE.copyInto(script, index * CLIENT_RUN_ONE.size)
+                }
+                CLIENT_RUN_FINISH.copyInto(script, payloadCount * CLIENT_RUN_ONE.size)
+            }
         private val CLIENT_SUCCESS = hexMg("02000000150000000c000000000000001400000000000000010000000d000000")
         private val CLIENT_FAILURE = hexMg("02000000150000000c000000000000001400000000000000010000000e000000")
         private val SUCCESS_MESSAGE = hexMg("cedcd900d7e3d8d900e6d5e200d5e2d800e6d9d5d800ede3e9e6fececcbbc3c8bfcc00c3be00d7e3e6e6d9d7e8e0edadff")

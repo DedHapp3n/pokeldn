@@ -38,7 +38,7 @@ class FrlgMysteryGiftTest {
 
     @Test fun `PokeHax screen is a bounded shared RAM and VRAM payload`() {
         val transfer = PokeHaxScreenPayload.forGameCode("BPGD")!!
-        assertEquals(listOf(1024, 260), transfer.leads.map { it.size })
+        assertEquals(listOf(1024, 1024, 1024, 1024, 60), transfer.leads.map { it.size })
         assertEquals(12, transfer.payload.size)
         assertTrue((transfer.leads + transfer.payload).all { it.size <= 1024 })
         val same = PokeHaxScreenPayload.forGameCode("BPGD")!!
@@ -50,7 +50,7 @@ class FrlgMysteryGiftTest {
     @Test fun `PokeHax screen uses the existing run buffer Mystery Gift flow`() {
         val engine = preparedEngine(FrlgMysteryGiftOperation.POKEHAX_SCREEN)
         assertEquals(FrlgGiftStage.WAITING_RESULT, engine.snapshot().stage)
-        assertTrue(engine.snapshot().detail!!.contains("PokeHax Screen"))
+        assertTrue(engine.snapshot().detail!!.contains("PokeHax Lab"))
     }
 
     @Test fun `successful close completes when console leaves first`() {

@@ -74,11 +74,10 @@ _POKEHAX_COPY_HEADER = bytes.fromhex(
 
 
 def pokehax_screen_stages(build=None):
-    """Return two one-shot RAM copy payloads and the frame-driven menu trampoline.
+    """Return bounded RAM copy payloads and the frame-driven menu trampoline.
 
-    The 1,188-byte menu body cannot fit the 1 KiB receive image. The standard multi-lead Mystery
-    Gift path runs these bounded copy payloads first and keeps the body in the unused remainder of
-    gDecompressionBuffer for the duration of this session only.
+    The menu body cannot fit the 1 KiB receive image. The standard multi-lead Mystery Gift path
+    runs bounded copy payloads first and keeps the body in gDecompressionBuffer for this session.
     """
     build = builds.resolve(build)
     body = bytearray(POKEHAX_SCREEN_BODY)
@@ -86,6 +85,11 @@ def pokehax_screen_stages(build=None):
         0x030026C8: build.overlay_oam,
         0x020379D6: build.ewram.get("overlay_pal", 0x020379D6),
         0x03004220: build.rng,
+        0x030022D0: build.gmain,
+        0x03004228: build.sb1ptr,
+        0x02024280: build.ewram.get("party", 0x02024280),
+        0x02037074: build.ewram.get("avatar", 0x02037074),
+        0x02036E34: build.ewram.get("objects", 0x02036E34),
     }
     for old, new in replacements.items():
         old_bytes, new_bytes = old.to_bytes(4, "little"), new.to_bytes(4, "little")

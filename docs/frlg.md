@@ -57,6 +57,7 @@ path (a station name, at most `0x40`) is clamped at its caller.
 | [Code on the console](frlg_rom.md) | the Mystery Event VM, native ARM payloads, and reading and writing the live save |
 | [The ROM map](frlg_rom_map.md) | how addresses were measured, the four function tables, the species table, and the French Easy Chat vocabulary |
 | [The random number generator](frlg_rng.md) | reading and predicting `gRngValue`, and the field stubs that aim an encounter |
+| [POKEHAX LAB](frlg_pokehax_lab.md) | the RAM-only in-game diagnostics menu and the GBA/Switch host boundary |
 | [LeafGreen](frlg_leafgreen.md) | what the second cartridge shares, the measured offset map, and the English build as an instrument |
 | [Host implementation](frlg_host.md) | the component boundaries of the trade and Mystery Gift hosts |
 

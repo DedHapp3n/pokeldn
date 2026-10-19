@@ -55,7 +55,7 @@ internal object FrlgOperationNotificationText {
         progress.phase == FrlgOperationPhase.REFUSED && progress.kind == FrlgForegroundKind.SAVE_RESTORE -> "Restore refused"
         progress.kind == FrlgForegroundKind.SAVE_RESTORE -> "PokeLDN - Restoring ${progress.cartridge?.substringBefore(" / ") ?: "save"}"
         progress.kind == FrlgForegroundKind.SAVE_BACKUP -> "PokeLDN - Save Backup"
-        progress.kind == FrlgForegroundKind.POKEHAX_SCREEN -> "PokeLDN - PokeHax Screen"
+        progress.kind == FrlgForegroundKind.POKEHAX_SCREEN -> "PokeLDN - PokeHax Lab"
         else -> "PokeLDN - Walk Through Walls"
     }
 
