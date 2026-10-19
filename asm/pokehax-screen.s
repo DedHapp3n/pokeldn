@@ -1,7 +1,7 @@
 @ POKEHAX LAB: interactive, frame-driven, RAM/VRAM-only diagnostics for FRLG.
-@ Uses the resident overlay's game-owned OAM/palette buffers and word-only VRAM
-@ stores. OAM slot 125 is deliberately unused: P/O/K/E/H/A/X occupy
-@ 120/121/122/123/124/127/126. Every call returns; only EXIT returns 1.
+@ Text uses a private BG0 character block and screen block. The game may rebuild
+@ OAM 0..63 every frame, so the LAB deliberately does not use OAM at all. VRAM
+@ stores are whole words. Every call returns; only EXIT returns 1.
 
     .arm
     .text
@@ -49,52 +49,30 @@ _start:
     ldrh    r5, [r4]
     str     r5, [r6]
     add     r6, #4
-    ldr     r4, =0x020379D6
-    sub     r4, #2                  @ OBJ colours 0..3, faded
+    ldr     r4, =0x04000008         @ BG0CNT
+    ldr     r5, [r4]
+    str     r5, [r6]
+    add     r6, #4
+    ldr     r4, =0x04000010         @ BG0HOFS/BG0VOFS
+    ldr     r5, [r4]
+    str     r5, [r6]
+    add     r6, #4
+    ldr     r4, =0x020375F4         @ BG colours 0..3, faded
     ldr     r5, [r4]
     str     r5, [r6]
     add     r6, #4
     ldr     r5, [r4, #4]
     str     r5, [r6]
     add     r6, #4
-    mov     r3, #4
-    lsl     r3, r3, #8
-    sub     r4, r3                  @ OBJ colours 0..3, unfaded
+    ldr     r4, =0x020371F4         @ BG colours 0..3, unfaded
     ldr     r5, [r4]
     str     r5, [r6]
     add     r6, #4
     ldr     r5, [r4, #4]
-    str     r5, [r6]
-    add     r6, #4
-    ldr     r4, =0x020379D6
-    sub     r4, #2
-    mov     r3, #0xF8
-    lsl     r3, r3, #2
-    sub     r4, r3                  @ BG colour 0, faded
-    ldrh    r5, [r4]
-    str     r5, [r6]
-    add     r6, #4
-    mov     r3, #4
-    lsl     r3, r3, #8
-    sub     r4, r3                  @ BG colour 0, unfaded
-    ldrh    r5, [r4]
     str     r5, [r6]
     add     r6, #4
 
-    ldr     r4, =0x030026C8
-    mov     r3, #15
-    lsl     r3, r3, #6
-    sub     r4, r3                  @ gMain.oamBuffer[0]
-    mov     r5, #128
-    lsl     r5, r5, #1             @ 256 words
-.Lsave_oam:
-    ldr     r3, [r4]
-    str     r3, [r6]
-    add     r4, #4
-    add     r6, #4
-    sub     r5, #1
-    bne     .Lsave_oam
-    ldr     r4, =0x06017B40
+    ldr     r4, =0x0600C000         @ BG charblock 3: 38 tiles
     mov     r5, #38
     lsl     r5, r5, #3
 .Lsave_tiles:
@@ -104,6 +82,16 @@ _start:
     add     r6, #4
     sub     r5, #1
     bne     .Lsave_tiles
+    ldr     r4, =0x0600F800         @ BG screenblock 31: 32x32 entries
+    mov     r5, #128
+    lsl     r5, r5, #2             @ 512 words
+.Lsave_map:
+    ldr     r3, [r4]
+    str     r3, [r6]
+    add     r4, #4
+    add     r6, #4
+    sub     r5, #1
+    bne     .Lsave_map
     bl      .Lmake_font
     ldr     r6, =0x0201F000
     ldr     r1, =0x5048584D
@@ -369,53 +357,31 @@ _start:
 
 .Lrestore:
     add     r6, #80
-    ldr     r2, [r6]
+    ldr     r2, [r6]               @ DISPCNT, restored last
     add     r6, #4
-    ldr     r4, =0x020379D6
-    sub     r4, #2
+    ldr     r4, =0x04000008
+    ldr     r5, [r6]
+    str     r5, [r4]
+    add     r6, #4
+    ldr     r4, =0x04000010
+    ldr     r5, [r6]
+    str     r5, [r4]
+    add     r6, #4
+    ldr     r4, =0x020375F4
     ldr     r5, [r6]
     str     r5, [r4]
     add     r6, #4
     ldr     r5, [r6]
     str     r5, [r4, #4]
     add     r6, #4
-    mov     r3, #4
-    lsl     r3, r3, #8
-    sub     r4, r3
+    ldr     r4, =0x020371F4
     ldr     r5, [r6]
     str     r5, [r4]
     add     r6, #4
     ldr     r5, [r6]
     str     r5, [r4, #4]
     add     r6, #4
-    ldr     r4, =0x020379D6
-    sub     r4, #2
-    mov     r3, #0xF8
-    lsl     r3, r3, #2
-    sub     r4, r3
-    ldr     r5, [r6]
-    strh    r5, [r4]
-    add     r6, #4
-    mov     r3, #4
-    lsl     r3, r3, #8
-    sub     r4, r3
-    ldr     r5, [r6]
-    strh    r5, [r4]
-    add     r6, #4
-    ldr     r4, =0x030026C8
-    mov     r3, #15
-    lsl     r3, r3, #6
-    sub     r4, r3
-    mov     r5, #128
-    lsl     r5, r5, #1
-.Lrestore_oam:
-    ldr     r3, [r6]
-    str     r3, [r4]
-    add     r6, #4
-    add     r4, #4
-    sub     r5, #1
-    bne     .Lrestore_oam
-    ldr     r4, =0x06017B40
+    ldr     r4, =0x0600C000
     mov     r5, #38
     lsl     r5, r5, #3
 .Lrestore_tiles:
@@ -425,6 +391,16 @@ _start:
     add     r4, #4
     sub     r5, #1
     bne     .Lrestore_tiles
+    ldr     r4, =0x0600F800
+    mov     r5, #128
+    lsl     r5, r5, #2
+.Lrestore_map:
+    ldr     r3, [r6]
+    str     r3, [r4]
+    add     r6, #4
+    add     r4, #4
+    sub     r5, #1
+    bne     .Lrestore_map
     ldr     r4, =0x04000000
     strh    r2, [r4]
     mov     r0, #1
@@ -437,7 +413,7 @@ _start:
 @ Thirty-eight packed 3x5 glyphs become 8x8 4bpp tiles. VRAM gets words only.
 .Lmake_font:
     push    {r4-r7, lr}
-    ldr     r4, =0x06017B40
+    ldr     r4, =0x0600C000
     mov     r6, #0
 .Lfont_char:
     ldr     r3, =.Lfont
@@ -497,90 +473,41 @@ _start:
     push    {r4-r7, lr}
     ldr     r6, =0x0201F000
     ldr     r4, =0x04000000
-    ldr     r5, =0x00001040
+    mov     r5, #1
+    lsl     r5, r5, #8             @ mode 0, BG0 only; OBJ cannot cover LAB text
     strh    r5, [r4]
+    ldr     r4, =0x04000008
+    ldr     r5, =0x00001F0C         @ charblock 3, screenblock 31, 4bpp, 256x256
+    strh    r5, [r4]
+    ldr     r4, =0x04000010
+    mov     r5, #0
+    str     r5, [r4]               @ BG0 scroll x/y
     ldr     r5, [r6, #60]          @ text RGB555
     ldr     r7, [r6, #64]          @ background RGB555
-    ldr     r4, =0x020379D6
-    sub     r4, #2
+    ldr     r4, =0x020375F4         @ BG palette 0, faded
     strh    r7, [r4]
     strh    r5, [r4, #2]
     strh    r7, [r4, #4]
-    mov     r3, #4
-    lsl     r3, r3, #8
-    sub     r4, r3
+    ldr     r4, =0x020371F4         @ BG palette 0, unfaded
     strh    r7, [r4]
     strh    r5, [r4, #2]
     strh    r7, [r4, #4]
-    ldr     r4, =0x020379D6
-    sub     r4, #2
-    mov     r3, #0xF8
-    lsl     r3, r3, #2
-    sub     r4, r3
-    strh    r7, [r4]
-    mov     r3, #4
-    lsl     r3, r3, #8
-    sub     r4, r3
-    strh    r7, [r4]
 
-    ldr     r4, =0x030026C8
-    mov     r3, #15
-    lsl     r3, r3, #6
-    sub     r4, r3
+    ldr     r4, =0x0600F800
     mov     r5, #128
-    mov     r6, #160
-    mov     r0, #0
-.Lhide_oam:
-    strh    r6, [r4]
-    strh    r0, [r4, #2]
-    str     r0, [r4, #4]
-    add     r4, #8
+    lsl     r5, r5, #2             @ clear all 32x32 tilemap entries as words
+    mov     r7, #0
+.Lclear_map:
+    str     r7, [r4]
+    add     r4, #4
     sub     r5, #1
-    bne     .Lhide_oam
+    bne     .Lclear_map
 
-    @ Matrix 30 magnifies the title; entry 125 remains hidden.
-    ldr     r4, =0x030026C8
-    mov     r5, #0x80
-    strh    r5, [r4, #6]
-    strh    r0, [r4, #14]
-    strh    r0, [r4, #22]
-    strh    r5, [r4, #30]
-    ldr     r3, =.Ltitle_slots
-    ldr     r7, =.Ltitle_glyphs
-    mov     r5, #0
-.Ltitle:
-    ldrb    r6, [r3, r5]
-    ldr     r4, =0x030026C8
-    mov     r2, #15
-    lsl     r2, r2, #6
-    sub     r4, r2
-    lsl     r6, r6, #3
-    add     r4, r6
-    mov     r6, #0xC4
-    lsl     r6, r6, #2           @ 0x310: affine, double, y=16
-    strh    r6, [r4]
-    mov     r6, r5
-    lsl     r6, r6, #4
-    add     r6, #32
-    cmp     r5, #7
-    blo     13f
-    add     r6, #16
-13:
-    mov     r2, #0xF0
-    lsl     r2, r2, #6           @ affine matrix 30
-    orr     r6, r2
-    strh    r6, [r4, #2]
-    ldrb    r6, [r7, r5]
-    ldr     r2, =0x0000F3DA
-    add     r6, r2
-    strh    r6, [r4, #4]
-    add     r5, #1
-    cmp     r5, #10
-    blo     .Ltitle
-
-    b       .Lafter_title_pool
-    .ltorg
-.Lafter_title_pool:
+    mov     r0, #0
+    mov     r1, #72
+    mov     r2, #16
+    ldr     r3, =.Ltitle_text
+    bl      .Ltext
 
     ldr     r6, =0x0201F000
     ldr     r4, [r6, #4]
@@ -1270,7 +1197,7 @@ _start:
     bx      r1
     .ltorg
 
-@ r0 slot, r1 x, r2 y, r3 zero-terminated glyph indices.
+@ r0 is retained for call-site compatibility; r1/r2 are pixel x/y, r3 glyph indices.
 .Ltext:
     push    {r4-r7, lr}
 .Ltext_loop:
@@ -1278,19 +1205,10 @@ _start:
     add     r3, #1
     cmp     r5, #0
     beq     .Ltext_done
-    ldr     r4, =0x030026C8
-    mov     r6, #15
-    lsl     r6, r6, #6
-    sub     r4, r6
-    mov     r6, r0
-    lsl     r6, r6, #3
-    add     r4, r6
-    strh    r2, [r4]
-    strh    r1, [r4, #2]
-    ldr     r6, =0x0000F3DA
-    add     r6, r5
-    strh    r6, [r4, #4]
-    add     r0, #1
+    mov     r4, r0
+    mov     r0, r5
+    bl      .Lput_tile
+    mov     r0, r4
     add     r1, #8
     b       .Ltext_loop
 .Ltext_done:
@@ -1298,7 +1216,7 @@ _start:
     pop     {r0}
     bx      r0
 
-@ r0 slot, r1 x, r2 y, r3 GBA string, r7 maximum characters.
+@ r0 is ignored; r1/r2 are pixel x/y, r3 GBA string, r7 maximum characters.
 .Lgba_text:
     push    {r4-r7, lr}
     mov     r4, r0
@@ -1330,18 +1248,9 @@ _start:
     sub     r0, #0x86
     b       33f
 32: mov     r0, #37                @ unsupported guest glyph: '-'
-33: ldr     r1, =0x030026C8
-    mov     r2, #15
-    lsl     r2, r2, #6
-    sub     r1, r2
-    mov     r2, r4
-    lsl     r2, r2, #3
-    add     r1, r2
-    strh    r6, [r1]
-    strh    r5, [r1, #2]
-    ldr     r2, =0x0000F3DA
-    add     r0, r2
-    strh    r0, [r1, #4]
+33: mov     r1, r5
+    mov     r2, r6
+    bl      .Lput_tile
     add     r4, #1
     add     r5, #8
     sub     r7, #1
@@ -1352,7 +1261,7 @@ _start:
     bx      r0
     .ltorg
 
-@ r0 value, r1 slot, r2 x, r3 y.
+@ r0 value, r1 ignored slot, r2 pixel x, r3 pixel y.
 .Lhex:
     push    {r4-r7, lr}
     mov     r5, #28
@@ -1372,18 +1281,14 @@ _start:
     mov     r7, #15
     and     r6, r7
     ldrb    r6, [r4, r6]
-    ldr     r7, =0x030026C8
-    mov     r4, #15
-    lsl     r4, r4, #6
-    sub     r7, r4
+    mov     r7, r0
+    mov     r0, r6
     mov     r4, r1
-    lsl     r4, r4, #3
-    add     r7, r4
-    strh    r3, [r7]
-    strh    r2, [r7, #2]
-    ldr     r4, =0x0000F3DA
-    add     r6, r4
-    strh    r6, [r7, #4]
+    mov     r1, r2
+    mov     r2, r3
+    bl      .Lput_tile
+    mov     r0, r7
+    mov     r1, r4
     ldr     r4, =.Lhex_glyphs
     add     r1, #1
     add     r2, #8
@@ -1398,19 +1303,43 @@ _start:
     mov     r4, #15
     and     r0, r4
     ldr     r4, =.Lhex_glyphs
-    ldrb    r4, [r4, r0]
-    ldr     r7, =0x030026C8
-    mov     r6, #15
-    lsl     r6, r6, #6
-    sub     r7, r6
-    lsl     r1, r1, #3
-    add     r7, r1
-    strh    r3, [r7]
-    strh    r2, [r7, #2]
-    ldr     r5, =0x0000F3DA
-    add     r5, r4
-    strh    r5, [r7, #4]
+    ldrb    r0, [r4, r0]
+    mov     r1, r2
+    mov     r2, r3
+    bl      .Lput_tile
     pop     {r4-r7}
+    pop     {r0}
+    bx      r0
+
+@ r0 tile, r1/r2 pixel x/y. Read-modify-write one aligned tilemap word, so every VRAM
+@ write remains 32-bit even when the requested column is odd.
+.Lput_tile:
+    push    {r1, r2, r4-r7, lr}
+    lsr     r1, r1, #3
+    lsr     r2, r2, #3
+    mov     r4, r2
+    lsl     r4, r4, #6
+    mov     r5, r1
+    lsl     r5, r5, #1
+    add     r4, r5
+    ldr     r5, =0x0600F800
+    add     r4, r5
+    mov     r5, #2
+    tst     r4, r5
+    beq     50f
+    sub     r4, #2
+    ldr     r6, [r4]
+    ldr     r5, =0x0000FFFF
+    and     r6, r5
+    lsl     r0, r0, #16
+    orr     r6, r0
+    b       51f
+50: ldr     r6, [r4]
+    lsr     r6, r6, #16
+    lsl     r6, r6, #16
+    orr     r6, r0
+51: str     r6, [r4]
+    pop     {r1, r2, r4-r7}
     pop     {r0}
     bx      r0
 
@@ -1423,10 +1352,8 @@ _start:
     .hword  0x4927, 0x7BEF, 0x79EF, 0x1511, 0x3AEB, 0x3B6B
     .hword  0x5B6A, 0x5FFD, 0x5492, 0x79CF, 0x5B6F, 0x0202
     .hword  0x2D24, 0x0088
-.Ltitle_slots:
-    .byte   120, 121, 122, 123, 124, 127, 126, 116, 117, 118
-.Ltitle_glyphs:
-    .byte   1, 2, 3, 4, 5, 6, 7, 14, 6, 28
+.Ltitle_text:
+    .byte   1, 2, 3, 4, 5, 6, 7, 14, 6, 28, 0
 .Lmain_text:
     .byte   14,15,30,4,0
     .byte   1,6,9,16,32,0

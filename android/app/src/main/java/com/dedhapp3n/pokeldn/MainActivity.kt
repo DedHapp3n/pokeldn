@@ -353,6 +353,7 @@ class MainActivity : ComponentActivity() {
                     onStartWalkThroughWalls = ::startWalkThroughWalls,
                     onCancelWalkThroughWalls = ::cancelWalkThroughWalls,
                     onStartPokeHaxScreen = ::startPokeHaxScreen,
+                    onInstallPokeHaxScreen = ::installPokeHaxScreen,
                     onCancelPokeHaxScreen = ::cancelPokeHaxScreen,
                     onStartSaveBackup = ::startSaveBackup,
                     onCancelSaveBackup = ::cancelSaveBackup,
@@ -977,6 +978,10 @@ class MainActivity : ComponentActivity() {
         mysteryGiftOperation = FrlgMysteryGiftOperation.POKEHAX_SCREEN,
     )
 
+    private fun installPokeHaxScreen() = startFrlgOperation(
+        mysteryGiftOperation = FrlgMysteryGiftOperation.POKEHAX_INSTALL,
+    )
+
     private fun startSaveBackup() = startFrlgOperation(saveBackup = true)
 
     private fun startSaveRestore() {
@@ -1022,7 +1027,8 @@ class MainActivity : ComponentActivity() {
         val foregroundKind = when {
             saveRestore -> FrlgForegroundKind.SAVE_RESTORE
             saveBackup -> FrlgForegroundKind.SAVE_BACKUP
-            mysteryGiftOperation == FrlgMysteryGiftOperation.POKEHAX_SCREEN -> FrlgForegroundKind.POKEHAX_SCREEN
+            mysteryGiftOperation == FrlgMysteryGiftOperation.POKEHAX_SCREEN ||
+                mysteryGiftOperation == FrlgMysteryGiftOperation.POKEHAX_INSTALL -> FrlgForegroundKind.POKEHAX_SCREEN
             else -> FrlgForegroundKind.WALK_THROUGH_WALLS
         }
         requestOperationNotificationPermission()

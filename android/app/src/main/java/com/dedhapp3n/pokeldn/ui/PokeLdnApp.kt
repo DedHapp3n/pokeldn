@@ -159,6 +159,7 @@ internal fun PokeLdnApp(
     onStartWalkThroughWalls: () -> Unit,
     onCancelWalkThroughWalls: () -> Unit,
     onStartPokeHaxScreen: () -> Unit,
+    onInstallPokeHaxScreen: () -> Unit,
     onCancelPokeHaxScreen: () -> Unit,
     onStartSaveBackup: () -> Unit,
     onCancelSaveBackup: () -> Unit,
@@ -223,14 +224,17 @@ internal fun PokeLdnApp(
                     keysState = prodKeysState,
                     operationState = frlgOperationState,
                     radioState = radioState,
-                    title = "PokeHax Screen",
-                    subtitle = "Safe RAM/VRAM display payload",
+                    title = "PokeHax Lab",
+                    subtitle = "BG0 diagnostics menu and optional persistent install",
                     section = "Mystery Gift",
-                    badge = "Test payload",
+                    badge = "Advanced",
                     preparingLabel = "Preparing payload",
                     sendingLabel = "Sending payload",
-                    instructions = "Use Up/Down and A on the GBA to open FRAME, RNG, or COLOR. Press B to return, then choose EXIT to restore the Mystery Gift screen and finish.",
-                    persistence = "Only RAM, VRAM, OAM, palette, and display registers are touched. The payload does not access save or flash memory.",
+                    instructions = "Use Up/Down and A to open LIVE, PARTY, WORLD, MEMORY, DISPLAY, or HOST. Press B to return, then choose EXIT for a complete display restore.",
+                    persistence = "Start opens a non-persistent RAM/VRAM session and does not write save or flash. The separate persistent installer below is deliberately write-capable.",
+                    dangerousActionLabel = "Install persistent Lab",
+                    dangerousWarning = "This creates a Hacker-Save: it reserves raw flash sector 30, replacing Trainer Tower auxiliary data, and replaces the one saved RAM-script/Wonder Card slot. Normal save blocks, party, boxes, and inventory are not overwritten. After each boot, talk to Mom in Pallet Town to load the Lab without Android.",
+                    onDangerousAction = onInstallPokeHaxScreen,
                     onImportKeys = onImportProdKeys,
                     onStart = onStartPokeHaxScreen,
                     onCancel = onCancelPokeHaxScreen,
@@ -1113,10 +1117,10 @@ private fun FrlgOperationsScreen(
         item {
             OperationCategory("Mystery Gift") {
                 OperationRow(
-                    "PokeHax Screen",
-                    "Open the non-persistent RAM/VRAM diagnostics menu; choose EXIT to return.",
-                    "Safe test",
-                    StatusTone.POSITIVE,
+                    "PokeHax Lab",
+                    "Open the BG0 diagnostics menu, or install its explicit Hacker-Save bootstrap.",
+                    "Advanced",
+                    StatusTone.WARNING,
                     onOpenPokeHaxScreen,
                 )
                 PlannedOperation("Wonder News", "Planned")
@@ -1431,11 +1435,15 @@ private fun MysteryGiftPayloadScreen(
     sendingLabel: String = FrlgOperationPhase.SENDING_BOOST.label,
     onImportKeys: () -> Unit,
     onStart: () -> Unit,
+    dangerousActionLabel: String? = null,
+    dangerousWarning: String? = null,
+    onDangerousAction: (() -> Unit)? = null,
     onCancel: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     extraStatus: @Composable () -> Unit = {},
 ) {
+    var confirmDangerous by rememberSaveable { mutableStateOf(false) }
     val availability = FrlgOperationStartGate.evaluate(
         keysAvailable = keysState.phase == ProdKeysPhase.AVAILABLE,
         handshakeVerified = esp32State.phase == Esp32HandshakePhase.VERIFIED,
@@ -1504,9 +1512,30 @@ private fun MysteryGiftPayloadScreen(
                     if (!availability.enabled) {
                         Text(availability.reason.orEmpty(), style = MaterialTheme.typography.bodySmall, color = ScreenMuted)
                     }
+                    if (dangerousActionLabel != null && dangerousWarning != null && onDangerousAction != null) {
+                        Text(dangerousWarning, style = MaterialTheme.typography.bodySmall,
+                            color = IndicatorRed)
+                        DeviceButton(dangerousActionLabel, { confirmDangerous = true },
+                            Modifier.fillMaxWidth(), enabled = availability.enabled)
+                    }
                 }
             }
         }
+    }
+    if (confirmDangerous && dangerousWarning != null && onDangerousAction != null) {
+        AlertDialog(
+            onDismissRequest = { confirmDangerous = false },
+            title = { Text("Reserve Trainer Tower sector?") },
+            text = { Text(dangerousWarning) },
+            confirmButton = {
+                TextButton(onClick = { confirmDangerous = false; onDangerousAction() }) {
+                    Text("Install")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDangerous = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 

@@ -11,6 +11,7 @@ enum class FrlgMysteryGiftOperation(
 ) {
     WALK_THROUGH_WALLS("Sending Walk Through Walls", "Walk Through Walls installed"),
     POKEHAX_SCREEN("Sending PokeHax Lab", "PokeHax Lab completed"),
+    POKEHAX_INSTALL("Installing persistent PokeHax Lab", "Persistent PokeHax Lab installed"),
 }
 
 internal data class FrlgGiftSnapshot(
@@ -153,6 +154,7 @@ internal class FrlgMysteryGiftEngine(
             FrlgMysteryGiftOperation.WALK_THROUGH_WALLS -> FrlgBufferTransfer(
                 emptyList(), requireNotNull(WalkThroughWallsPayloads.forGameCode(code)))
             FrlgMysteryGiftOperation.POKEHAX_SCREEN -> requireNotNull(PokeHaxScreenPayload.forGameCode(code))
+            FrlgMysteryGiftOperation.POKEHAX_INSTALL -> requireNotNull(PokeHaxScreenPayload.installerForGameCode(code))
         }
         val expectedGame = if (code.startsWith("BPR")) "FireRed" else if (code.startsWith("BPG")) "LeafGreen" else null
         val language = mapOf('F' to "French", 'E' to "English", 'S' to "Spanish", 'D' to "German",
@@ -176,6 +178,7 @@ internal class FrlgMysteryGiftEngine(
                 detail = when (operation) {
                     FrlgMysteryGiftOperation.WALK_THROUGH_WALLS -> "Waiting for console install result"
                     FrlgMysteryGiftOperation.POKEHAX_SCREEN -> "Waiting for PokeHax Lab result"
+                    FrlgMysteryGiftOperation.POKEHAX_INSTALL -> "Waiting for persistent install result"
                 }
                 expect(19)
             }

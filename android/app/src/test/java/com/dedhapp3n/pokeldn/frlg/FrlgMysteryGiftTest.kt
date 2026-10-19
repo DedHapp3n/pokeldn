@@ -38,19 +38,37 @@ class FrlgMysteryGiftTest {
 
     @Test fun `PokeHax screen is a bounded shared RAM and VRAM payload`() {
         val transfer = PokeHaxScreenPayload.forGameCode("BPGD")!!
-        assertEquals(listOf(1024, 1024, 1024, 1024, 60), transfer.leads.map { it.size })
+        assertEquals(listOf(1024, 1024, 1024, 912), transfer.leads.map { it.size })
         assertEquals(12, transfer.payload.size)
         assertTrue((transfer.leads + transfer.payload).all { it.size <= 1024 })
         val same = PokeHaxScreenPayload.forGameCode("BPGD")!!
         assertTrue(transfer.leads.zip(same.leads).all { (a, b) -> a.contentEquals(b) })
-        assertTrue(!transfer.leads[0].contentEquals(PokeHaxScreenPayload.forGameCode("BPGE")!!.leads[0]))
-        assertTrue(!transfer.leads[0].contentEquals(PokeHaxScreenPayload.forGameCode("BPGJ")!!.leads[0]))
+        assertTrue(transfer.leads.zip(PokeHaxScreenPayload.forGameCode("BPGE")!!.leads)
+            .any { (a, b) -> !a.contentEquals(b) })
+        assertTrue(transfer.leads.zip(PokeHaxScreenPayload.forGameCode("BPGJ")!!.leads)
+            .any { (a, b) -> !a.contentEquals(b) })
+    }
+
+    @Test fun `persistent PokeHax installer is bounded and build specific`() {
+        val german = PokeHaxScreenPayload.installerForGameCode("BPGD")!!
+        val english = PokeHaxScreenPayload.installerForGameCode("BPGE")!!
+        val japanese = PokeHaxScreenPayload.installerForGameCode("BPGJ")!!
+        assertEquals(984, german.payload.size)
+        assertTrue((german.leads + german.payload).all { it.size <= 1024 })
+        assertTrue(!german.payload.contentEquals(english.payload))
+        assertTrue(!german.payload.contentEquals(japanese.payload))
     }
 
     @Test fun `PokeHax screen uses the existing run buffer Mystery Gift flow`() {
         val engine = preparedEngine(FrlgMysteryGiftOperation.POKEHAX_SCREEN)
         assertEquals(FrlgGiftStage.WAITING_RESULT, engine.snapshot().stage)
         assertTrue(engine.snapshot().detail!!.contains("PokeHax Lab"))
+    }
+
+    @Test fun `persistent PokeHax installer uses the existing run buffer Mystery Gift flow`() {
+        val engine = preparedEngine(FrlgMysteryGiftOperation.POKEHAX_INSTALL)
+        assertEquals(FrlgGiftStage.WAITING_RESULT, engine.snapshot().stage)
+        assertTrue(engine.snapshot().detail!!.contains("persistent install"))
     }
 
     @Test fun `successful close completes when console leaves first`() {

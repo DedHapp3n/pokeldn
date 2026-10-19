@@ -11,7 +11,8 @@ from dataclasses import dataclass
 
 from pokeldn.frlg.rom import builds
 from pokeldn.frlg.rom.buffer_payloads import (
-    PAYLOADS, POKEHAX_SCREEN_BODY, POKEHAX_SCREEN_TRAMPOLINE)
+    PAYLOADS, POKEHAX_INSTALLER, POKEHAX_INSTALLER_CRC_AT, POKEHAX_INSTALLER_SCRIPT_AT,
+    POKEHAX_INSTALLER_SCRIPT_SIZE, POKEHAX_SCREEN_BODY, POKEHAX_SCREEN_TRAMPOLINE)
 
 # MG_LINK_BUFFER_SIZE [decomp:include/mystery_gift_link.h:4]: the whole buffer is copied but only
 # what we send is fresh, so a payload must be self-contained.
@@ -73,17 +74,18 @@ _POKEHAX_COPY_HEADER = bytes.fromhex(
     "010082e7fbffff1a0100a0e31eff2fe1")
 
 
-def pokehax_screen_stages(build=None):
-    """Return bounded RAM copy payloads and the frame-driven menu trampoline.
+def _pokehax_body_stages(build=None):
+    """Return build-patched bounded RAM copy payloads.
 
     The menu body cannot fit the 1 KiB receive image. The standard multi-lead Mystery Gift path
     runs bounded copy payloads first and keeps the body in gDecompressionBuffer for this session.
     """
     build = builds.resolve(build)
     body = bytearray(POKEHAX_SCREEN_BODY)
+    overlay_palette = build.ewram.get("overlay_pal", 0x020379D6)
     replacements = {
-        0x030026C8: build.overlay_oam,
-        0x020379D6: build.ewram.get("overlay_pal", 0x020379D6),
+        0x020375F4: overlay_palette - 0x3E2,
+        0x020371F4: overlay_palette - 0x7E2,
         0x03004220: build.rng,
         0x030022D0: build.gmain,
         0x03004228: build.sb1ptr,
@@ -105,10 +107,37 @@ def pokehax_screen_stages(build=None):
         header[4:8] = (_POKEHAX_ADDRESS + at).to_bytes(4, "little")
         header[8:12] = len(chunk).to_bytes(4, "little")
         leads.append(bytes(header) + chunk)
-    final = POKEHAX_SCREEN_TRAMPOLINE
-    for stage in (*leads, final):
+    for stage in leads:
         validate(stage)
-    return tuple(leads), final
+    return tuple(leads)
+
+
+def pokehax_screen_stages(build=None):
+    """Return bounded RAM copy payloads and the frame-driven menu trampoline."""
+    leads = _pokehax_body_stages(build)
+    validate(POKEHAX_SCREEN_TRAMPOLINE)
+    return leads, POKEHAX_SCREEN_TRAMPOLINE
+
+
+def pokehax_install_stages(build=None):
+    """Return the sector-30 installer and the saved Mom bootstrap.
+
+    This explicitly replaces Trainer Tower auxiliary data in raw flash sector 30 and the one saved
+    RAM-script slot. It never writes an unknown callback or an ordinary save-band sector directly.
+    """
+    from pokeldn.frlg.gift.mystery_gift import crc16
+    build = builds.resolve(build)
+    installer = bytearray(POKEHAX_INSTALLER)
+    for old, new in ((0x03002730, build.intr_vblank), (0x03004228, build.sb1ptr)):
+        installer = bytearray(installer.replace(old.to_bytes(4, "little"),
+                                                new.to_bytes(4, "little")))
+    start = POKEHAX_INSTALLER_SCRIPT_AT
+    script = installer[start:start + POKEHAX_INSTALLER_SCRIPT_SIZE]
+    ram_data = bytes((51, 4, 0, 1)) + bytes(script).ljust(995, b"\0") + b"\0"
+    installer[POKEHAX_INSTALLER_CRC_AT:POKEHAX_INSTALLER_CRC_AT + 4] = \
+        crc16(ram_data).to_bytes(4, "little")
+    validate(installer)
+    return _pokehax_body_stages(build), bytes(installer)
 
 
 @dataclass(frozen=True)
