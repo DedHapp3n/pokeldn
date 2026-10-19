@@ -60,6 +60,7 @@ path (a station name, at most `0x40`) is clamped at its caller.
 | [POKEHAX LAB](frlg_pokehax_lab.md) | the RAM-only in-game diagnostics menu and the GBA/Switch host boundary |
 | [LeafGreen](frlg_leafgreen.md) | what the second cartridge shares, the measured offset map, and the English build as an instrument |
 | [Host implementation](frlg_host.md) | the component boundaries of the trade and Mystery Gift hosts |
+| [Save loading and CONTINUE](frlg_save_continue.md) | the normal flash-load, main-menu, Quest Log, warp, map and overworld data flow |
 
 ## The two cartridges
 
