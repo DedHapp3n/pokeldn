@@ -7,6 +7,7 @@ import pytest
 
 from pokeldn.frlg.rom import buffer_script as bs
 from pokeldn.frlg.rom import native_script
+from pokeldn.frlg.gift.mystery_gift import crc16
 from pokeldn.frlg.rom.buffer_payloads import (
     POKEHAX_INSTALLER_SCRIPT_AT, POKEHAX_INSTALLER_SCRIPT_SIZE, POKEHAX_SCREEN_BODY,
 )
@@ -297,6 +298,8 @@ def test_persistent_installer_reserves_only_sector30_and_mom_loader_survives_boo
     assert changed_sav1[:ram_at] == original_sav1[:ram_at]
     assert changed_sav1[ram_at + 1004:] == original_sav1[ram_at + 1004:]
     assert changed_sav1[ram_at + 4:ram_at + 8] == bytes((51, 4, 0, 1))
+    assert int.from_bytes(changed_sav1[ram_at:ram_at + 4], "little") == \
+        crc16(changed_sav1[ram_at + 4:ram_at + 1004])
 
     # A new boot has empty EWRAM and the game's original VBlank handler. Mom's saved script stages
     # the embedded native loader; execute that loader and verify sector 30 is restored into RAM.

@@ -25,6 +25,12 @@ ANDROID_OUT = (ROOT / "android" / "app" / "src" / "main" / "java" / "com" / "ded
                "pokeldn" / "frlg" / "PokeHaxScreenPayload.kt")
 
 
+def source_digest(path):
+    """Hash assembler text independent of Git's checkout line-ending policy."""
+    source = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(source).hexdigest()
+
+
 def assemble(source_path):
     """Assemble one ARM source to raw bytes. Raises CodeError without a toolchain."""
     return custom_code.assemble(source_path.read_text())
@@ -87,7 +93,7 @@ def render(pokehax_source, pokehax_body, pokehax_trampoline, installer,
         f"POKEHAX_INSTALLER_SCRIPT_AT = {installer_script_at}",
         f"POKEHAX_INSTALLER_SCRIPT_SIZE = {installer_script_size}",
         f"POKEHAX_INSTALLER_CRC_AT = {installer_crc_at}",
-        f"POKEHAX_SCREEN_SOURCE_SHA256 = {hashlib.sha256(pokehax_source.read_bytes()).hexdigest()!r}",
+        f"POKEHAX_SCREEN_SOURCE_SHA256 = {source_digest(pokehax_source)!r}",
         "",
         "# name -> (ARM machine code, sha256 of the asm source it was assembled from)",
         "PAYLOADS = {",
@@ -96,7 +102,7 @@ def render(pokehax_source, pokehax_body, pokehax_trampoline, installer,
         if source == pokehax_source:
             continue
         code = assemble(source)
-        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        digest = source_digest(source)
         lines.append(f"    {source.stem!r}: (")
         lines.append(f"        bytes.fromhex({code.hex()!r}),")
         lines.append(f"        {digest!r},")
