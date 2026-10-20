@@ -15,7 +15,8 @@ OPTIONS = ("questionnaire", "denied_message")
 # Payloads run before buffer_code in the same session, in this order: buffer_lead_1, buffer_lead_2...
 MAX_LEADS = 8
 LEADS = tuple(f"buffer_lead_{n}" for n in range(1, MAX_LEADS + 1))
-CODE_OPTIONS = ("buffer_expect", "buffer_dump_size", "buffer_dump_blocks", "buffer_dump_address",
+CODE_OPTIONS = ("buffer_expect", "buffer_ack_each_lead", "buffer_lead_expect",
+                "buffer_dump_size", "buffer_dump_blocks", "buffer_dump_address",
                 "buffer_dump_addresses", "buffer_decode")
 
 
@@ -39,6 +40,22 @@ def distribution(variant):
         if expect is not None and expect != buffer_script.EXPECT_TRAINER_ID and (
                 type(expect) is not int or not 0 <= expect <= 0xffffffff):
             raise ValueError("buffer_expect must be trainer-id or a 32-bit unsigned integer.")
+        ack_each = variant.options.get("buffer_ack_each_lead", False)
+        if type(ack_each) is not bool:
+            raise ValueError("buffer_ack_each_lead must be true or false.")
+        lead_expect = variant.options.get("buffer_lead_expect")
+        if lead_expect is not None and (
+                type(lead_expect) is not int or not 0 <= lead_expect <= 0xffffffff):
+            raise ValueError("buffer_lead_expect must be a 32-bit unsigned integer.")
+        if ack_each:
+            if not leads:
+                raise ValueError("buffer_ack_each_lead needs at least one buffer_lead.")
+            if lead_expect is None:
+                raise ValueError("buffer_ack_each_lead needs buffer_lead_expect.")
+            if "buffer_dump_size" in variant.options:
+                raise ValueError("buffer_ack_each_lead is not supported for buffer dumps.")
+        elif lead_expect is not None:
+            raise ValueError("buffer_lead_expect needs buffer_ack_each_lead=true.")
         addresses = variant.options.get("buffer_dump_addresses", ())
         if not isinstance(addresses, tuple) or any(not 0 <= v <= 0xffffffff for v in addresses):
             raise ValueError("buffer_dump_addresses must contain 32-bit unsigned integers.")
@@ -125,7 +142,11 @@ def from_distributions(name, per_build):
             raise ValueError(f"A gift file carries at most {MAX_LEADS} console code leads.")
         data.update(zip(LEADS, (bytes(code) for code in chosen.buffer_lead)))
         keys = CODE_OPTIONS if chosen.buffer_code is not None else OPTIONS
-        options = {key: value for key in keys if (value := getattr(chosen, key)) is not None}
+        options = {
+            key: value for key in keys
+            if (value := getattr(chosen, key)) is not None
+            and not (key == "buffer_ack_each_lead" and value is False)
+        }
         variants[code] = gifts.Variant(data, options)
     return gifts.Gift("frlg", name, variants)
 

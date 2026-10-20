@@ -17,7 +17,11 @@ internal data class FrlgGiftFile(
 
     fun transferForGameCode(gameCode: String): FrlgBufferTransfer? = variants[gameCode]?.let { transfer ->
         FrlgBufferTransfer(
-            transfer.leads.map(ByteArray::copyOf), transfer.payload.copyOf(), transfer.expectation,
+            transfer.leads.map(ByteArray::copyOf),
+            transfer.payload.copyOf(),
+            transfer.expectation,
+            transfer.ackEachLead,
+            transfer.leadExpectation,
         )
     }
 
@@ -94,13 +98,22 @@ internal data class FrlgGiftFile(
             var data: Map<String, ByteArray>? = null
             var optionsSeen = false
             var expectation: FrlgBufferExpectation? = null
+            var ackEachLead = false
+            var leadExpectation: Long? = null
             objectFields("variant $code", setOf("data", "options")) { field ->
                 when (field) {
                     "data" -> data = readData(code)
                     "options" -> {
                         optionsSeen = true
-                        objectFields("options for $code", setOf("buffer_expect")) {
-                            expectation = readBufferExpectation(code)
+                        objectFields(
+                            "options for $code",
+                            setOf("buffer_expect", "buffer_ack_each_lead", "buffer_lead_expect"),
+                        ) { option ->
+                            when (option) {
+                                "buffer_expect" -> expectation = readBufferExpectation(code)
+                                "buffer_ack_each_lead" -> ackEachLead = boolean("buffer_ack_each_lead for $code")
+                                "buffer_lead_expect" -> leadExpectation = unsigned32("buffer_lead_expect for $code")
+                            }
                         }
                     }
                 }
@@ -113,8 +126,24 @@ internal data class FrlgGiftFile(
             require(leadNumbers == (1..leadNumbers.size).toList()) {
                 "Variant $code buffer leads must be numbered contiguously from buffer_lead_1"
             }
+            if (ackEachLead) {
+                require(leadNumbers.isNotEmpty()) {
+                    "buffer_ack_each_lead for $code needs at least one buffer_lead"
+                }
+                require(leadExpectation != null) {
+                    "buffer_ack_each_lead for $code needs buffer_lead_expect"
+                }
+            } else {
+                require(leadExpectation == null) {
+                    "buffer_lead_expect for $code needs buffer_ack_each_lead=true"
+                }
+            }
             return FrlgBufferTransfer(
-                leadNumbers.map { requireNotNull(components["buffer_lead_$it"]) }, payload, expectation,
+                leadNumbers.map { requireNotNull(components["buffer_lead_$it"]) },
+                payload,
+                expectation,
+                ackEachLead,
+                leadExpectation,
             )
         }
 
@@ -202,6 +231,22 @@ internal data class FrlgGiftFile(
             val value = json.nextString()
             require(INTEGER_PATTERN.matches(value)) { "$field must be an integer" }
             return value.toIntOrNull() ?: throw IllegalArgumentException("$field is outside the supported integer range")
+        }
+
+        private fun boolean(field: String): Boolean {
+            requireToken(JsonToken.BOOLEAN, "$field must be true or false")
+            return json.nextBoolean()
+        }
+
+        private fun unsigned32(field: String): Long {
+            requireToken(JsonToken.NUMBER, "$field must be a 32-bit unsigned integer")
+            val value = json.nextString()
+            require(INTEGER_PATTERN.matches(value)) { "$field must be a 32-bit unsigned integer" }
+            val parsed = value.toLongOrNull()
+            require(parsed != null && parsed in 0..0xffff_ffffL) {
+                "$field must be a 32-bit unsigned integer"
+            }
+            return parsed
         }
 
         private fun requireToken(token: JsonToken, message: String) {

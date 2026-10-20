@@ -33,8 +33,9 @@ class Variant:
         object.__setattr__(self, "data", MappingProxyType(dict(self.data)))
         options = dict(self.options or {})
         for key, value in options.items():
-            if not isinstance(key, str) or type(value) not in (str, tuple, int):
-                raise ValueError("Gift options must be text, integers or tuples of integers.")
+            if not isinstance(key, str) or type(value) not in (str, tuple, int, bool):
+                raise ValueError(
+                    "Gift options must be text, booleans, integers or tuples of integers.")
             if isinstance(value, tuple) and any(type(v) is not int for v in value):
                 raise ValueError("Gift option lists must contain integers.")
         object.__setattr__(self, "options", MappingProxyType(options))

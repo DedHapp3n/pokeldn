@@ -8,7 +8,24 @@ internal data class FrlgBufferTransfer(
     val leads: List<ByteArray>,
     val payload: ByteArray,
     val expectation: FrlgBufferExpectation? = null,
-)
+    val ackEachLead: Boolean = false,
+    val leadExpectation: Long? = null,
+) {
+    init {
+        require(leadExpectation == null || leadExpectation in 0..0xffff_ffffL) {
+            "Lead expectation must be an unsigned 32-bit value"
+        }
+        require(!ackEachLead || leads.isNotEmpty()) {
+            "ACK-per-lead mode needs at least one lead"
+        }
+        require(!ackEachLead || leadExpectation != null) {
+            "ACK-per-lead mode needs a lead expectation"
+        }
+        require(ackEachLead || leadExpectation == null) {
+            "Lead expectation needs ACK-per-lead mode"
+        }
+    }
+}
 
 internal sealed interface FrlgBufferExpectation {
     data class Status(val value: Long) : FrlgBufferExpectation {

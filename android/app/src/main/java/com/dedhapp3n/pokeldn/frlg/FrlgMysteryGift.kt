@@ -53,6 +53,8 @@ internal class FrlgMysteryGiftEngine(
     private var closePhaseEntered = false
     private var closeHandshakeConfirmed = false
     private var bufferExpectation: FrlgBufferExpectation? = null
+    private var ackTransfer: FrlgBufferTransfer? = null
+    private var pendingLeadAckIndex: Int? = null
     private var gameDataTrainerId = 0L
     private var gameDataTrainerIdReliable = false
     var disconnectRequested = false
@@ -137,7 +139,7 @@ internal class FrlgMysteryGiftEngine(
         expecting = null
         when (wanted) {
             17 -> onGameData(message)
-            19 -> onInstallResult(message)
+            19 -> if (pendingLeadAckIndex != null) onLeadAck(message) else onInstallResult(message)
             20 -> beginClose()
         }
     }
@@ -183,29 +185,51 @@ internal class FrlgMysteryGiftEngine(
         ).any { it == 0xff.toByte() }
         stage = FrlgGiftStage.PREPARING_BOOST
         detail = "${linkCartridge.game} / ${linkCartridge.language} detected"
-        val clientScript = clientRunBuffer(transfer.leads.size + 1)
-        sendMessage(16, clientScript) {
+        if (transfer.ackEachLead) {
             stage = FrlgGiftStage.SENDING_BOOST
             detail = operation.sendingDetail
-            sendPayloads(transfer.leads + transfer.payload) {
-                stage = FrlgGiftStage.WAITING_RESULT
-                detail = when (operation) {
-                    FrlgMysteryGiftOperation.WALK_THROUGH_WALLS -> "Waiting for console install result"
-                    FrlgMysteryGiftOperation.POKEHAX_SCREEN -> "Waiting for PokeHax Lab result"
-                    FrlgMysteryGiftOperation.POKEHAX_INSTALL -> "Waiting for persistent install result"
-                    FrlgMysteryGiftOperation.CUSTOM_PATCH -> "Waiting for custom patch result"
+            ackTransfer = transfer
+            sendAckedPayload(transfer, 0)
+        } else {
+            val clientScript = clientRunBuffer(transfer.leads.size + 1)
+            sendMessage(16, clientScript) {
+                stage = FrlgGiftStage.SENDING_BOOST
+                detail = operation.sendingDetail
+                sendPayloads(transfer.leads + transfer.payload) {
+                    waitForFinalResult()
                 }
-                expect(19)
             }
         }
+    }
+
+    private fun onLeadAck(data: ByteArray) {
+        val transfer = requireNotNull(ackTransfer)
+        val index = requireNotNull(pendingLeadAckIndex)
+        pendingLeadAckIndex = null
+        val expected = requireNotNull(transfer.leadExpectation)
+        val status = data.takeIf { it.size == 4 }?.let(::le32Mg)
+        if (status != expected) {
+            ackTransfer = null
+            val received = status?.let(::hexStatus) ?: "${data.size}-byte response"
+            finishBufferResult(
+                false,
+                "Custom patch lead ${index + 1} response mismatch: expected ${hexStatus(expected)}, received $received",
+            )
+            return
+        }
+        detail = "Custom patch lead ${index + 1}/${transfer.leads.size} confirmed"
+        sendAckedPayload(transfer, index + 1)
     }
 
     private fun onInstallResult(data: ByteArray) {
         val status = if (data.size >= 4) le32Mg(data) else BUFFER_REFUSED
         val verdict = bufferVerdict(status)
-        val success = verdict == null
+        finishBufferResult(verdict == null, verdict)
+    }
+
+    private fun finishBufferResult(success: Boolean, failureDetail: String?) {
         operationSucceeded = success
-        terminalDetail = if (success) operation.successDetail else verdict
+        terminalDetail = if (success) operation.successDetail else failureDetail
         detail = terminalDetail
         val script = if (success) CLIENT_SUCCESS else CLIENT_FAILURE
         val message = if (success) SUCCESS_MESSAGE else FAILURE_MESSAGE
@@ -242,6 +266,35 @@ internal class FrlgMysteryGiftEngine(
     }
 
     private fun queueClose() { repeat(4) { words += intArrayOf(FrlgRfu.READY_CLOSE_LINK, 0, 0, 0, 0, 0, 0) } }
+
+    private fun sendAckedPayload(transfer: FrlgBufferTransfer, index: Int) {
+        val finalPayload = index == transfer.leads.size
+        val payload = if (finalPayload) transfer.payload else transfer.leads[index]
+        sendMessage(16, clientRunBuffer(1)) {
+            sendMessage(25, payload, repeats = 3) {
+                if (finalPayload) {
+                    ackTransfer = null
+                    pendingLeadAckIndex = null
+                    waitForFinalResult()
+                } else {
+                    pendingLeadAckIndex = index
+                    expect(19)
+                }
+            }
+        }
+    }
+
+    private fun waitForFinalResult() {
+        stage = FrlgGiftStage.WAITING_RESULT
+        detail = when (operation) {
+            FrlgMysteryGiftOperation.WALK_THROUGH_WALLS -> "Waiting for console install result"
+            FrlgMysteryGiftOperation.POKEHAX_SCREEN -> "Waiting for PokeHax Lab result"
+            FrlgMysteryGiftOperation.POKEHAX_INSTALL -> "Waiting for persistent install result"
+            FrlgMysteryGiftOperation.CUSTOM_PATCH -> "Waiting for custom patch result"
+        }
+        expect(19)
+    }
+
     private fun expect(ident: Int) { expecting = ident; messageReceiver.reset() }
     private fun sendMessage(ident: Int, payload: ByteArray, repeats: Int = 2, done: () -> Unit) {
         MgMessage.build(ident, payload).forEach { blocks += it to repeats }

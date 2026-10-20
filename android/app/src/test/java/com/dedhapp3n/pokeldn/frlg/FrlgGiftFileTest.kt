@@ -131,6 +131,62 @@ class FrlgGiftFileTest {
         parse(giftJson(options = mapOf("buffer_expect" to "true")))
     }
 
+    @Test fun `ack per lead options parse and legacy files keep old behavior`() {
+        val acked = parse(giftJson(
+            variants = mapOf("BPGD" to linkedMapOf(
+                "buffer_code" to bytes(9, 9, 9, 9),
+                "buffer_lead_1" to bytes(1, 1, 1, 1),
+            )),
+            options = mapOf(
+                "buffer_ack_each_lead" to "true",
+                "buffer_lead_expect" to "1262698831",
+                "buffer_expect" to "305419896",
+            ),
+        )).transferForGameCode("BPGD")!!
+        assertTrue(acked.ackEachLead)
+        assertEquals(1262698831L, acked.leadExpectation)
+        assertEquals(FrlgBufferExpectation.Status(0x12345678L), acked.expectation)
+
+        val legacy = parse(giftJson(
+            variants = mapOf("BPGD" to linkedMapOf(
+                "buffer_code" to bytes(9, 9, 9, 9),
+                "buffer_lead_1" to bytes(1, 1, 1, 1),
+            )),
+        )).transferForGameCode("BPGD")!!
+        assertTrue(!legacy.ackEachLead)
+        assertNull(legacy.leadExpectation)
+    }
+
+    @Test fun `ack per lead requires a u32 expectation and at least one lead`() {
+        rejects("needs buffer_lead_expect") {
+            parse(giftJson(
+                variants = mapOf("BPGD" to linkedMapOf(
+                    "buffer_code" to bytes(9, 9, 9, 9),
+                    "buffer_lead_1" to bytes(1, 1, 1, 1),
+                )),
+                options = mapOf("buffer_ack_each_lead" to "true"),
+            ))
+        }
+        rejects("needs at least one buffer_lead") {
+            parse(giftJson(options = mapOf(
+                "buffer_ack_each_lead" to "true",
+                "buffer_lead_expect" to "1",
+            )))
+        }
+        rejects("32-bit unsigned integer") {
+            parse(giftJson(
+                variants = mapOf("BPGD" to linkedMapOf(
+                    "buffer_code" to bytes(9, 9, 9, 9),
+                    "buffer_lead_1" to bytes(1, 1, 1, 1),
+                )),
+                options = mapOf(
+                    "buffer_ack_each_lead" to "true",
+                    "buffer_lead_expect" to "4294967296",
+                ),
+            ))
+        }
+    }
+
     @Test fun `other unsupported options are rejected instead of ignored`() = rejects("Unknown field buffer_dump_size") {
         parse(giftJson(options = mapOf("buffer_dump_size" to "4")))
     }

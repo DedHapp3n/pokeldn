@@ -67,7 +67,7 @@ class MysteryGiftDistribution:
     # Native ARM code, run by CLI_RUN_BUFFER_SCRIPT [buffer_script.py], and its expected answer
     # (mg_server.BUFFER_EXPECT_TRAINER_ID, a u32, or None for any answer).
     buffer_code: bytes | None = None
-    # Payloads run before buffer_code in the same session, their answers unread.
+    # Payloads run before buffer_code in the same session. Legacy mode leaves their answers unread.
     buffer_lead: tuple = ()
     buffer_expect: object | None = None
     # Set when the payload repoints the console's outgoing message: how many bytes
@@ -85,6 +85,10 @@ class MysteryGiftDistribution:
     buffer_decode: str | None = None
     # rom-checksum only: the path of the ROM image its sums are compared with, per build.
     buffer_reference: str | None = None
+    # Optional extension: confirm each buffer_lead before the next payload is sent. Kept at the
+    # end of the dataclass so existing positional construction retains its exact field order.
+    buffer_ack_each_lead: bool = False
+    buffer_lead_expect: int | None = None
 
     def __post_init__(self):
         if self.buffer_code is not None:
@@ -98,6 +102,21 @@ class MysteryGiftDistribution:
                 raise ValueError(
                     "a buffer script cannot share a session with news, a stamp, a visiting "
                     "trainer or a Mystery Event script")
+            if type(self.buffer_ack_each_lead) is not bool:
+                raise ValueError("buffer_ack_each_lead must be true or false")
+            if self.buffer_lead_expect is not None and (
+                    type(self.buffer_lead_expect) is not int
+                    or not 0 <= self.buffer_lead_expect <= 0xffffffff):
+                raise ValueError("buffer_lead_expect must be a 32-bit unsigned integer")
+            if self.buffer_ack_each_lead:
+                if not self.buffer_lead:
+                    raise ValueError("buffer_ack_each_lead needs at least one buffer_lead")
+                if self.buffer_lead_expect is None:
+                    raise ValueError("buffer_ack_each_lead needs buffer_lead_expect")
+                if self.buffer_dump_size is not None:
+                    raise ValueError("buffer_ack_each_lead is not supported for buffer dumps")
+            elif self.buffer_lead_expect is not None:
+                raise ValueError("buffer_lead_expect needs buffer_ack_each_lead=true")
             return
         if self.news is not None:
             # Wonder News has no flagId, no metadata and no delivery script, so it travels alone.

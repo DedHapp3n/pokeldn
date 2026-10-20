@@ -23,7 +23,12 @@ FRENCH = (builds.BPRF, builds.BPGF)
 
 
 # Fields added after the recording; at their default they are left out of the digest.
-NEWER_FIELDS = {"buffer_reference": None, "buffer_lead": ()}
+NEWER_FIELDS = {
+    "buffer_reference": None,
+    "buffer_lead": (),
+    "buffer_ack_each_lead": False,
+    "buffer_lead_expect": None,
+}
 
 
 def digest(value):

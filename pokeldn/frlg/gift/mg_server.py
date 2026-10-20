@@ -40,6 +40,7 @@ SVR_LOAD_DENIED_MSG = "SVR_LOAD_DENIED_MSG"
 SVR_READ_MEVENT_STATUS = "SVR_READ_MEVENT_STATUS"
 SVR_LOAD_BUFFER_SCRIPT = "SVR_LOAD_BUFFER_SCRIPT"
 SVR_LOAD_BUFFER_LEAD = "SVR_LOAD_BUFFER_LEAD"
+SVR_READ_BUFFER_LEAD_STATUS = "SVR_READ_BUFFER_LEAD_STATUS"
 SVR_READ_BUFFER_STATUS = "SVR_READ_BUFFER_STATUS"
 SVR_LOAD_BUFFER_VERDICT_MSG = "SVR_LOAD_BUFFER_VERDICT_MSG"
 SVR_READ_BUFFER_DUMP = "SVR_READ_BUFFER_DUMP"
@@ -446,17 +447,40 @@ SCRIPT_RUN_BUFFER_SCRIPT = (
 )
 
 
-def script_run_buffer_script(leads=0):
-    """-> SCRIPT_RUN_BUFFER_SCRIPT with `leads` payloads sent and run first, in one session (a
-    save-write before install-kept); the verdict is the last payload's answer."""
+def script_run_buffer_script(leads=0, ack_each_lead=False):
+    """-> buffer-code server script. Legacy mode sends all leads back-to-back and reads only the
+    final answer. ACK mode runs one payload per client script so every lead answer can be checked
+    and a mismatch can switch safely to the existing failure script before another chunk runs."""
     if not leads:
         return SCRIPT_RUN_BUFFER_SCRIPT
+    if not ack_each_lead:
+        return (
+            *_GAME_DATA_PREFIX,
+            (SVR_LOAD_CLIENT_SCRIPT, mg_script.client_script_run_buffer(leads)),
+            (SVR_SEND,),
+            *[step for index in range(leads)
+              for step in ((SVR_LOAD_BUFFER_LEAD, index), (SVR_SEND,))],
+            (SVR_LOAD_BUFFER_SCRIPT,),
+            (SVR_SEND,),
+            (SVR_RECV, MG_LINKID_RESPONSE),
+            (SVR_READ_BUFFER_STATUS,),
+            (SVR_GOTO_IF_EQ, True, _SCRIPT_BUFFER_SUCCESS),
+            (SVR_GOTO, _SCRIPT_BUFFER_FAILURE),
+        )
     return (
         *_GAME_DATA_PREFIX,
-        (SVR_LOAD_CLIENT_SCRIPT, mg_script.client_script_run_buffer(leads)),
-        (SVR_SEND,),
         *[step for index in range(leads)
-          for step in ((SVR_LOAD_BUFFER_LEAD, index), (SVR_SEND,))],
+          for step in (
+              (SVR_LOAD_CLIENT_SCRIPT, mg_script.CLIENT_SCRIPT_RUN_BUFFER_ACK_CHUNK),
+              (SVR_SEND,),
+              (SVR_LOAD_BUFFER_LEAD, index),
+              (SVR_SEND,),
+              (SVR_RECV, MG_LINKID_RESPONSE),
+              (SVR_READ_BUFFER_LEAD_STATUS, index),
+              (SVR_GOTO_IF_EQ, False, _SCRIPT_BUFFER_FAILURE),
+          )],
+        (SVR_LOAD_CLIENT_SCRIPT, mg_script.CLIENT_SCRIPT_RUN_BUFFER_ACK_CHUNK),
+        (SVR_SEND,),
         (SVR_LOAD_BUFFER_SCRIPT,),
         (SVR_SEND,),
         (SVR_RECV, MG_LINKID_RESPONSE),
@@ -519,7 +543,7 @@ class MysteryGiftServer:
     def __init__(self, card=None, ram_script=None, *, news=None, stamp=None,
                  activation_script=None, install_activation_script=None, trainer=None,
                  mevent=None, buffer_code=None, buffer_lead=(), buffer_expect=None,
-                 buffer_dump_size=None,
+                 buffer_ack_each_lead=False, buffer_lead_expect=None, buffer_dump_size=None,
                  buffer_dump_blocks=1, buffer_dump_address=0, buffer_dump_addresses=(),
                  buffer_decode=None, buffer_reference=None,
                  buffer_success_message=None, buffer_failure_message=None,
@@ -610,12 +634,30 @@ class MysteryGiftServer:
                 raise MysteryGiftServerError(
                     "a buffer script runs on its own: no card, news, stamp rally, visiting "
                     "trainer or Mystery Event script in the same session")
-        # Payloads run before buffer_code in the same session; their answers are not read.
+        # Payloads run before buffer_code in the same session. Legacy mode leaves their answers
+        # unread; ACK mode confirms each lead before the next payload is sent.
         self.buffer_lead = tuple(bytes(code) for code in buffer_lead)
         for code in self.buffer_lead:
             buffer_script.validate(code)
         if self.buffer_lead and self.buffer_code is None:
             raise MysteryGiftServerError("payloads run ahead of the last one, and there is none")
+        if type(buffer_ack_each_lead) is not bool:
+            raise MysteryGiftServerError("buffer_ack_each_lead must be true or false")
+        self.buffer_ack_each_lead = buffer_ack_each_lead
+        if buffer_lead_expect is not None and (
+                type(buffer_lead_expect) is not int or not 0 <= buffer_lead_expect <= 0xffffffff):
+            raise MysteryGiftServerError("buffer_lead_expect must be a 32-bit unsigned integer")
+        self.buffer_lead_expect = buffer_lead_expect
+        if self.buffer_ack_each_lead:
+            if not self.buffer_lead:
+                raise MysteryGiftServerError(
+                    "buffer_ack_each_lead needs at least one buffer_lead")
+            if self.buffer_lead_expect is None:
+                raise MysteryGiftServerError(
+                    "buffer_ack_each_lead needs buffer_lead_expect")
+        elif self.buffer_lead_expect is not None:
+            raise MysteryGiftServerError(
+                "buffer_lead_expect needs buffer_ack_each_lead=true")
         self.buffer_dump_size = None if buffer_dump_size is None else int(buffer_dump_size)
         # Only memory-dump-multi uses these; every other payload answers once.
         self.buffer_dump_blocks = int(buffer_dump_blocks)
@@ -627,6 +669,9 @@ class MysteryGiftServer:
                 f"a session carries 1..{mg_script.MAX_DUMP_BLOCKS} blocks, got "
                 f"{self.buffer_dump_blocks}")
         if self.buffer_dump_size is not None:
+            if self.buffer_ack_each_lead:
+                raise MysteryGiftServerError(
+                    "buffer_ack_each_lead is not supported for buffer dumps")
             if self.buffer_code is None:
                 raise MysteryGiftServerError(
                     "a memory dump needs the payload that repoints the send")
@@ -692,6 +737,7 @@ class MysteryGiftServer:
         self.mevent_status = None
         self.is_buffer_distribution = self.buffer_code is not None
         self.buffer_status = None
+        self.buffer_lead_statuses = []
         self.buffer_matched = None
         self.buffer_dump = None
         # One entry per block that arrived.
@@ -714,7 +760,8 @@ class MysteryGiftServer:
         elif self.is_buffer_distribution:
             self.script = (script_dump_memory(self.buffer_dump_blocks, len(self.buffer_lead))
                            if self.buffer_dump_size is not None
-                           else script_run_buffer_script(len(self.buffer_lead)))
+                           else script_run_buffer_script(
+                               len(self.buffer_lead), self.buffer_ack_each_lead))
         else:
             self.script = SCRIPT_SEND_WONDER_CARD
         if self.questionnaire is not None and script is None:
@@ -841,7 +888,8 @@ class MysteryGiftServer:
 
     BUILD_FIELDS = ("card", "ram_script", "news", "stamp", "activation_script",
                     "install_activation_script", "trainer", "mevent", "buffer_code", "buffer_lead",
-                    "buffer_expect", "buffer_dump_size", "buffer_dump_blocks",
+                    "buffer_expect", "buffer_ack_each_lead", "buffer_lead_expect",
+                    "buffer_dump_size", "buffer_dump_blocks",
                     "buffer_dump_address", "buffer_dump_addresses", "buffer_decode",
                     "buffer_reference")
 
@@ -985,6 +1033,26 @@ class MysteryGiftServer:
         self._loaded = (MG_LINKID_RAM_SCRIPT, self.buffer_code, len(self.buffer_code))
         self.info("buffer script (native ARM code): "
                   + buffer_script.describe(self.buffer_code))
+
+    def _do_svr_read_buffer_lead_status(self, index):
+        """Require the current lead's four-byte client->param ACK before any later payload runs."""
+        if len(self._received) != 4:
+            self.param = False
+            self.buffer_lead_statuses.append(None)
+            self.trace.append(("buffer_lead_status", index, None, False))
+            self.info(
+                f"Buffer lead {index + 1} ACK was {len(self._received)} bytes; expected exactly 4")
+            return
+        status = int.from_bytes(self._received[:4], "little")
+        expected = int(self.buffer_lead_expect) & 0xffffffff
+        matched = status == expected
+        self.buffer_lead_statuses.append(status)
+        self.param = matched
+        self.trace.append(("buffer_lead_status", index, status, matched))
+        self.info(
+            f"Buffer lead {index + 1} ACK: 0x{status:08X} "
+            + ("MATCHES" if matched else "DOES NOT MATCH")
+            + f" 0x{expected:08X}")
 
     def _do_svr_read_buffer_status(self):
         """Read what the payload left in client->param and decide the verdict. With

@@ -89,6 +89,104 @@ class FrlgMysteryGiftTest {
         assertEquals(FrlgGiftStage.WAITING_RESULT, engine.snapshot().stage)
     }
 
+    @Test fun `ack per lead mode confirms every chunk before sending the next one`() {
+        val ack = 0x4b43414fL
+        val leads = listOf(bytes4(0x11), bytes4(0x22), bytes4(0x33))
+        val finalPayload = bytes4(0x44)
+        val gift = FrlgGiftFile("Acked", mapOf(
+            "BPGD" to FrlgBufferTransfer(
+                leads, finalPayload, FrlgBufferExpectation.Status(0x12345678),
+                ackEachLead = true, leadExpectation = ack,
+            ),
+        ))
+        val engine = engineWaitingForGameData(FrlgMysteryGiftOperation.CUSTOM_PATCH, gift)
+        sendGameData(engine, "BPGD")
+
+        val clientScripts = mutableListOf<ByteArray>()
+        leads.forEachIndexed { index, lead ->
+            val client = nextOutboundMessage(engine)
+            assertEquals(16, client.first)
+            clientScripts += client.second
+            val payload = nextOutboundMessage(engine)
+            assertEquals(25, payload.first)
+            assertTrue(payload.second.contentEquals(lead))
+            assertEquals(FrlgGiftStage.SENDING_BOOST, engine.snapshot().stage)
+            sendMessage(engine, 19, u32(ack))
+            if (index < leads.lastIndex) {
+                assertEquals(FrlgGiftStage.SENDING_BOOST, engine.snapshot().stage)
+            }
+        }
+        val finalClient = nextOutboundMessage(engine)
+        assertEquals(16, finalClient.first)
+        clientScripts += finalClient.second
+        val final = nextOutboundMessage(engine)
+        assertEquals(25, final.first)
+        assertTrue(final.second.contentEquals(finalPayload))
+        assertEquals(FrlgGiftStage.WAITING_RESULT, engine.snapshot().stage)
+
+        val core = listOf(2 to 25, 21 to 0, 14 to 0, 3 to 0)
+        assertEquals(4, clientScripts.size)
+        clientScripts.forEach { script ->
+            assertEquals(core, decodeClientScript(script).take(4))
+        }
+    }
+
+    @Test fun `bad second lead ack stops before third lead and final payload`() {
+        val ack = 0x11223344L
+        val leads = listOf(bytes4(0x11), bytes4(0x22), bytes4(0x33))
+        val finalPayload = bytes4(0x44)
+        val gift = FrlgGiftFile("Acked", mapOf(
+            "BPGD" to FrlgBufferTransfer(
+                leads, finalPayload, ackEachLead = true, leadExpectation = ack,
+            ),
+        ))
+        val engine = engineWaitingForGameData(FrlgMysteryGiftOperation.CUSTOM_PATCH, gift)
+        sendGameData(engine, "BPGD")
+
+        nextOutboundMessage(engine)
+        assertTrue(nextOutboundMessage(engine).second.contentEquals(leads[0]))
+        sendMessage(engine, 19, u32(ack))
+        nextOutboundMessage(engine)
+        assertTrue(nextOutboundMessage(engine).second.contentEquals(leads[1]))
+        sendMessage(engine, 19, u32(ack xor 1L))
+
+        val failureScript = nextOutboundMessage(engine)
+        assertEquals(16, failureScript.first)
+        val failureMessage = nextOutboundMessage(engine)
+        assertEquals(21, failureMessage.first)
+        assertTrue(engine.snapshot().detail!!.contains("lead 2"))
+        assertTrue(engine.snapshot().detail!!.contains("mismatch"))
+        assertTrue(drainOutboundMessages(engine, 2_000).none { it.first == 25 })
+    }
+
+    @Test fun `all lead acks still leave final buffer expectation in charge`() {
+        val ack = 0x55667788L
+        val gift = FrlgGiftFile("Acked", mapOf(
+            "BPGD" to FrlgBufferTransfer(
+                listOf(bytes4(0x11), bytes4(0x22)), bytes4(0x44),
+                FrlgBufferExpectation.Status(0x12345678),
+                ackEachLead = true, leadExpectation = ack,
+            ),
+        ))
+        val engine = engineWaitingForGameData(FrlgMysteryGiftOperation.CUSTOM_PATCH, gift)
+        sendGameData(engine, "BPGD")
+
+        repeat(2) {
+            nextOutboundMessage(engine)
+            nextOutboundMessage(engine)
+            sendMessage(engine, 19, u32(ack))
+        }
+        nextOutboundMessage(engine)
+        nextOutboundMessage(engine)
+        assertEquals(FrlgGiftStage.WAITING_RESULT, engine.snapshot().stage)
+
+        sendMessage(engine, 19, u32(0x12345679))
+        nextOutboundMessage(engine)
+        nextOutboundMessage(engine)
+        assertTrue(!engine.snapshot().installSucceeded)
+        assertTrue(engine.snapshot().detail!!.contains("expected 0x12345678"))
+    }
+
     @Test fun `custom gift without detected cartridge variant fails before payload transmission`() {
         val gift = FrlgGiftFile("Custom", mapOf(
             "BPRD" to FrlgBufferTransfer(emptyList(), byteArrayOf(1, 2, 3, 4)),
@@ -312,6 +410,49 @@ class FrlgMysteryGiftTest {
         throw AssertionError("Custom transfer did not reach the result stage")
     }
 
+    private fun nextOutboundMessage(engine: FrlgMysteryGiftEngine): Pair<Int, ByteArray> {
+        val messages = drainOutboundMessages(engine, 8_000, stopAfterFirst = true)
+        return messages.firstOrNull() ?: throw AssertionError("No complete outbound Mystery Gift message")
+    }
+
+    private fun drainOutboundMessages(
+        engine: FrlgMysteryGiftEngine,
+        count: Int,
+        stopAfterFirst: Boolean = false,
+    ): List<Pair<Int, ByteArray>> {
+        val messages = mutableListOf<Pair<Int, ByteArray>>()
+        val receiver = RfuBlockReceiver()
+        var ident: Int? = null
+        var size = 0
+        val payload = ArrayList<Byte>()
+        repeat(count) {
+            receiver.receive(FrlgRfu.serialize(engine.tick()))?.let { block ->
+                if (ident == null) {
+                    ident = le16(block)
+                    size = le16(block, 4).let { if (it == 0) 1024 else it }
+                    payload.clear()
+                } else {
+                    payload.addAll(block.take(minOf(252, size - payload.size)))
+                    if (payload.size == size) {
+                        messages += requireNotNull(ident) to payload.toByteArray()
+                        ident = null
+                        if (stopAfterFirst) return messages
+                    }
+                }
+            }
+        }
+        return messages
+    }
+
+    private fun decodeClientScript(script: ByteArray): List<Pair<Int, Int>> =
+        script.asList().chunked(8).filter { it.size == 8 }.map { chunk ->
+            val bytes = chunk.toByteArray()
+            le32(bytes, 0) to le32(bytes, 4)
+        }
+
+    private fun u32(value: Long) = ByteArray(4).also { put32(it, 0, value.toInt()) }
+    private fun bytes4(value: Int) = byteArrayOf(value.toByte(), 0, 0, 0)
+
     private fun repeatTicks(engine: FrlgMysteryGiftEngine, count: Int): List<Pair<Int, ByteArray>> {
         val messages = mutableListOf<Pair<Int, ByteArray>>()
         val receiver = RfuBlockReceiver()
@@ -357,5 +498,9 @@ class FrlgMysteryGiftTest {
     private fun put32(data: ByteArray, at: Int, value: Int) { repeat(4) { data[at + it] = (value ushr (8 * it)).toByte() } }
     private fun le16(data: ByteArray, at: Int = 0) =
         (data[at].toInt() and 255) or ((data[at + 1].toInt() and 255) shl 8)
+    private fun le32(data: ByteArray, at: Int = 0) =
+        (0 until 4).fold(0) { value, index ->
+            value or ((data[at + index].toInt() and 255) shl (8 * index))
+        }
     private fun ByteArray.hex() = joinToString("") { "%02x".format(it.toInt() and 255) }
 }

@@ -462,6 +462,10 @@ CLIENT_SCRIPT_RUN_BUFFER = client_script(
     CLI_COPY_RECV,
 )
 
+# ACK-per-lead mode deliberately runs one payload per client script. After CLI_SEND_LOADED the
+# existing tail waits for the next MG_LINKID_CLIENT_SCRIPT, so the host can either continue with the
+# next chunk or switch immediately to the existing buffer-failure script after a bad ACK.
+CLIENT_SCRIPT_RUN_BUFFER_ACK_CHUNK = CLIENT_SCRIPT_RUN_BUFFER
 
 
 def client_script_run_buffer(leads=0):
