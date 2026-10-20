@@ -102,6 +102,55 @@ class FrlgMysteryGiftTest {
         assertTrue(repeatTicks(engine, 2_000).none { it.first == 25 })
     }
 
+    @Test fun `custom integer expectation match succeeds`() {
+        val result = completeCustomResult(FrlgBufferExpectation.Status(0x12345678), 0x12345678)
+        assertEquals(FrlgGiftStage.COMPLETED, result.stage)
+        assertTrue(result.installSucceeded)
+    }
+
+    @Test fun `custom integer expectation mismatch fails after clean close`() {
+        val result = completeCustomResult(FrlgBufferExpectation.Status(0x12345678), 0x12345679)
+        assertEquals(FrlgGiftStage.FAILED, result.stage)
+        assertTrue(!result.installSucceeded)
+        assertTrue(result.closePhaseEntered)
+        assertTrue(result.detail!!.contains("expected 0x12345678"))
+        assertTrue(result.detail!!.contains("received 0x12345679"))
+    }
+
+    @Test fun `trainer id expectation exact match succeeds`() {
+        val result = completeCustomResult(
+            FrlgBufferExpectation.TrainerId, 0x89abcdef, trainerId = 0x89abcdef,
+            playerName = byteArrayOf(0x41, 0x42, 0xff.toByte()),
+        )
+        assertEquals(FrlgGiftStage.COMPLETED, result.stage)
+        assertTrue(result.installSucceeded)
+    }
+
+    @Test fun `trainer id expectation mismatch fails`() {
+        val result = completeCustomResult(
+            FrlgBufferExpectation.TrainerId, 0x89abcdee, trainerId = 0x89abcdef,
+            playerName = byteArrayOf(0x41, 0xff.toByte()),
+        )
+        assertEquals(FrlgGiftStage.FAILED, result.stage)
+        assertTrue(result.detail!!.contains("expected 0x89ABCDEF"))
+        assertTrue(result.detail!!.contains("received 0x89ABCDEE"))
+    }
+
+    @Test fun `seven character name ignores low trainer id byte`() {
+        val result = completeCustomResult(
+            FrlgBufferExpectation.TrainerId, 0x12345699, trainerId = 0x12345644,
+            playerName = byteArrayOf(1, 2, 3, 4, 5, 6, 7),
+        )
+        assertEquals(FrlgGiftStage.COMPLETED, result.stage)
+        assertTrue(result.installSucceeded)
+    }
+
+    @Test fun `custom gift without expectation keeps normal successful response behavior`() {
+        val result = completeCustomResult(null, 0xdeadbeef)
+        assertEquals(FrlgGiftStage.COMPLETED, result.stage)
+        assertTrue(result.installSucceeded)
+    }
+
     @Test fun `successful close completes when console leaves first`() {
         val engine = closingSuccessfulEngine()
         val closing = engine.snapshot()
@@ -201,13 +250,41 @@ class FrlgMysteryGiftTest {
         return engine
     }
 
-    private fun sendGameData(engine: FrlgMysteryGiftEngine, code: String) {
+    private fun sendGameData(
+        engine: FrlgMysteryGiftEngine,
+        code: String,
+        trainerId: Long = 0,
+        playerName: ByteArray = byteArrayOf(0xff.toByte()),
+    ) {
         val data = ByteArray(0x64).also {
             put32(it, 0, 0x101); put16(it, 4, 1); put32(it, 8, 1); put16(it, 12, 1)
             put32(it, 16, if (code.startsWith("BPR")) 1 else 2)
+            playerName.copyOf(7).copyInto(it, 0x45)
+            put32(it, 0x4c, trainerId.toInt())
             code.encodeToByteArray().copyInto(it, 0x5c)
         }
         sendMessage(engine, 17, data)
+    }
+
+    private fun completeCustomResult(
+        expectation: FrlgBufferExpectation?,
+        returned: Long,
+        trainerId: Long = 0,
+        playerName: ByteArray = byteArrayOf(0xff.toByte()),
+    ): FrlgGiftSnapshot {
+        val gift = FrlgGiftFile("Custom", mapOf(
+            "BPGD" to FrlgBufferTransfer(emptyList(), byteArrayOf(1, 2, 3, 4), expectation),
+        ))
+        val engine = engineWaitingForGameData(FrlgMysteryGiftOperation.CUSTOM_PATCH, gift)
+        sendGameData(engine, "BPGD", trainerId, playerName)
+        repeat(4_000) { engine.tick() }
+        assertEquals(FrlgGiftStage.WAITING_RESULT, engine.snapshot().stage)
+        sendMessage(engine, 19, ByteArray(4).also { put32(it, 0, returned.toInt()) })
+        repeat(1_000) { engine.tick() }
+        sendMessage(engine, 20, ByteArray(1024))
+        assertEquals(FrlgGiftStage.CLOSING, engine.snapshot().stage)
+        engine.onPeerLeft()
+        return engine.snapshot()
     }
 
     private fun collectMessagesUntilWaitingResult(engine: FrlgMysteryGiftEngine): List<Pair<Int, ByteArray>> {

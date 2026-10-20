@@ -16,7 +16,9 @@ internal data class FrlgGiftFile(
     val gameCodes: List<String> = variants.keys.sorted()
 
     fun transferForGameCode(gameCode: String): FrlgBufferTransfer? = variants[gameCode]?.let { transfer ->
-        FrlgBufferTransfer(transfer.leads.map(ByteArray::copyOf), transfer.payload.copyOf())
+        FrlgBufferTransfer(
+            transfer.leads.map(ByteArray::copyOf), transfer.payload.copyOf(), transfer.expectation,
+        )
     }
 
     companion object {
@@ -91,12 +93,15 @@ internal data class FrlgGiftFile(
         private fun readVariant(code: String): FrlgBufferTransfer {
             var data: Map<String, ByteArray>? = null
             var optionsSeen = false
+            var expectation: FrlgBufferExpectation? = null
             objectFields("variant $code", setOf("data", "options")) { field ->
                 when (field) {
                     "data" -> data = readData(code)
                     "options" -> {
                         optionsSeen = true
-                        objectFields("options for $code", emptySet()) { }
+                        objectFields("options for $code", setOf("buffer_expect")) {
+                            expectation = readBufferExpectation(code)
+                        }
                     }
                 }
             }
@@ -108,7 +113,33 @@ internal data class FrlgGiftFile(
             require(leadNumbers == (1..leadNumbers.size).toList()) {
                 "Variant $code buffer leads must be numbered contiguously from buffer_lead_1"
             }
-            return FrlgBufferTransfer(leadNumbers.map { requireNotNull(components["buffer_lead_$it"]) }, payload)
+            return FrlgBufferTransfer(
+                leadNumbers.map { requireNotNull(components["buffer_lead_$it"]) }, payload, expectation,
+            )
+        }
+
+        private fun readBufferExpectation(code: String): FrlgBufferExpectation = when (json.peek()) {
+            JsonToken.NUMBER -> {
+                val value = json.nextString()
+                require(INTEGER_PATTERN.matches(value)) {
+                    "buffer_expect for $code must be trainer-id or a 32-bit unsigned integer"
+                }
+                val parsed = value.toLongOrNull()
+                require(parsed != null && parsed in 0..0xffff_ffffL) {
+                    "buffer_expect for $code must be trainer-id or a 32-bit unsigned integer"
+                }
+                FrlgBufferExpectation.Status(parsed)
+            }
+            JsonToken.STRING -> {
+                val value = json.nextString()
+                require(value == "trainer-id") {
+                    "buffer_expect for $code must be trainer-id or a 32-bit unsigned integer"
+                }
+                FrlgBufferExpectation.TrainerId
+            }
+            else -> throw IllegalArgumentException(
+                "buffer_expect for $code must be trainer-id or a 32-bit unsigned integer",
+            )
         }
 
         private fun readData(code: String): Map<String, ByteArray> {

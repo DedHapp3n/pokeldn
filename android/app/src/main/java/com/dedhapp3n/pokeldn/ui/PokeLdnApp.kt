@@ -1581,8 +1581,13 @@ private fun MysteryGiftPayloadScreen(
         }
         item {
             ShellPanel("Requirements") {
-                Text("Import your own prod.keys. The app stores the validated file only in private app storage.")
-                DeviceButton("Import prod.keys", onImportKeys, Modifier.fillMaxWidth())
+                if (keysState.phase == ProdKeysPhase.AVAILABLE) {
+                    DisplayStatus("prod.keys available", StatusTone.POSITIVE)
+                } else {
+                    Text("Import your own prod.keys. The app stores the validated file only in private app storage.")
+                    keysState.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = ScreenMuted) }
+                    DeviceButton("Import prod.keys", onImportKeys, Modifier.fillMaxWidth())
+                }
                 extraRequirements()
                 Text(instructions)
                 Text(persistence,

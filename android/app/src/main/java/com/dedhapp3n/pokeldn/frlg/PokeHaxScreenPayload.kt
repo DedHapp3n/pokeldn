@@ -7,7 +7,15 @@ object PokeHaxScreenPreset {
 internal data class FrlgBufferTransfer(
     val leads: List<ByteArray>,
     val payload: ByteArray,
+    val expectation: FrlgBufferExpectation? = null,
 )
+
+internal sealed interface FrlgBufferExpectation {
+    data class Status(val value: Long) : FrlgBufferExpectation {
+        init { require(value in 0..0xffff_ffffL) { "Buffer expectation must be an unsigned 32-bit value" } }
+    }
+    data object TrainerId : FrlgBufferExpectation
+}
 
 /** Multi-stage RAM-only form of [asm/pokehax-screen.s]. */
 internal object PokeHaxScreenPayload {

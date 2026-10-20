@@ -52,6 +52,9 @@ internal class FrlgMysteryGiftEngine(
     private var closeGrace: Int? = null
     private var closePhaseEntered = false
     private var closeHandshakeConfirmed = false
+    private var bufferExpectation: FrlgBufferExpectation? = null
+    private var gameDataTrainerId = 0L
+    private var gameDataTrainerIdReliable = false
     var disconnectRequested = false
         private set
     private var operationSucceeded = false
@@ -173,6 +176,11 @@ internal class FrlgMysteryGiftEngine(
         }
         gameCode = code
         detectedCartridge = FrlgCartridge(expectedGame, language, linkCartridge.version, linkCartridge.languageId)
+        bufferExpectation = transfer.expectation
+        gameDataTrainerId = le32Mg(data, GAME_DATA_TRAINER_ID_OFFSET)
+        gameDataTrainerIdReliable = data.copyOfRange(
+            GAME_DATA_PLAYER_NAME_OFFSET, GAME_DATA_PLAYER_NAME_OFFSET + PLAYER_NAME_FIELD_SIZE,
+        ).any { it == 0xff.toByte() }
         stage = FrlgGiftStage.PREPARING_BOOST
         detail = "${linkCartridge.game} / ${linkCartridge.language} detected"
         val clientScript = clientRunBuffer(transfer.leads.size + 1)
@@ -193,10 +201,11 @@ internal class FrlgMysteryGiftEngine(
     }
 
     private fun onInstallResult(data: ByteArray) {
-        val status = if (data.size >= 4) le32Mg(data).toInt() else 0xbad0bad0.toInt()
-        val success = status != 0xbad0bad0.toInt()
+        val status = if (data.size >= 4) le32Mg(data) else BUFFER_REFUSED
+        val verdict = bufferVerdict(status)
+        val success = verdict == null
         operationSucceeded = success
-        terminalDetail = if (success) operation.successDetail else "Console refused the payload"
+        terminalDetail = if (success) operation.successDetail else verdict
         detail = terminalDetail
         val script = if (success) CLIENT_SUCCESS else CLIENT_FAILURE
         val message = if (success) SUCCESS_MESSAGE else FAILURE_MESSAGE
@@ -204,6 +213,25 @@ internal class FrlgMysteryGiftEngine(
             sendMessage(21, message) { expect(20) }
         }
     }
+
+    private fun bufferVerdict(status: Long): String? {
+        if (operation != FrlgMysteryGiftOperation.CUSTOM_PATCH || bufferExpectation == null) {
+            return if (status != BUFFER_REFUSED) null else "Console refused the payload"
+        }
+        val (expected, mask, source) = when (val expectation = requireNotNull(bufferExpectation)) {
+            is FrlgBufferExpectation.Status -> Triple(expectation.value, 0xffff_ffffL, "configured value")
+            FrlgBufferExpectation.TrainerId -> Triple(
+                gameDataTrainerId,
+                if (gameDataTrainerIdReliable) 0xffff_ffffL else 0xffff_ff00L,
+                if (gameDataTrainerIdReliable) "trainer ID" else "trainer ID; low byte ignored for 7-character name",
+            )
+        }
+        if ((status and mask) == (expected and mask)) return null
+        return "Custom patch response mismatch: expected ${hexStatus(expected)} ($source, mask ${hexStatus(mask)}), " +
+            "received ${hexStatus(status)}"
+    }
+
+    private fun hexStatus(value: Long) = "0x%08X".format(value and 0xffff_ffffL)
 
     private fun beginClose() {
         closePhaseEntered = true
@@ -239,6 +267,10 @@ internal class FrlgMysteryGiftEngine(
     fun markDisconnected() = onPeerLeft()
 
     companion object {
+        private const val GAME_DATA_PLAYER_NAME_OFFSET = 0x45
+        private const val PLAYER_NAME_FIELD_SIZE = 7
+        private const val GAME_DATA_TRAINER_ID_OFFSET = 0x4c
+        private const val BUFFER_REFUSED = 0xbad0bad0L
         private val CLIENT_SEND_GAME_DATA = hexMg("0800000000000000030000000000000002000000100000000400000000000000")
         private val CLIENT_RUN_ONE = hexMg("02000000190000001500000000000000")
         private val CLIENT_RUN_FINISH = hexMg(

@@ -91,8 +91,48 @@ class FrlgGiftFileTest {
         parse(giftJson(mapOf("BPGD" to mapOf("buffer_code" to bytes(1, 2, 3)))))
     }
 
-    @Test fun `unsupported options are rejected instead of ignored`() = rejects("Unknown field buffer_expect") {
-        parse(giftJson().replace("\"options\":{}", "\"options\":{\"buffer_expect\":1}"))
+    @Test fun `integer buffer expectation parses`() {
+        val transfer = parse(giftJson(options = mapOf("buffer_expect" to "305419896")))
+            .transferForGameCode("BPGD")!!
+        assertEquals(FrlgBufferExpectation.Status(0x12345678L), transfer.expectation)
+    }
+
+    @Test fun `zero buffer expectation parses`() {
+        val transfer = parse(giftJson(options = mapOf("buffer_expect" to "0")))
+            .transferForGameCode("BPGD")!!
+        assertEquals(FrlgBufferExpectation.Status(0), transfer.expectation)
+    }
+
+    @Test fun `maximum unsigned buffer expectation parses`() {
+        val transfer = parse(giftJson(options = mapOf("buffer_expect" to "4294967295")))
+            .transferForGameCode("BPGD")!!
+        assertEquals(FrlgBufferExpectation.Status(0xffff_ffffL), transfer.expectation)
+    }
+
+    @Test fun `negative buffer expectation is rejected`() = rejects("32-bit unsigned integer") {
+        parse(giftJson(options = mapOf("buffer_expect" to "-1")))
+    }
+
+    @Test fun `buffer expectation above unsigned word is rejected`() = rejects("32-bit unsigned integer") {
+        parse(giftJson(options = mapOf("buffer_expect" to "4294967296")))
+    }
+
+    @Test fun `trainer id buffer expectation parses`() {
+        val transfer = parse(giftJson(options = mapOf("buffer_expect" to "\"trainer-id\"")))
+            .transferForGameCode("BPGD")!!
+        assertEquals(FrlgBufferExpectation.TrainerId, transfer.expectation)
+    }
+
+    @Test fun `unknown string buffer expectation is rejected`() = rejects("32-bit unsigned integer") {
+        parse(giftJson(options = mapOf("buffer_expect" to "\"player-id\"")))
+    }
+
+    @Test fun `non integer buffer expectation type is rejected`() = rejects("32-bit unsigned integer") {
+        parse(giftJson(options = mapOf("buffer_expect" to "true")))
+    }
+
+    @Test fun `other unsupported options are rejected instead of ignored`() = rejects("Unknown field buffer_dump_size") {
+        parse(giftJson(options = mapOf("buffer_dump_size" to "4")))
     }
 
     @Test fun `unknown fields and duplicate fields are rejected`() {
@@ -106,9 +146,11 @@ class FrlgGiftFileTest {
 
     private fun giftJson(
         variants: Map<String, Map<String, ByteArray>> = mapOf("BPGD" to mapOf("buffer_code" to bytes(1, 2, 3, 4))),
+        options: Map<String, String> = emptyMap(),
     ): String = """{"format":"pokeldn.gift","version":2,"game":"frlg","name":"Test patch","variants":{${
         variants.entries.joinToString(",") { (code, data) ->
-            "\"$code\":{\"data\":{${data.entries.joinToString(",") { (key, value) -> "\"$key\":${component(value)}" }}},\"options\":{}}"
+            "\"$code\":{\"data\":{${data.entries.joinToString(",") { (key, value) -> "\"$key\":${component(value)}" }}}," +
+                "\"options\":{${options.entries.joinToString(",") { (key, value) -> "\"$key\":$value" }}}}"
         }
     }}}"""
 
