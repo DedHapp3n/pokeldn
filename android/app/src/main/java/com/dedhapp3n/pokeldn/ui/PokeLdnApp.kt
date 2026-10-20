@@ -115,12 +115,7 @@ private data class GameModule(
 )
 
 private val gameModules = listOf(
-    GameModule("FireRed / LeafGreen", "GEN III", "Walk Through Walls, PokeHax Screen, Save Backup, and Save Restore.", true),
-    GameModule("Let's Go Pikachu / Eevee", "GEN VII", "Upstream-supported game; Android features are not available yet."),
-    GameModule("Sword / Shield", "GEN VIII", "Upstream-supported game; Android features are not available yet."),
-    GameModule("Brilliant Diamond / Shining Pearl", "GEN VIII", "Upstream-supported game; Android features are not available yet."),
-    GameModule("Legends: Arceus", "GEN VIII", "Upstream-supported game; Android features are not available yet."),
-    GameModule("Scarlet / Violet", "GEN IX", "Upstream-supported game; Android features are not available yet."),
+    GameModule("FireRed / LeafGreen", "GEN III", "Walk Through Walls, PokeHax Lab, Save Backup, and Save Restore.", true),
     GameModule(
         "Legends: Z-A", "GEN IX", "Physically verified read-only Save Reader.",
     ),
