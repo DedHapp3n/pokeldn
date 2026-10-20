@@ -160,6 +160,10 @@ class Esp32RadioSessionTest {
         session(serial).use { runtime ->
             runtime.verifyAndPrepare()
             val operation = runtime.startAccessPoint(config())
+            await {
+                val credit = runtime.creditSnapshot()
+                credit.credited == credit.written
+            }
             val before = runtime.creditSnapshot()
             val creditObserved = CountDownLatch(1)
             serial.creditObserved = creditObserved
