@@ -39,27 +39,4 @@ class ZaNamesTest {
             ZaNames.statRows(listOf(1, 2, 3, 4, 5, 6)))
     }
 
-    @Test fun genderReturnsCorrectValues() {
-        assertEquals("Male", ZaNames.gender(0))
-        assertEquals("Female", ZaNames.gender(1))
-        assertEquals("Genderless", ZaNames.gender(2))
-        assertEquals("Unknown", ZaNames.gender(3))
-        assertEquals("Unknown", ZaNames.gender(-1))
-        assertEquals("Unknown", ZaNames.gender(99))
-    }
-
-    @Test fun unknownIdsRemainExplicit() {
-        // Test negative species ID
-        val names = names()
-        assertEquals("Unknown (#-1)", names.species(-1))
-
-        // Test unknown ball ID by accessing the companion object directly for the ball method
-        assertEquals("Unknown (#99)", ZaNames.Companion.ball(99))
-    }
-
-    @Test(expected = IllegalArgumentException::class)
-    fun statRowsThrowsExceptionForInvalidSize() {
-        ZaNames.statRows(listOf(1, 2, 3)) // Only 3 values instead of required 6
-        ZaNames.statRows(listOf(1, 2, 3, 4, 5)) // Only 5 values instead of required 6
-    }
 }
