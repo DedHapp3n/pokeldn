@@ -12,6 +12,7 @@ enum class FrlgMysteryGiftOperation(
     WALK_THROUGH_WALLS("Sending Walk Through Walls", "Walk Through Walls installed"),
     POKEHAX_SCREEN("Sending PokeHax Lab", "PokeHax Lab completed"),
     POKEHAX_INSTALL("Installing persistent PokeHax Lab", "Persistent PokeHax Lab installed"),
+    CUSTOM_PATCH("Sending custom console-code patch", "Custom patch completed"),
 }
 
 internal data class FrlgGiftSnapshot(
@@ -29,6 +30,7 @@ internal data class FrlgGiftSnapshot(
 internal class FrlgMysteryGiftEngine(
     private val linkCartridge: FrlgCartridge,
     private val operation: FrlgMysteryGiftOperation = FrlgMysteryGiftOperation.WALK_THROUGH_WALLS,
+    private val customGift: FrlgGiftFile? = null,
     startupStandbyCount: Int = 0,
     echoStartupStandby: Boolean = true,
 ) {
@@ -155,6 +157,10 @@ internal class FrlgMysteryGiftEngine(
                 emptyList(), requireNotNull(WalkThroughWallsPayloads.forGameCode(code)))
             FrlgMysteryGiftOperation.POKEHAX_SCREEN -> requireNotNull(PokeHaxScreenPayload.forGameCode(code))
             FrlgMysteryGiftOperation.POKEHAX_INSTALL -> requireNotNull(PokeHaxScreenPayload.installerForGameCode(code))
+            FrlgMysteryGiftOperation.CUSTOM_PATCH -> customGift?.transferForGameCode(code) ?: run {
+                fail("Imported .pokegift has no variant for detected cartridge $code")
+                return
+            }
         }
         val expectedGame = if (code.startsWith("BPR")) "FireRed" else if (code.startsWith("BPG")) "LeafGreen" else null
         val language = mapOf('F' to "French", 'E' to "English", 'S' to "Spanish", 'D' to "German",
@@ -179,6 +185,7 @@ internal class FrlgMysteryGiftEngine(
                     FrlgMysteryGiftOperation.WALK_THROUGH_WALLS -> "Waiting for console install result"
                     FrlgMysteryGiftOperation.POKEHAX_SCREEN -> "Waiting for PokeHax Lab result"
                     FrlgMysteryGiftOperation.POKEHAX_INSTALL -> "Waiting for persistent install result"
+                    FrlgMysteryGiftOperation.CUSTOM_PATCH -> "Waiting for custom patch result"
                 }
                 expect(19)
             }

@@ -40,6 +40,8 @@ import com.dedhapp3n.pokeldn.frlg.ProdKeysState
 import com.dedhapp3n.pokeldn.frlg.ProdKeysStore
 import com.dedhapp3n.pokeldn.frlg.ProdKeysPhase
 import com.dedhapp3n.pokeldn.frlg.FrlgGiftStage
+import com.dedhapp3n.pokeldn.frlg.FrlgGiftFile
+import com.dedhapp3n.pokeldn.frlg.FrlgCustomGiftUiState
 import com.dedhapp3n.pokeldn.frlg.FrlgMysteryGiftOperation
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationStartGate
@@ -99,6 +101,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.time.Instant
 import java.time.ZoneId
+import java.io.ByteArrayOutputStream
 
 class MainActivity : ComponentActivity() {
     private val usbManager by lazy { getSystemService(UsbManager::class.java) }
@@ -132,6 +135,7 @@ class MainActivity : ComponentActivity() {
     private var frlgOperationState by mutableStateOf(FrlgOperationState())
     private var saveBackupState by mutableStateOf(FrlgSaveBackupUiState())
     private var saveRestoreState by mutableStateOf(FrlgSaveRestoreUiState())
+    private var customGiftState by mutableStateOf(FrlgCustomGiftUiState())
     private var backupStorageState by mutableStateOf(FrlgBackupStorageUiState())
     private var zaSnapshots by mutableStateOf<List<ZaSnapshot>>(emptyList())
     private var zaReaderState by mutableStateOf<ZaReaderState?>(null)
@@ -148,6 +152,7 @@ class MainActivity : ComponentActivity() {
     private var rawCaptureOperationId = 0
     private var rawCaptureFuture: Future<*>? = null
     private var rawCaptureTimeout: Future<*>? = null
+    private var customGiftSelectionId = 0
     private val radioSessionLock = Any()
     @Volatile private var radioSession: Esp32RadioSession? = null
     private var radioStateSubscription: AutoCloseable? = null
@@ -203,6 +208,32 @@ class MainActivity : ComponentActivity() {
                 ProdKeysState(ProdKeysPhase.INVALID, error.message ?: "Could not import prod.keys")
             }
             runOnUiThread { prodKeysState = next }
+        }
+    }
+
+    private val customGiftPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@registerForActivityResult
+        val selectionId = ++customGiftSelectionId
+        customGiftState = FrlgCustomGiftUiState(
+            validationDetail = "Validating selected .pokegift file", validating = true,
+        )
+        helloWorker.submit {
+            val filename = runCatching {
+                contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                    if (it.moveToFirst()) it.getString(0) else null
+                }
+            }.getOrNull() ?: "selected.pokegift"
+            val next = try {
+                val bytes = contentResolver.openInputStream(uri)?.use(::readGiftBytes)
+                    ?: throw IllegalArgumentException("Could not open the selected .pokegift file")
+                val gift = FrlgGiftFile.parse(bytes)
+                FrlgCustomGiftUiState(filename, gift, "Valid FRLG console-code gift")
+            } catch (error: Exception) {
+                FrlgCustomGiftUiState(filename = filename, validationDetail = error.message ?: "Invalid .pokegift file")
+            }
+            runOnUiThread {
+                if (selectionId == customGiftSelectionId) customGiftState = next
+            }
         }
     }
 
@@ -349,12 +380,18 @@ class MainActivity : ComponentActivity() {
                     frlgOperationState = frlgOperationState,
                     saveBackupState = saveBackupState,
                     saveRestoreState = saveRestoreState,
+                    customGiftState = customGiftState,
                     radioState = radioState,
                     onStartWalkThroughWalls = ::startWalkThroughWalls,
                     onCancelWalkThroughWalls = ::cancelWalkThroughWalls,
                     onStartPokeHaxScreen = ::startPokeHaxScreen,
                     onInstallPokeHaxScreen = ::installPokeHaxScreen,
                     onCancelPokeHaxScreen = ::cancelPokeHaxScreen,
+                    onSelectCustomGift = {
+                        customGiftPicker.launch(arrayOf("application/json", "application/octet-stream", "text/plain", "*/*"))
+                    },
+                    onStartCustomGift = ::startCustomGift,
+                    onCancelCustomGift = ::cancelCustomGift,
                     onStartSaveBackup = ::startSaveBackup,
                     onCancelSaveBackup = ::cancelSaveBackup,
                     onExportSaveBackup = ::exportSaveBackup,
@@ -982,6 +1019,15 @@ class MainActivity : ComponentActivity() {
         mysteryGiftOperation = FrlgMysteryGiftOperation.POKEHAX_INSTALL,
     )
 
+    private fun startCustomGift() {
+        val gift = customGiftState.gift
+        if (gift == null) {
+            frlgOperationState = FrlgOperationState(FrlgOperationPhase.FAILED, "Select a valid .pokegift file first")
+            return
+        }
+        startFrlgOperation(mysteryGiftOperation = FrlgMysteryGiftOperation.CUSTOM_PATCH, customGift = gift)
+    }
+
     private fun startSaveBackup() = startFrlgOperation(saveBackup = true)
 
     private fun startSaveRestore() {
@@ -997,11 +1043,15 @@ class MainActivity : ComponentActivity() {
         saveBackup: Boolean = false,
         restoreSave: ByteArray? = null,
         mysteryGiftOperation: FrlgMysteryGiftOperation? = null,
+        customGift: FrlgGiftFile? = null,
     ) {
         if (ZaReaderService.isActive()) return
         val saveRestore = restoreSave != null
         require(listOf(mysteryGiftOperation != null, saveBackup, saveRestore).count { it } == 1) {
             "Exactly one FRLG operation must be selected"
+        }
+        require((mysteryGiftOperation == FrlgMysteryGiftOperation.CUSTOM_PATCH) == (customGift != null)) {
+            "A custom .pokegift must be supplied only for a Custom Patch operation"
         }
         val session = radioSession
         if (session?.state?.phase == Esp32RadioPhase.READY) releaseStaleRadioOwnership(session)
@@ -1029,6 +1079,7 @@ class MainActivity : ComponentActivity() {
             saveBackup -> FrlgForegroundKind.SAVE_BACKUP
             mysteryGiftOperation == FrlgMysteryGiftOperation.POKEHAX_SCREEN ||
                 mysteryGiftOperation == FrlgMysteryGiftOperation.POKEHAX_INSTALL -> FrlgForegroundKind.POKEHAX_SCREEN
+            mysteryGiftOperation == FrlgMysteryGiftOperation.CUSTOM_PATCH -> FrlgForegroundKind.CUSTOM_PATCH
             else -> FrlgForegroundKind.WALK_THROUGH_WALLS
         }
         requestOperationNotificationPermission()
@@ -1061,6 +1112,7 @@ class MainActivity : ComponentActivity() {
                     operation = activeOperation,
                     network = network,
                     mysteryGiftOperation = mysteryGiftOperation,
+                    customGift = customGift,
                     saveBackup = saveBackup,
                     restoreSave = restoreSave,
                     persistSaveBackup = if (saveBackup) ::persistCompletedBackup else { _ -> },
@@ -1127,7 +1179,8 @@ class MainActivity : ComponentActivity() {
                     FrlgForegroundKind.SAVE_RESTORE -> updateSaveRestoreState(snapshot)
                     FrlgForegroundKind.SAVE_BACKUP -> updateSaveBackupState(snapshot)
                     FrlgForegroundKind.WALK_THROUGH_WALLS,
-                    FrlgForegroundKind.POKEHAX_SCREEN ->
+                    FrlgForegroundKind.POKEHAX_SCREEN,
+                    FrlgForegroundKind.CUSTOM_PATCH ->
                         frlgOperationState = frlgOperationState.recordProgress(frlgState(snapshot))
                 }
             }
@@ -1321,6 +1374,33 @@ class MainActivity : ComponentActivity() {
             frlgOperationId
         }
         finishFrlgOperation(id, FrlgOperationPhase.CANCELLED, "Operation cancelled")
+    }
+
+    private fun cancelCustomGift() {
+        if (FrlgOperationService.progress()?.takeIf { !it.terminal }?.kind == FrlgForegroundKind.CUSTOM_PATCH) {
+            FrlgOperationService.cancel("Custom patch cancelled")
+            return
+        }
+        val id = synchronized(frlgOperationLock) {
+            if (activeFrlgOperation?.saveBackup != false || activeFrlgOperation?.saveRestore == true) return
+            frlgOperationId
+        }
+        finishFrlgOperation(id, FrlgOperationPhase.CANCELLED, "Custom patch cancelled")
+    }
+
+    private fun readGiftBytes(input: java.io.InputStream): ByteArray {
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        var remaining = FrlgGiftFile.MAX_FILE_BYTES + 1
+        while (remaining > 0) {
+            val read = input.read(buffer, 0, minOf(buffer.size, remaining))
+            if (read <= 0) break
+            output.write(buffer, 0, read)
+            remaining -= read
+        }
+        val bytes = output.toByteArray()
+        require(bytes.size <= FrlgGiftFile.MAX_FILE_BYTES) { ".pokegift file exceeds 256 KiB" }
+        return bytes
     }
 
     private fun cancelSaveBackup() {

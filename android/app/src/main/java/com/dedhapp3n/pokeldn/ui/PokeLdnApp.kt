@@ -51,6 +51,7 @@ import com.dedhapp3n.pokeldn.esp32.RawReadBufferMode
 import com.dedhapp3n.pokeldn.esp32.Esp32RadioPhase
 import com.dedhapp3n.pokeldn.esp32.Esp32RadioState
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationState
+import com.dedhapp3n.pokeldn.frlg.FrlgCustomGiftUiState
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationPhase
 import com.dedhapp3n.pokeldn.frlg.FrlgOperationStartGate
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveBackupUiState
@@ -104,6 +105,7 @@ private enum class AppDestination(val label: String) {
 
 private const val SAVE_BACKUP_ID = "frlg-save-backup"
 private const val SAVE_RESTORE_ID = "frlg-save-restore"
+private const val CUSTOM_PATCH_ID = "frlg-custom-patch"
 private const val TRAINER_OPTION_ID = "trainer"
 
 private data class GameModule(
@@ -150,12 +152,16 @@ internal fun PokeLdnApp(
     frlgOperationState: FrlgOperationState,
     saveBackupState: FrlgSaveBackupUiState,
     saveRestoreState: FrlgSaveRestoreUiState,
+    customGiftState: FrlgCustomGiftUiState,
     radioState: Esp32RadioState,
     onStartWalkThroughWalls: () -> Unit,
     onCancelWalkThroughWalls: () -> Unit,
     onStartPokeHaxScreen: () -> Unit,
     onInstallPokeHaxScreen: () -> Unit,
     onCancelPokeHaxScreen: () -> Unit,
+    onSelectCustomGift: () -> Unit,
+    onStartCustomGift: () -> Unit,
+    onCancelCustomGift: () -> Unit,
     onStartSaveBackup: () -> Unit,
     onCancelSaveBackup: () -> Unit,
     onExportSaveBackup: () -> Unit,
@@ -236,6 +242,20 @@ internal fun PokeLdnApp(
                     onBack = { selectedOperation = null },
                     modifier = Modifier.padding(innerPadding),
                 )
+                selectedOperation == CUSTOM_PATCH_ID -> CustomPatchScreen(
+                    connectionState = connectionState,
+                    esp32State = esp32State,
+                    keysState = prodKeysState,
+                    operationState = frlgOperationState,
+                    giftState = customGiftState,
+                    radioState = radioState,
+                    onImportKeys = onImportProdKeys,
+                    onSelectGift = onSelectCustomGift,
+                    onStart = onStartCustomGift,
+                    onCancel = onCancelCustomGift,
+                    onBack = { selectedOperation = null },
+                    modifier = Modifier.padding(innerPadding),
+                )
                 selectedOperation == SAVE_BACKUP_ID -> SaveBackupScreen(
                     connectionState = connectionState,
                     esp32State = esp32State,
@@ -257,6 +277,7 @@ internal fun PokeLdnApp(
                 selectedGame == "frlg" -> FrlgOperationsScreen(
                     onOpenWalkThroughWalls = { selectedOperation = WalkThroughWallsPreset.BOOST_ID },
                     onOpenPokeHaxScreen = { selectedOperation = PokeHaxScreenPreset.OPERATION_ID },
+                    onOpenCustomPatch = { selectedOperation = CUSTOM_PATCH_ID },
                     onOpenSaveBackup = { selectedOperation = SAVE_BACKUP_ID },
                     onOpenSaveRestore = { selectedOperation = SAVE_RESTORE_ID },
                     onBack = { selectedGame = null },
@@ -1085,6 +1106,7 @@ private fun GameModulePanel(module: GameModule, onOpen: (() -> Unit)?, modifier:
 private fun FrlgOperationsScreen(
     onOpenWalkThroughWalls: () -> Unit,
     onOpenPokeHaxScreen: () -> Unit,
+    onOpenCustomPatch: () -> Unit,
     onOpenSaveBackup: () -> Unit,
     onOpenSaveRestore: () -> Unit,
     onBack: () -> Unit,
@@ -1117,6 +1139,13 @@ private fun FrlgOperationsScreen(
                     "Advanced",
                     StatusTone.WARNING,
                     onOpenPokeHaxScreen,
+                )
+                OperationRow(
+                    "Custom Patch",
+                    "Validate and apply an imported FRLG v2 .pokegift console-code payload.",
+                    "Write-capable",
+                    StatusTone.WARNING,
+                    onOpenCustomPatch,
                 )
                 PlannedOperation("Wonder News", "Planned")
                 PlannedOperation("Pokémon Gift", "Planned")
@@ -1414,6 +1443,64 @@ private fun WalkThroughWallsScreen(
 }
 
 @Composable
+private fun CustomPatchScreen(
+    connectionState: SerialConnectionState,
+    esp32State: Esp32HandshakeState,
+    keysState: ProdKeysState,
+    operationState: FrlgOperationState,
+    giftState: FrlgCustomGiftUiState,
+    radioState: Esp32RadioState,
+    onImportKeys: () -> Unit,
+    onSelectGift: () -> Unit,
+    onStart: () -> Unit,
+    onCancel: () -> Unit,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val gift = giftState.gift
+    MysteryGiftPayloadScreen(
+        connectionState = connectionState,
+        esp32State = esp32State,
+        keysState = keysState,
+        operationState = operationState,
+        radioState = radioState,
+        title = "Custom Patch",
+        subtitle = "Imported .pokegift console code",
+        section = "Mystery Gift",
+        badge = "Write-capable / Advanced",
+        badgeTone = StatusTone.WARNING,
+        instructions = "On the GBA, enable Mystery Gift, open Wonder Cards, then choose Friend. The app selects a variant only after reading the real cartridge game code.",
+        persistence = "Imported ARM code can modify cartridge memory. Selecting a file never sends it; transmission starts only after you press Start.",
+        preparingLabel = "Preparing custom patch",
+        sendingLabel = "Sending custom patch",
+        onImportKeys = onImportKeys,
+        onStart = onStart,
+        onCancel = onCancel,
+        onBack = onBack,
+        modifier = modifier,
+        startReady = giftState.valid,
+        startBlockedReason = "Select a valid FRLG v2 .pokegift file first.",
+        extraRequirements = {
+            DeviceButton("Select .pokegift", onSelectGift, Modifier.fillMaxWidth(), enabled = !operationState.running)
+        },
+        extraStatus = {
+            Text("File: ${giftState.filename ?: "Not selected"}", color = ScreenMuted)
+            if (gift != null) {
+                Text("Name: ${gift.name}", color = ScreenMuted)
+                Text("Cartridges: ${gift.gameCodes.joinToString()}", color = ScreenMuted)
+                Text("Payload type: Console code", color = ScreenMuted)
+                DisplayStatus("Valid", StatusTone.POSITIVE)
+            } else if (giftState.validating) {
+                DisplayStatus("Validating", StatusTone.WARNING)
+            } else if (giftState.validationDetail != null) {
+                DisplayStatus("Invalid", StatusTone.ERROR)
+            }
+            giftState.validationDetail?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = ScreenMuted) }
+        },
+    )
+}
+
+@Composable
 private fun MysteryGiftPayloadScreen(
     connectionState: SerialConnectionState,
     esp32State: Esp32HandshakeState,
@@ -1424,6 +1511,7 @@ private fun MysteryGiftPayloadScreen(
     subtitle: String,
     section: String,
     badge: String,
+    badgeTone: StatusTone = StatusTone.POSITIVE,
     instructions: String,
     persistence: String,
     preparingLabel: String = FrlgOperationPhase.PREPARING_BOOST.label,
@@ -1437,6 +1525,9 @@ private fun MysteryGiftPayloadScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     extraStatus: @Composable () -> Unit = {},
+    extraRequirements: @Composable () -> Unit = {},
+    startReady: Boolean = true,
+    startBlockedReason: String? = null,
 ) {
     var confirmDangerous by rememberSaveable { mutableStateOf(false) }
     val availability = FrlgOperationStartGate.evaluate(
@@ -1467,7 +1558,7 @@ private fun MysteryGiftPayloadScreen(
                     },
                 )
                 operationState.detail?.let { Text(it, color = ScreenMuted) }
-                StatusBadge(badge, StatusTone.POSITIVE)
+                StatusBadge(badge, badgeTone)
                 Text("Game: FireRed / LeafGreen", color = ScreenMuted)
                 extraStatus()
                 DisplayStatus(
@@ -1492,6 +1583,7 @@ private fun MysteryGiftPayloadScreen(
             ShellPanel("Requirements") {
                 Text("Import your own prod.keys. The app stores the validated file only in private app storage.")
                 DeviceButton("Import prod.keys", onImportKeys, Modifier.fillMaxWidth())
+                extraRequirements()
                 Text(instructions)
                 Text(persistence,
                     style = MaterialTheme.typography.bodySmall, color = DeviceInk.copy(alpha = 0.72f))
@@ -1502,10 +1594,10 @@ private fun MysteryGiftPayloadScreen(
                         "Start",
                         onStart,
                         Modifier.fillMaxWidth(),
-                        enabled = connectionState.phase == SerialConnectionPhase.CONNECTED && availability.enabled,
+                        enabled = connectionState.phase == SerialConnectionPhase.CONNECTED && availability.enabled && startReady,
                     )
-                    if (!availability.enabled) {
-                        Text(availability.reason.orEmpty(), style = MaterialTheme.typography.bodySmall, color = ScreenMuted)
+                    if (!availability.enabled || !startReady) {
+                        Text(availability.reason ?: startBlockedReason.orEmpty(), style = MaterialTheme.typography.bodySmall, color = ScreenMuted)
                     }
                     if (dangerousActionLabel != null && dangerousWarning != null && onDangerousAction != null) {
                         Text(dangerousWarning, style = MaterialTheme.typography.bodySmall,

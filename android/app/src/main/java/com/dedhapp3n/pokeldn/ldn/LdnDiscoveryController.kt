@@ -7,6 +7,7 @@ import com.dedhapp3n.pokeldn.esp32.formatMac
 import com.dedhapp3n.pokeldn.frlg.FrlgHostLink
 import com.dedhapp3n.pokeldn.frlg.FrlgCompletedBackup
 import com.dedhapp3n.pokeldn.frlg.FrlgMysteryGiftOperation
+import com.dedhapp3n.pokeldn.frlg.FrlgGiftFile
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveCloseResult
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveDataResult
 import com.dedhapp3n.pokeldn.frlg.FrlgSaveBackupStage
@@ -179,11 +180,12 @@ class LdnDiscoveryController internal constructor(
     private val onSnapshot: (LdnDiscoverySnapshot) -> Unit = {},
     private val onFailure: (Throwable) -> Unit = {},
 ) : AutoCloseable {
-    constructor(
+    internal constructor(
         session: Esp32RadioSession,
         operation: Esp32RadioOperation,
         network: LdnDiscoveryNetwork,
         mysteryGiftOperation: FrlgMysteryGiftOperation? = null,
+        customGift: FrlgGiftFile? = null,
         saveBackup: Boolean = false,
         restoreSave: ByteArray? = null,
         persistSaveBackup: (FrlgCompletedBackup) -> Unit = {},
@@ -203,6 +205,7 @@ class LdnDiscoveryController internal constructor(
             network.piaHost,
             network.parentSessionId,
             mysteryGiftOperation = mysteryGiftOperation,
+            customGift = customGift,
             runSaveBackup = saveBackup,
             restoreSave = restoreSave,
             persistSaveBackup = persistSaveBackup,

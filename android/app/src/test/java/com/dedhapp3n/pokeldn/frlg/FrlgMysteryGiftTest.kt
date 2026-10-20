@@ -71,6 +71,37 @@ class FrlgMysteryGiftTest {
         assertTrue(engine.snapshot().detail!!.contains("persistent install"))
     }
 
+    @Test fun `custom gift selects the detected variant and uses the run buffer payload sequence`() {
+        val selectedLead = byteArrayOf(0x11, 0x12, 0x13, 0x14)
+        val selectedPayload = byteArrayOf(0x21, 0x22, 0x23, 0x24)
+        val gift = FrlgGiftFile("Custom", mapOf(
+            "BPGD" to FrlgBufferTransfer(listOf(selectedLead), selectedPayload),
+            "BPRD" to FrlgBufferTransfer(listOf(byteArrayOf(0x31)), byteArrayOf(0x41)),
+        ))
+        val engine = engineWaitingForGameData(FrlgMysteryGiftOperation.CUSTOM_PATCH, gift)
+        sendGameData(engine, "BPGD")
+
+        val messages = collectMessagesUntilWaitingResult(engine)
+
+        assertEquals(listOf(16, 25, 25), messages.map { it.first })
+        assertTrue(messages[1].second.contentEquals(selectedLead))
+        assertTrue(messages[2].second.contentEquals(selectedPayload))
+        assertEquals(FrlgGiftStage.WAITING_RESULT, engine.snapshot().stage)
+    }
+
+    @Test fun `custom gift without detected cartridge variant fails before payload transmission`() {
+        val gift = FrlgGiftFile("Custom", mapOf(
+            "BPRD" to FrlgBufferTransfer(emptyList(), byteArrayOf(1, 2, 3, 4)),
+        ))
+        val engine = engineWaitingForGameData(FrlgMysteryGiftOperation.CUSTOM_PATCH, gift)
+
+        sendGameData(engine, "BPGD")
+
+        assertEquals(FrlgGiftStage.FAILED, engine.snapshot().stage)
+        assertTrue(engine.snapshot().detail!!.contains("no variant for detected cartridge BPGD"))
+        assertTrue(repeatTicks(engine, 2_000).none { it.first == 25 })
+    }
+
     @Test fun `successful close completes when console leaves first`() {
         val engine = closingSuccessfulEngine()
         val closing = engine.snapshot()
@@ -157,6 +188,64 @@ class FrlgMysteryGiftTest {
         return engine
     }
 
+    private fun engineWaitingForGameData(
+        operation: FrlgMysteryGiftOperation,
+        gift: FrlgGiftFile,
+    ): FrlgMysteryGiftEngine {
+        val engine = FrlgMysteryGiftEngine(
+            FrlgCartridge("LeafGreen", "German", 0x4005, 5), operation, gift,
+        )
+        repeat(20) { engine.receive(ByteArray(14)) }
+        repeat(300) { engine.tick() }
+        assertEquals(FrlgGiftStage.READING_CARTRIDGE, engine.snapshot().stage)
+        return engine
+    }
+
+    private fun sendGameData(engine: FrlgMysteryGiftEngine, code: String) {
+        val data = ByteArray(0x64).also {
+            put32(it, 0, 0x101); put16(it, 4, 1); put32(it, 8, 1); put16(it, 12, 1)
+            put32(it, 16, if (code.startsWith("BPR")) 1 else 2)
+            code.encodeToByteArray().copyInto(it, 0x5c)
+        }
+        sendMessage(engine, 17, data)
+    }
+
+    private fun collectMessagesUntilWaitingResult(engine: FrlgMysteryGiftEngine): List<Pair<Int, ByteArray>> {
+        val result = mutableListOf<Pair<Int, ByteArray>>()
+        val receiver = RfuBlockReceiver()
+        var ident: Int? = null
+        var size = 0
+        val payload = ArrayList<Byte>()
+        repeat(8_000) {
+            receiver.receive(FrlgRfu.serialize(engine.tick()))?.let { block ->
+                if (ident == null) {
+                    ident = le16(block)
+                    size = le16(block, 4).let { if (it == 0) 1024 else it }
+                    payload.clear()
+                } else {
+                    payload.addAll(block.take(minOf(252, size - payload.size)))
+                    if (payload.size == size) {
+                        result += requireNotNull(ident) to payload.toByteArray()
+                        ident = null
+                    }
+                }
+            }
+            if (engine.snapshot().stage == FrlgGiftStage.WAITING_RESULT && ident == null) return result
+        }
+        throw AssertionError("Custom transfer did not reach the result stage")
+    }
+
+    private fun repeatTicks(engine: FrlgMysteryGiftEngine, count: Int): List<Pair<Int, ByteArray>> {
+        val messages = mutableListOf<Pair<Int, ByteArray>>()
+        val receiver = RfuBlockReceiver()
+        repeat(count) {
+            receiver.receive(FrlgRfu.serialize(engine.tick()))?.let { block ->
+                if (block.size >= 6) messages += le16(block) to block
+            }
+        }
+        return messages
+    }
+
     private fun closingSuccessfulEngine(): FrlgMysteryGiftEngine = preparedEngine().also { engine ->
         sendMessage(engine, 19, byteArrayOf(1, 0, 0, 0))
         repeat(1_000) { engine.tick() }
@@ -189,5 +278,7 @@ class FrlgMysteryGiftTest {
     }
     private fun put16(data: ByteArray, at: Int, value: Int) { data[at] = value.toByte(); data[at + 1] = (value ushr 8).toByte() }
     private fun put32(data: ByteArray, at: Int, value: Int) { repeat(4) { data[at + it] = (value ushr (8 * it)).toByte() } }
+    private fun le16(data: ByteArray, at: Int = 0) =
+        (data[at].toInt() and 255) or ((data[at + 1].toInt() and 255) shl 8)
     private fun ByteArray.hex() = joinToString("") { "%02x".format(it.toInt() and 255) }
 }

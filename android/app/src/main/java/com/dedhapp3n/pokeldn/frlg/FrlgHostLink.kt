@@ -36,6 +36,7 @@ internal class FrlgHostLink(
     private val pia: LdnPiaHost,
     parentSessionId: ByteArray,
     private val mysteryGiftOperation: FrlgMysteryGiftOperation? = null,
+    private val customGift: FrlgGiftFile? = null,
     private val runSaveBackup: Boolean = false,
     private val restoreSave: ByteArray? = null,
     private val persistSaveBackup: (FrlgCompletedBackup) -> Unit = {},
@@ -198,7 +199,9 @@ internal class FrlgHostLink(
         if ((mysteryGiftOperation == null && !runSaveBackup && restoreSave == null) || gift != null || backup != null || restore != null || !link.readyForGift) return
         link.child?.cartridge?.let {
             if (mysteryGiftOperation != null) {
-                gift = FrlgMysteryGiftEngine(it, mysteryGiftOperation, link.standbyCount ?: 0, echoStartupStandby = false)
+                gift = FrlgMysteryGiftEngine(
+                    it, mysteryGiftOperation, customGift, link.standbyCount ?: 0, echoStartupStandby = false,
+                )
             } else if (runSaveBackup) {
                 backup = FrlgSaveBackupGiftEngine(
                     it,

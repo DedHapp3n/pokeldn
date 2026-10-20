@@ -48,6 +48,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.usb.serial)
+    implementation("com.google.code.gson:gson:2.11.0")
     implementation("com.github.luben:zstd-jni:1.5.7-22@aar")
     testImplementation(libs.junit)
     testImplementation(libs.zstd.jvm)
