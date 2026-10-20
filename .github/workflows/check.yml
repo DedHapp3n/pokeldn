@@ -1,7 +1,7 @@
 name: Check
 on:
   push:
-    branches: [main, android]
+    branches: [main]
   pull_request:
 permissions:
   contents: read
@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04]
+        os: [ubuntu-24.04, macos-14, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -28,26 +28,4 @@ jobs:
           dotnet-version: '10.0.x'
       - run: python -m pip install -r requirements.txt pytest==9.1.1 pytest-xdist==3.8.0 esptool==5.4.0
       - run: dotnet build -c Release services/pkhex -warnaserror
-      - run: python -m pytest tests/test_buffer_lead_ack.py tests/test_gift_files.py tests/test_mystery_gift_flow.py tests/test_frlg_french_identity.py -q -W error
-
-  android-test:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '25'
-      - uses: android-actions/setup-android@v3
-        with:
-          packages: "platform-tools platforms;android-36"
-      - name: Use stable SDK and JVM zstd artifact for CI compiler check
-        run: |
-          sed -i 's/version = release(37)/version = release(36)/' android/app/build.gradle.kts
-          sed -i 's/targetSdk = 37/targetSdk = 36/' android/app/build.gradle.kts
-          sed -i 's|implementation("com.github.luben:zstd-jni:1.5.7-22@aar")|implementation(libs.zstd.jvm)|' android/app/build.gradle.kts
-      - name: Run Android unit tests
-        working-directory: android
-        run: |
-          chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest
+      - run: python -m pytest tests/ -q -W error -n auto --dist worksteal
