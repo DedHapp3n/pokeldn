@@ -11,6 +11,8 @@ import org.junit.Test
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.ArrayDeque
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class Esp32RadioSessionTest {
     @Test
@@ -149,6 +151,31 @@ class Esp32RadioSessionTest {
             assertTrue(runtime.sendEthernet(operation, ByteArray(64)))
             await { events.any { it is Esp32RadioEvent.EthernetCommandWritten } }
             assertEquals(1, serial.commandCount(Esp32Protocol.CMD_ETH_TX))
+        }
+    }
+
+    @Test
+    fun creditForFrameStillBeingWrittenAdvancesFlowWindow() {
+        val serial = FakeSerial().apply { creditDuringEthernetWrite = true }
+        session(serial).use { runtime ->
+            runtime.verifyAndPrepare()
+            val operation = runtime.startAccessPoint(config())
+            val before = runtime.creditSnapshot()
+            val creditObserved = CountDownLatch(1)
+            serial.creditObserved = creditObserved
+            runtime.addOperationEventListener(operation) { event ->
+                if (event is Esp32RadioEvent.Credit) creditObserved.countDown()
+            }
+            val payload = ByteArray(1500) { it.toByte() }
+            val encodedSize = Esp32Protocol.encodeFrame(Esp32Protocol.CMD_ETH_TX, payload).size
+
+            assertTrue(runtime.sendEthernet(operation, payload))
+            await { serial.commandCount(Esp32Protocol.CMD_ETH_TX) == 1 }
+            await { runtime.creditSnapshot().credited - before.credited == encodedSize.toLong() }
+
+            val after = runtime.creditSnapshot()
+            assertEquals(encodedSize.toLong(), after.written - before.written)
+            assertEquals(encodedSize.toLong(), after.credited - before.credited)
         }
     }
 
@@ -420,6 +447,8 @@ class Esp32RadioSessionTest {
         var respondToStop = true
         var apStartResultCode = 0
         var eventBeforeStatus: ByteArray? = null
+        var creditDuringEthernetWrite = false
+        var creditObserved: CountDownLatch? = null
         var connectCalls = 0
         val baudChanges = mutableListOf<Int>()
         private var mode = 0
@@ -451,6 +480,12 @@ class Esp32RadioSessionTest {
             synchronized(writes) { writes += frame }
             if (frame.type == Esp32Protocol.CMD_HELLO) consumed = 0
             else consumed += bytes.size
+            if (frame.type == Esp32Protocol.CMD_ETH_TX && creditDuringEthernetWrite) {
+                emitCredit(consumed)
+                check(creditObserved?.await(250, TimeUnit.MILLISECONDS) != false) {
+                    "Timed out waiting for mid-write CREDIT dispatch"
+                }
+            }
             when (frame.type) {
                 Esp32Protocol.CMD_HELLO -> {
                     emit(Esp32Protocol.MSG_INFO, INFO_PAYLOAD)

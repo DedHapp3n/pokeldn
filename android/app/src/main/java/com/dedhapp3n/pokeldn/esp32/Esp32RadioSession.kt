@@ -191,6 +191,7 @@ class Esp32RadioSession internal constructor(
     private var written = 0L
     private var credited = 0L
     private var writtenOff = 0L
+    private var sending = 0L
     private var creditSeenNanos = 0L
     private var flowEnabled = false
     private var writing = false
@@ -495,12 +496,16 @@ class Esp32RadioSession internal constructor(
                 awaitCredit(item)
                 if (item.token?.cancelled == true ||
                     (item.generation != null && item.generation != activeGeneration)) continue
+                synchronized(outboundMonitor) {
+                    sending = item.frame.size.toLong()
+                }
                 serial.write(item.frame, WRITE_TIMEOUT_MS)
                 if (item.type == Esp32Protocol.CMD_ETH_TX) {
                     publishEvent(Esp32RadioEvent.EthernetCommandWritten(item.frame.size))
                 }
                 synchronized(outboundMonitor) {
                     written += item.frame.size
+                    sending = 0
                     if (item.type == Esp32Protocol.CMD_HELLO) {
                         written = 0
                         credited = 0
@@ -512,6 +517,7 @@ class Esp32RadioSession internal constructor(
                 return
             } finally {
                 synchronized(outboundMonitor) {
+                    sending = 0
                     writing = false
                     outboundMonitor.notifyAll()
                 }
@@ -566,8 +572,11 @@ class Esp32RadioSession internal constructor(
             val count = ByteBuffer.wrap(frame.payload).order(ByteOrder.LITTLE_ENDIAN).int.toLong() and 0xffffffffL
             synchronized(outboundMonitor) {
                 creditSeenNanos = System.nanoTime()
-                if (count <= written) {
-                    writtenOff = minOf(writtenOff, written - count)
+                // The firmware counts bytes as it consumes them, so CREDIT may include the frame
+                // currently inside serial.write() before that call has returned to the writer loop.
+                val sent = written + sending
+                if (count <= sent) {
+                    writtenOff = minOf(writtenOff, sent - count)
                     credited = maxOf(credited, count + writtenOff)
                     flowEnabled = true
                     outboundMonitor.notifyAll()
