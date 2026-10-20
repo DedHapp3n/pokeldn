@@ -436,7 +436,13 @@ class FrlgMysteryGiftTest {
                     if (payload.size == size) {
                         messages += requireNotNull(ident) to payload.toByteArray()
                         ident = null
-                        if (stopAfterFirst) return messages
+                        if (stopAfterFirst) {
+                            // The RFU sender repeats the final 12-byte fragment up to three times.
+                            // Do not inject a synthetic console ACK until those repeats finish and
+                            // the engine's afterSend callback has armed expect(MG_LINKID_RESPONSE).
+                            repeat(4) { engine.tick() }
+                            return messages
+                        }
                     }
                 }
             }
