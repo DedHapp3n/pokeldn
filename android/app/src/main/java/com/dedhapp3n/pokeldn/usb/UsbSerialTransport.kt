@@ -4,6 +4,7 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbManager
+import com.hoho.android.usbserial.driver.SerialTimeoutException
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
 import com.hoho.android.usbserial.util.SerialInputOutputManager
@@ -163,7 +164,9 @@ class UsbSerialTransport(private val manager: UsbManager) : SerialTransport {
         requireReadQueue().read(buffer, timeoutMillis)
 
     override fun write(bytes: ByteArray, timeoutMillis: Int) {
-        requirePort().write(bytes, timeoutMillis)
+        writeSerialFully(bytes, timeoutMillis) { remaining, timeout ->
+            requirePort().write(remaining, timeout)
+        }
     }
 
     private fun requirePort(): UsbSerialPort = port ?: throw IOException("Serial port is not connected")
@@ -201,6 +204,34 @@ private fun UsbDevice.endpointDiagnostics(): List<UsbEndpointDiagnostic> = build
                     maxPacketSize = endpoint.maxPacketSize,
                 )
             )
+        }
+    }
+}
+
+
+/**
+ * usb-serial-for-android applies one timeout budget to an entire write even when it internally
+ * splits the data into endpoint-sized USB transfers. If earlier chunks made progress but exhaust
+ * that budget, SerialTimeoutException reports how many bytes were already accepted. Resume only
+ * the unsent suffix with a fresh per-write timeout, matching the direct Android USB backend's
+ * progress semantics without duplicating bytes already on the wire.
+ */
+internal fun writeSerialFully(
+    bytes: ByteArray,
+    timeoutMillis: Int,
+    writer: (ByteArray, Int) -> Unit,
+) {
+    require(timeoutMillis >= 0) { "Write timeout must not be negative" }
+    var offset = 0
+    while (offset < bytes.size) {
+        val remaining = if (offset == 0) bytes else bytes.copyOfRange(offset, bytes.size)
+        try {
+            writer(remaining, timeoutMillis)
+            return
+        } catch (error: SerialTimeoutException) {
+            val transferred = error.bytesTransferred
+            if (transferred <= 0 || transferred > remaining.size) throw error
+            offset += transferred
         }
     }
 }
